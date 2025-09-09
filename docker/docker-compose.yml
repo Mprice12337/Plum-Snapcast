@@ -1,0 +1,48 @@
+services:
+  snapserver:
+    image: 'ghcr.io/firefrei/snapcast/server:latest'
+    platform: linux/amd64
+    container_name: plum-snapcast-server
+    restart: always
+    environment:
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - snapcast-data:/app/data/
+      - snapcast-config:/app/config/
+      - snapcast-certs:/app/certs/
+    networks:
+      - plum-network
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: plum-snapcast-frontend
+    restart: always
+    networks:
+      - plum-network
+    environment:
+      - REACT_APP_SNAPCAST_HOST=plum-snapcast-server  # Use container name for service discovery
+      - REACT_APP_SNAPCAST_PORT=1704
+      - REACT_APP_SNAPCAST_WEB_PORT=1780
+    depends_on:
+      - snapserver
+
+volumes:
+  snapcast-data:
+    driver: local
+  snapcast-config:
+    driver: local  
+  snapcast-certs:
+    driver: local
+
+networks:
+  plum-network:
+    driver: macvlan
+    driver_opts:
+      parent: en8
+    ipam:
+      config:
+        - subnet: 192.168.201.0/24
+          gateway: 192.168.201.1
+          # No ip_range specified = DHCP will assign IPs
