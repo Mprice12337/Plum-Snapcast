@@ -1,38 +1,38 @@
-import React, { useState, useRef, useEffect } from 'react';
-import type { Client, Stream } from '../types';
-import { GroupVolumeControl } from './GroupVolumeControl';
+import React, {useEffect, useRef, useState} from 'react';
+import type {Client, Stream} from '../types';
+import {GroupVolumeControl} from './GroupVolumeControl';
 
 interface ClientManagerProps {
-  clients: Client[];
-  streams: Stream[];
-  myClientStreamId: string | null;
-  onVolumeChange: (clientId: string, volume: number) => void;
-  onStreamChange: (clientId: string, streamId: string | null) => void;
-  onGroupVolumeAdjust: (streamId: string, direction: 'up' | 'down') => void;
-  onGroupMute: (streamId: string) => void;
+    clients: Client[];
+    streams: Stream[];
+    myClientStreamId: string | null;
+    onVolumeChange: (clientId: string, volume: number) => void;
+    onStreamChange: (clientId: string, streamId: string | null) => void;
+    onGroupVolumeAdjust: (streamId: string, direction: 'up' | 'down') => void;
+    onGroupMute: (streamId: string) => void;
 }
 
 const ClientDevice: React.FC<{
-  client: Client;
-  streams: Stream[];
-  onVolumeChange: (clientId: string, volume: number) => void;
-  onStreamChange: (clientId: string, streamId: string | null) => void;
-}> = ({ client, streams, onVolumeChange, onStreamChange }) => {
+    client: Client;
+    streams: Stream[];
+    onVolumeChange: (clientId: string, volume: number) => void;
+    onStreamChange: (clientId: string, streamId: string | null) => void;
+}> = ({client, streams, onVolumeChange, onStreamChange}) => {
     const [isSelectorOpen, setIsSelectorOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
-          if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-            setIsSelectorOpen(false);
-          }
+            if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+                setIsSelectorOpen(false);
+            }
         };
         document.addEventListener('mousedown', handleClickOutside);
         return () => {
-          document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('mousedown', handleClickOutside);
         };
     }, [wrapperRef]);
-    
+
     const handleSelectStream = (streamId: string | null) => {
         onStreamChange(client.id, streamId);
         setIsSelectorOpen(false);
@@ -54,10 +54,10 @@ const ClientDevice: React.FC<{
                     value={client.volume}
                     onChange={(e) => onVolumeChange(client.id, Number(e.target.value))}
                     className="w-full h-2 rounded-lg appearance-none cursor-pointer volume-slider"
-                style={sliderStyle}
+                    style={sliderStyle}
                 />
             </div>
-             <div ref={wrapperRef} className="relative">
+            <div ref={wrapperRef} className="relative">
                 <button
                     onClick={() => setIsSelectorOpen(!isSelectorOpen)}
                     className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
@@ -66,7 +66,8 @@ const ClientDevice: React.FC<{
                     <i className="fas fa-tower-broadcast"></i>
                 </button>
                 {isSelectorOpen && (
-                    <div className="absolute z-10 bottom-full right-0 mb-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl">
+                    <div
+                        className="absolute z-10 bottom-full right-0 mb-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl">
                         <ul className="py-1 text-sm text-[var(--text-primary)] max-h-40 overflow-auto">
                             <li role="option">
                                 <button
@@ -82,7 +83,7 @@ const ClientDevice: React.FC<{
                                         onClick={() => handleSelectStream(s.id)}
                                         className={`block w-full text-left px-3 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors truncate ${client.currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
                                     >
-                                    {s.name}
+                                        {s.name}
                                     </button>
                                 </li>
                             ))}
@@ -95,86 +96,92 @@ const ClientDevice: React.FC<{
 };
 
 export const ClientManager: React.FC<ClientManagerProps> = ({
-  clients,
-  streams,
-  myClientStreamId,
-  onVolumeChange,
-  onStreamChange,
-  onGroupVolumeAdjust,
-  onGroupMute,
-}) => {
-  const groupedClients = clients.reduce<Record<string, Client[]>>((acc, client) => {
-    const streamId = client.currentStreamId ?? 'idle';
-    if (!acc[streamId]) {
-      acc[streamId] = [];
+                                                                clients,
+                                                                streams,
+                                                                myClientStreamId,
+                                                                onVolumeChange,
+                                                                onStreamChange,
+                                                                onGroupVolumeAdjust,
+                                                                onGroupMute,
+                                                            }) => {
+    const groupedClients = clients.reduce((acc, client) => {
+        const streamId = client.currentStreamId ?? 'idle';
+        if (!acc[streamId]) {
+            acc[streamId] = [];
+        }
+        acc[streamId].push(client);
+        return acc;
+    }, {} as Record<string, Client[]>);
+
+    const {idle: idleClients, ...streamedClients} = groupedClients;
+    const streamGroups = Object.entries(streamedClients);
+
+    if (clients.length === 0) {
+        return (
+            <div className="text-center py-4">
+                <i className="fas fa-desktop text-4xl text-[var(--icon-muted)] mb-3"></i>
+                <p className="text-[var(--text-muted)]">No other active devices.</p>
+            </div>
+        );
     }
-    acc[streamId].push(client);
-    return acc;
-  }, {});
 
-  const { idle: idleClients, ...streamedClients } = groupedClients;
-  const streamGroups = Object.entries(streamedClients);
-
-  if (clients.length === 0) {
     return (
-        <div className="text-center py-4">
-            <i className="fas fa-desktop text-4xl text-[var(--icon-muted)] mb-3"></i>
-            <p className="text-[var(--text-muted)]">No other active devices.</p>
+        <div className="space-y-6">
+            {streamGroups.map(([streamId, clientsInGroup]) => {
+                const stream = streams.find(s => s.id === streamId);
+                if (!stream) return null;
+
+                // Type assertion to ensure TypeScript knows clientsInGroup is Client[]
+                const typedClientsInGroup = clientsInGroup as Client[];
+
+                return (
+                    <div key={streamId} className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
+                        <div className="border-b border-[var(--border-color)] pb-3 mb-3">
+                            <h3 className="font-bold text-lg truncate text-[var(--text-primary)]">{stream.name}</h3>
+                            <p className="text-sm text-[var(--text-secondary)] truncate">
+                                <i className="fas fa-music mr-2 text-[var(--text-muted)]"></i>
+                                {stream.currentTrack.title}
+                            </p>
+                        </div>
+                        <div className="space-y-3">
+                            {typedClientsInGroup.map(client => (
+                                <ClientDevice key={client.id} client={client} streams={streams}
+                                              onVolumeChange={onVolumeChange} onStreamChange={onStreamChange}/>
+                            ))}
+                        </div>
+                        {typedClientsInGroup.length > 1 && (
+                            <GroupVolumeControl
+                                onAdjust={(dir) => onGroupVolumeAdjust(streamId, dir)}
+                                onMute={() => onGroupMute(streamId)}
+                            />
+                        )}
+                    </div>
+                );
+            })}
+
+            {idleClients && idleClients.length > 0 && (
+                <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
+                    <h3 className="font-bold text-lg text-[var(--text-primary)] border-b border-[var(--border-color)] pb-3 mb-3">Idle
+                        Devices</h3>
+                    <div className="space-y-2">
+                        {idleClients.map(client => (
+                            <div key={client.id}
+                                 className="flex items-center justify-between p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
+                                <span className="font-semibold">{client.name}</span>
+                                <button
+                                    onClick={() => onStreamChange(client.id, myClientStreamId)}
+                                    disabled={!myClientStreamId}
+                                    className="text-sm bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+                                    title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
+                                >
+                                    <i className="fas fa-plus mr-1"></i>
+                                    Join Stream
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
     );
-  }
-
-  return (
-    <div className="space-y-6">
-      {streamGroups.map(([streamId, clientsInGroup]) => {
-        const stream = streams.find(s => s.id === streamId);
-        if (!stream) return null;
-
-        return (
-          <div key={streamId} className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
-            <div className="border-b border-[var(--border-color)] pb-3 mb-3">
-                <h3 className="font-bold text-lg truncate text-[var(--text-primary)]">{stream.name}</h3>
-                <p className="text-sm text-[var(--text-secondary)] truncate">
-                    <i className="fas fa-music mr-2 text-[var(--text-muted)]"></i>
-                    {stream.currentTrack.title}
-                </p>
-            </div>
-            <div className="space-y-3">
-              {clientsInGroup.map(client => (
-                <ClientDevice key={client.id} client={client} streams={streams} onVolumeChange={onVolumeChange} onStreamChange={onStreamChange} />
-              ))}
-            </div>
-            {clientsInGroup.length > 1 && (
-                <GroupVolumeControl 
-                    onAdjust={(dir) => onGroupVolumeAdjust(streamId, dir)} 
-                    onMute={() => onGroupMute(streamId)} 
-                />
-            )}
-          </div>
-        );
-      })}
-      
-      {idleClients && idleClients.length > 0 && (
-         <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
-            <h3 className="font-bold text-lg text-[var(--text-primary)] border-b border-[var(--border-color)] pb-3 mb-3">Idle Devices</h3>
-            <div className="space-y-2">
-              {idleClients.map(client => (
-                <div key={client.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
-                  <span className="font-semibold">{client.name}</span>
-                  <button
-                    onClick={() => onStreamChange(client.id, myClientStreamId)}
-                    disabled={!myClientStreamId}
-                    className="text-sm bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
-                    title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
-                  >
-                    <i className="fas fa-plus mr-1"></i>
-                    Join Stream
-                  </button>
-                </div>
-              ))}
-            </div>
-         </div>
-      )}
-    </div>
-  );
 };

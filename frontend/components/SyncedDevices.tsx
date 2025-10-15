@@ -1,15 +1,14 @@
-
-import React, { useState, useRef, useEffect } from 'react';
-import type { Client, Stream } from '../types';
-import { GroupVolumeControl } from './GroupVolumeControl';
+import React, {useEffect, useRef, useState} from 'react';
+import type {Client, Stream} from '../types';
+import {GroupVolumeControl} from './GroupVolumeControl';
 
 interface SyncedDevicesProps {
-  clients: Client[];
-  streams: Stream[];
-  onVolumeChange: (clientId: string, volume: number) => void;
-  onStreamChange: (clientId: string, streamId: string | null) => void;
-  onGroupVolumeAdjust: (direction: 'up' | 'down') => void;
-  onGroupMute: () => void;
+    clients: Client[];
+    streams: Stream[];
+    onVolumeChange: (clientId: string, volume: number) => void;
+    onStreamChange: (clientId: string, streamId: string | null) => void;
+    onGroupVolumeAdjust: (direction: 'up' | 'down') => void;
+    onGroupMute: () => void;
 }
 
 const SyncedDevice: React.FC<{
@@ -17,7 +16,7 @@ const SyncedDevice: React.FC<{
     streams: Stream[];
     onVolumeChange: (clientId: string, volume: number) => void;
     onStreamChange: (clientId: string, streamId: string | null) => void;
-}> = ({ client, streams, onVolumeChange, onStreamChange }) => {
+}> = ({client, streams, onVolumeChange, onStreamChange}) => {
     const [isSelectorOpen, setIsSelectorOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -32,7 +31,7 @@ const SyncedDevice: React.FC<{
             document.removeEventListener('mousedown', handleClickOutside);
         };
     }, [wrapperRef]);
-    
+
     const handleSelectStream = (streamId: string | null) => {
         onStreamChange(client.id, streamId);
         setIsSelectorOpen(false);
@@ -60,7 +59,7 @@ const SyncedDevice: React.FC<{
                         aria-label={`${client.name} volume control`}
                     />
                 </div>
-                 <div ref={wrapperRef} className="relative">
+                <div ref={wrapperRef} className="relative">
                     <button
                         onClick={() => setIsSelectorOpen(!isSelectorOpen)}
                         className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
@@ -69,7 +68,8 @@ const SyncedDevice: React.FC<{
                         <i className="fas fa-tower-broadcast"></i>
                     </button>
                     {isSelectorOpen && (
-                        <div className="absolute z-10 bottom-full right-0 mb-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl">
+                        <div
+                            className="absolute z-10 bottom-full right-0 mb-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl">
                             <ul className="py-1 text-sm text-[var(--text-primary)] max-h-40 overflow-auto">
                                 <li role="option">
                                     <button
@@ -85,7 +85,7 @@ const SyncedDevice: React.FC<{
                                             onClick={() => handleSelectStream(s.id)}
                                             className={`block w-full text-left px-3 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors truncate ${client.currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
                                         >
-                                        {s.name}
+                                            {s.name}
                                         </button>
                                     </li>
                                 ))}
@@ -99,20 +99,28 @@ const SyncedDevice: React.FC<{
 };
 
 
-export const SyncedDevices: React.FC<SyncedDevicesProps> = ({ clients, streams, onVolumeChange, onStreamChange, onGroupVolumeAdjust, onGroupMute }) => {
-  if (clients.length === 0) {
-    return null;
-  }
+export const SyncedDevices: React.FC<SyncedDevicesProps> = ({
+                                                                clients,
+                                                                streams,
+                                                                onVolumeChange,
+                                                                onStreamChange,
+                                                                onGroupVolumeAdjust,
+                                                                onGroupMute
+                                                            }) => {
+    if (clients.length === 0) {
+        return null;
+    }
 
-  return (
-    <div className="mt-6 pt-6 border-t border-[var(--border-color)]">
-      <h3 className="text-xl font-bold text-[var(--text-secondary)] mb-4">Synced Devices</h3>
-      <div className="space-y-2">
-        {clients.map(client => (
-          <SyncedDevice key={client.id} client={client} streams={streams} onVolumeChange={onVolumeChange} onStreamChange={onStreamChange} />
-        ))}
-      </div>
-      <GroupVolumeControl onAdjust={onGroupVolumeAdjust} onMute={onGroupMute} />
-    </div>
-  );
+    return (
+        <div className="mt-6 pt-6 border-t border-[var(--border-color)]">
+            <h3 className="text-xl font-bold text-[var(--text-secondary)] mb-4">Synced Devices</h3>
+            <div className="space-y-2">
+                {clients.map(client => (
+                    <SyncedDevice key={client.id} client={client} streams={streams} onVolumeChange={onVolumeChange}
+                                  onStreamChange={onStreamChange}/>
+                ))}
+            </div>
+            <GroupVolumeControl onAdjust={onGroupVolumeAdjust} onMute={onGroupMute}/>
+        </div>
+    );
 };
