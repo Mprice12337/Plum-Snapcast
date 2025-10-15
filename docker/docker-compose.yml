@@ -19,6 +19,8 @@ services:
       dockerfile: Dockerfile
     container_name: plum-snapcast-frontend
     restart: always
+    ports:
+      - "3000:80"
     networks:
       - plum-network
     environment:
@@ -40,7 +42,7 @@ networks:
   plum-network:
     driver: macvlan
     driver_opts:
-      parent: en8
+      parent: eth0
     ipam:
       config:
         - subnet: 192.168.201.0/24
