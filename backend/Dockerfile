@@ -78,7 +78,7 @@ RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib \
 
 ###
 # Build and install librespot (Spotify Client)
-# Use a more stable approach with separate build steps
+# Use a stable release instead of dev branch
 FROM snapcast-airport AS snapcast-airport-spotify
 
 # Install rust and build dependencies
@@ -95,14 +95,15 @@ RUN apk add --no-cache --upgrade --virtual .build-deps \
     openssl-dev \
     alsa-lib-dev
 
-# Create build directory and download librespot
+# Create build directory and download librespot stable release
 RUN mkdir -p /app/build && cd /app/build \
-  && git clone -b dev https://github.com/librespot-org/librespot.git librespot.git
+  && git clone https://github.com/librespot-org/librespot.git librespot.git \
+  && cd librespot.git \
+  && git checkout v0.7.1
 
-# Build librespot in a separate step with better error handling
+# Build librespot with better error handling and simpler target
 WORKDIR /app/build/librespot.git
-RUN RUSTFLAGS="-C target-cpu=native" \
-    cargo build \
+RUN cargo build \
     --release \
     --no-default-features \
     --features "with-avahi,native-tls" \
@@ -173,14 +174,12 @@ RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq \
   # Configure app directory owner
   && chown -R snapcast:snapcast /app
 
-# Add supervisord configuration
-ADD --chown=snapcast:snapcast config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
-ADD --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
+# Copy supervisord configuration and shairport-sync config
+COPY --chown=snapcast:snapcast config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
+COPY --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
 
-# Copy configuration and scripts from the backend directory structure
-COPY --chown=snapcast:snapcast ../backend/config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
-COPY --chown=snapcast:snapcast ../backend/config/shairport-sync.conf /app/config/shairport-sync.conf
-COPY --chown=snapcast:snapcast --chmod=0775 ../backend/setup.sh ../backend/gen-certs.sh ../backend/healthcheck.sh ../backend/process-airplay-metadata.sh /app/
+# Copy setup and utility scripts
+COPY --chown=snapcast:snapcast --chmod=0775 setup.sh gen-certs.sh healthcheck.sh process-airplay-metadata.sh /app/
 
 USER snapcast:snapcast
 WORKDIR /app

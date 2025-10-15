@@ -1,14 +1,16 @@
 services:
   snapserver:
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
-      platforms:
-        - linux/arm64
+    image: ${DOCKER_USERNAME}/plum-snapcast-server:${TAG:-latest}
     container_name: plum-snapcast-server
     restart: always
     environment:
       TZ: "${TZ:-UTC}"
+      AIRPLAY_CONFIG_ENABLED: "${AIRPLAY_CONFIG_ENABLED:-1}"
+      AIRPLAY_SOURCE_NAME: "${AIRPLAY_SOURCE_NAME:-Airplay}"
+      AIRPLAY_DEVICE_NAME: "${AIRPLAY_DEVICE_NAME:-Snapcast}"
+      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-0}"
+      PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
+      HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
     ports:
       - "1704-1705:1704-1705"
       - "1780:1780"
@@ -25,13 +27,7 @@ services:
       - plum-network
 
   frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-      args:
-        - VITE_SNAPCAST_HOST=plum-snapcast-server
-        - VITE_SNAPCAST_PORT=1704
-        - VITE_SNAPCAST_WEB_PORT=1780
+    image: ${DOCKER_USERNAME}/plum-snapcast-frontend:${TAG:-latest}
     container_name: plum-snapcast-frontend
     restart: always
     ports:
