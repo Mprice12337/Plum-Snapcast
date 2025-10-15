@@ -1,7 +1,10 @@
 services:
   snapserver:
-    image: 'ghcr.io/firefrei/snapcast/server:latest'
-    platform: linux/amd64
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
     container_name: plum-snapcast-server
     restart: always
     environment:

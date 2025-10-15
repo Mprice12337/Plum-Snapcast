@@ -22,7 +22,7 @@ ENTRYPOINT [ "/usr/bin/snapserver" ]
 # Airplay with Shairport-Sync
 # - install shairport-sync runtime dependencies
 # - build shairport sync
-FROM --platform=linux/arm64 snapcast AS snapcast-airport
+FROM snapcast AS snapcast-airport
 ARG AIRPLAY_VERSION
 ENV BUILD_AIRPLAY_VERSION="${AIRPLAY_VERSION:-1}"
 
@@ -177,8 +177,10 @@ RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq \
 ADD --chown=snapcast:snapcast config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
 ADD --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
 
-# Copy setup and healtcheck script
-ADD --chown=snapcast:snapcast --chmod=0775 setup.sh gen-certs.sh healthcheck.sh process-airplay-metadata.sh /app/
+# Copy configuration and scripts from the backend directory structure
+COPY --chown=snapcast:snapcast ../backend/config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
+COPY --chown=snapcast:snapcast ../backend/config/shairport-sync.conf /app/config/shairport-sync.conf
+COPY --chown=snapcast:snapcast --chmod=0775 ../backend/setup.sh ../backend/gen-certs.sh ../backend/healthcheck.sh ../backend/process-airplay-metadata.sh /app/
 
 USER snapcast:snapcast
 WORKDIR /app
