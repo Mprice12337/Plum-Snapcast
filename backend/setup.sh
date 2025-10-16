@@ -13,8 +13,6 @@ fi
 #
 # SETUP SHAIRPORT-SYNC CONFIGURATION
 #
-AIRPLAY_OUTPUT_MODE=${AIRPLAY_OUTPUT_MODE:-"snapcast"}  # "snapcast" or "direct"
-
 if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
     if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then
         AIRPLAY_PORT="7000"
@@ -24,23 +22,17 @@ if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
         echo "[SETUP] Configuring Shairport-Sync for Airplay classic/1..."
     fi
 
-    # Choose config template based on output mode
-    if [ "${AIRPLAY_OUTPUT_MODE}" = "direct" ]; then
-        CONFIG_TEMPLATE="/app/config/shairport-sync-direct.conf"
-        echo "[SETUP] Using DIRECT audio output to hardware"
-    else
-        CONFIG_TEMPLATE="/app/config/shairport-sync.conf"
-        echo "[SETUP] Using PIPE output to Snapcast"
-    fi
+    # Always use pipe output to Snapcast
+    echo "[SETUP] Configuring shairport-sync with PIPE output to Snapcast"
 
     # Create shairport-sync configuration from template
     echo "[SETUP] Generating shairport-sync config with device name: ${AIRPLAY_DEVICE_NAME}, port: ${AIRPLAY_PORT}"
     sed "s/%AIRPLAY_DEVICE_NAME%/${AIRPLAY_DEVICE_NAME}/g; s/%AIRPLAY_PORT%/${AIRPLAY_PORT}/g" \
-        "${CONFIG_TEMPLATE}" > /tmp/shairport-sync.conf
+        /app/config/shairport-sync.conf > /tmp/shairport-sync.conf
 
     cp /tmp/shairport-sync.conf /app/config/shairport-sync.conf
     rm -f /tmp/shairport-sync.conf
-    
+
     echo "[SETUP] Shairport-sync configuration updated"
 fi
 
@@ -55,10 +47,8 @@ if [ "${PIPE_CONFIG_ENABLED}" -eq 1 ]; then
     SNAPCAST_CONFIG="${SNAPCAST_CONFIG}source = pipe://${PIPE_PATH}?name=${PIPE_SOURCE_NAME}&mode=${PIPE_MODE}${PIPE_EXTRA_ARGS}\n"
 fi
 
-if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
-    # Configure Snapcast to read from shairport-sync stdout with metadata
-    SNAPCAST_CONFIG="${SNAPCAST_CONFIG}source = airplay:///shairport-sync?name=${AIRPLAY_SOURCE_NAME}&port=${AIRPLAY_PORT}&devicename=${AIRPLAY_DEVICE_NAME}&metadata_file=/tmp/metadata/airplay_metadata.json${AIRPLAY_EXTRA_ARGS}\n"
-fi
+# NOTE: We do NOT add an airplay:// source here because shairport-sync outputs to the pipe
+# and Snapcast reads from the pipe. The pipe source handles AirPlay audio.
 
 if [ "${SPOTIFY_CONFIG_ENABLED}" -eq 1 ]; then
     if [ -z "${SPOTIFY_ACCESS_TOKEN}" ]; then
@@ -81,18 +71,29 @@ if [ ! -z "${SOURCE_CUSTOM}" ]; then
     SNAPCAST_CONFIG="${SNAPCAST_CONFIG}source = ${SOURCE_CUSTOM}\n"
 fi
 
+# Create snapserver configuration
+if [ ! -f /app/config/snapserver.conf ]; then
+    echo "[SETUP] Creating default snapserver configuration..."
+    cat > /tmp/snapserver.conf << EOF
+[http]
+enabled = true
+port = 1780
 
-# SNAPCAST: Create configuration file
-cp /etc/snapserver.conf /tmp/snapserver.conf
-if [ ! -z "${SNAPCAST_CONFIG}" ]; then
-    # Disable default-enabled source
-    sed -i 's/^source =/#source =/g' /tmp/snapserver.conf
- 
-    # Add user configuration to snapserver.conf
-    SNAPCAST_CONFIG="# user configuration\n${SNAPCAST_CONFIG}"
-    sed -i "/^\[stream\].*/a ${SNAPCAST_CONFIG}" /tmp/snapserver.conf
+[tcp]
+enabled = true
+port = 1704
+
+[stream]
+$(echo -e "${SNAPCAST_CONFIG}")
+
+[logging]
+EOF
+
+    # Add custom source if specified
+    if [ ! -z "${SNAPCAST_CONFIG}" ]; then
+        sed -i "/^\[stream\]/a ${SNAPCAST_CONFIG}" /tmp/snapserver.conf
+    fi
 fi
-
 
 #
 # SETUP HTTPS
@@ -109,69 +110,41 @@ if [ "${HTTPS_ENABLED}" -eq 1 ]; then
     sed -i 's|^#\?certificate_key =.*|certificate_key = /app/certs/snapserver.key|' /tmp/snapserver.conf
 fi
 
-# Copy created configuration to config directoy, if not existant yet
+# Copy created configuration to config directory, if not existent yet
 cp -n /tmp/snapserver.conf /app/config/snapserver.conf
 rm /tmp/snapserver.conf
 
 #
 # SETUP SHAIRPORT-SYNC AIRPLAY-2
 #
-
-# Prepare Shairport-Sync Airplay-2 configuration
 if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then
     NQPTP_SUPERVISORD_CONFIG="
-    [program:nqptp]\n
-    command=/usr/local/bin/nqptp\n
-    autostart=true\n
-    autorestart=true\n
-    startsecs=3\n
-    startretries=5\n
-    priority=21\n
-    "
+[program:nqptp]
+command=/usr/local/bin/nqptp
+autostart=true
+autorestart=true
+startsecs=3
+startretries=5
+priority=21
+"
     echo -e "${NQPTP_SUPERVISORD_CONFIG}" > /app/supervisord/nqptp.ini
 fi
-
-echo "[DEBUG] 🔍 Debugging Shairport-Sync Configuration"
 
 # Create necessary directories and pipes
 mkdir -p /tmp
 mkdir -p /app/data
 
 # Create the audio pipe for snapcast
-mkfifo /tmp/snapfifo || true
-chmod 666 /tmp/snapfifo
-
-# Create metadata pipe
-mkfifo /tmp/shairport-sync-metadata || true
-chmod 666 /tmp/shairport-sync-metadata
-
-echo "[DEBUG] Template shairport-sync.conf in container:"
-cat /app/config/shairport-sync.conf
-
-# Substitute environment variables in shairport-sync configuration
-if [ "$AIRPLAY_CONFIG_ENABLED" = "1" ]; then
-    echo "[DEBUG] Processing shairport-sync.conf with environment variables"
-    
-    # Set default values if not provided
-    AIRPLAY_DEVICE_NAME=${AIRPLAY_DEVICE_NAME:-"Snapcast"}
-    AIRPLAY_PORT=${AIRPLAY_PORT:-5000}
-    
-    # Replace placeholders with actual values
-    sed -i "s/%AIRPLAY_DEVICE_NAME%/${AIRPLAY_DEVICE_NAME}/g" /app/config/shairport-sync.conf
-    sed -i "s/%AIRPLAY_PORT%/${AIRPLAY_PORT}/g" /app/config/shairport-sync.conf
-    
-    echo "[DEBUG] Processed shairport-sync.conf after variable substitution:"
-    cat /app/config/shairport-sync.conf
+if [ ! -p /tmp/snapfifo ]; then
+    mkfifo /tmp/snapfifo
+    chmod 666 /tmp/snapfifo
 fi
 
-echo "[DEBUG] Environment variables:"
-env | grep -E "(AIRPLAY|SPOTIFY|BUILD)" | sort
+# Create metadata pipe
+if [ ! -p /tmp/shairport-sync-metadata ]; then
+    mkfifo /tmp/shairport-sync-metadata
+    chmod 666 /tmp/shairport-sync-metadata
+fi
 
-# Test shairport-sync version and capabilities
-echo "[DEBUG] Testing shairport-sync version and capabilities:"
-shairport-sync --version || echo "[ERROR] Failed to get shairport-sync version"
-
-echo "[DEBUG] Examining config file for syntax issues:"
-cat -n /app/config/shairport-sync.conf
-
+echo "[SETUP] ✅ Setup complete"
 exit 0
