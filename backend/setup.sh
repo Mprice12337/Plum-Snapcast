@@ -1,5 +1,4 @@
-#!/bin/sh
-set -e
+#!/bin/bash
 
 # Prepare dbus-daemon environment
 dbus-uuidgen --ensure
@@ -24,12 +23,15 @@ if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
     fi
 
     # Create shairport-sync configuration from template
+    echo "[SETUP] Generating shairport-sync config with device name: ${AIRPLAY_DEVICE_NAME}, port: ${AIRPLAY_PORT}"
     sed "s/%AIRPLAY_DEVICE_NAME%/${AIRPLAY_DEVICE_NAME}/g; s/%AIRPLAY_PORT%/${AIRPLAY_PORT}/g" \
         /app/config/shairport-sync.conf > /tmp/shairport-sync.conf
     
-    # Copy to config directory if not exists
-    cp -n /tmp/shairport-sync.conf /app/config/shairport-sync.conf || true
+    # Always overwrite the config file (remove -n flag)
+    cp /tmp/shairport-sync.conf /app/config/shairport-sync.conf
     rm -f /tmp/shairport-sync.conf
+    
+    echo "[SETUP] Shairport-sync configuration updated"
 fi
 
 #
@@ -118,5 +120,48 @@ if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then
     "
     echo -e "${NQPTP_SUPERVISORD_CONFIG}" > /app/supervisord/nqptp.ini
 fi
+
+echo "[DEBUG] 🔍 Debugging Shairport-Sync Configuration"
+
+# Create necessary directories and pipes
+mkdir -p /tmp
+mkdir -p /app/data
+
+# Create the audio pipe for snapcast
+mkfifo /tmp/snapfifo || true
+chmod 666 /tmp/snapfifo
+
+# Create metadata pipe
+mkfifo /tmp/shairport-sync-metadata || true
+chmod 666 /tmp/shairport-sync-metadata
+
+echo "[DEBUG] Template shairport-sync.conf in container:"
+cat /app/config/shairport-sync.conf
+
+# Substitute environment variables in shairport-sync configuration
+if [ "$AIRPLAY_CONFIG_ENABLED" = "1" ]; then
+    echo "[DEBUG] Processing shairport-sync.conf with environment variables"
+    
+    # Set default values if not provided
+    AIRPLAY_DEVICE_NAME=${AIRPLAY_DEVICE_NAME:-"Snapcast"}
+    AIRPLAY_PORT=${AIRPLAY_PORT:-5000}
+    
+    # Replace placeholders with actual values
+    sed -i "s/%AIRPLAY_DEVICE_NAME%/${AIRPLAY_DEVICE_NAME}/g" /app/config/shairport-sync.conf
+    sed -i "s/%AIRPLAY_PORT%/${AIRPLAY_PORT}/g" /app/config/shairport-sync.conf
+    
+    echo "[DEBUG] Processed shairport-sync.conf after variable substitution:"
+    cat /app/config/shairport-sync.conf
+fi
+
+echo "[DEBUG] Environment variables:"
+env | grep -E "(AIRPLAY|SPOTIFY|BUILD)" | sort
+
+# Test shairport-sync version and capabilities
+echo "[DEBUG] Testing shairport-sync version and capabilities:"
+shairport-sync --version || echo "[ERROR] Failed to get shairport-sync version"
+
+echo "[DEBUG] Examining config file for syntax issues:"
+cat -n /app/config/shairport-sync.conf
 
 exit 0

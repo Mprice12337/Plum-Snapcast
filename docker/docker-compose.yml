@@ -11,20 +11,11 @@ services:
       SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-0}"
       PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
       HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
-    ports:
-      - "1704-1705:1704-1705"
-      - "1780:1780"
-      - "1788:1788"
-      - "3689:3689"
-      - "5000:5000"
-      - "6000-6009:6000-6009/udp"
-      - "5353:5353"
+    network_mode: host
     volumes:
       - snapcast-data:/app/data/
       - snapcast-config:/app/config/
       - snapcast-certs:/app/certs/
-    networks:
-      - plum-network
 
   frontend:
     image: ${DOCKER_USERNAME}/plum-snapcast-frontend:${TAG:-latest}
@@ -32,8 +23,6 @@ services:
     restart: always
     ports:
       - "3000:80"
-    networks:
-      - plum-network
     depends_on:
       - snapserver
 
@@ -44,7 +33,3 @@ volumes:
     driver: local  
   snapcast-certs:
     driver: local
-
-networks:
-  plum-network:
-    driver: bridge
