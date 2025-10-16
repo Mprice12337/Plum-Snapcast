@@ -27,6 +27,7 @@ ARG AIRPLAY_VERSION
 ENV BUILD_AIRPLAY_VERSION="${AIRPLAY_VERSION:-1}"
 
 RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib \
+    alsa-lib alsa-utils \
   && apk add --no-cache --upgrade --virtual .build-deps git build-base autoconf automake libtool popt-dev openssl-dev soxr-dev avahi-dev libconfig-dev glib-dev \
   && mkdir -p /app/build \
   && CONF_OPTIONS="\

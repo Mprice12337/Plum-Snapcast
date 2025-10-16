@@ -13,6 +13,8 @@ fi
 #
 # SETUP SHAIRPORT-SYNC CONFIGURATION
 #
+AIRPLAY_OUTPUT_MODE=${AIRPLAY_OUTPUT_MODE:-"snapcast"}  # "snapcast" or "direct"
+
 if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
     if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then
         AIRPLAY_PORT="7000"
@@ -22,12 +24,20 @@ if [ "${AIRPLAY_CONFIG_ENABLED}" -eq 1 ]; then
         echo "[SETUP] Configuring Shairport-Sync for Airplay classic/1..."
     fi
 
+    # Choose config template based on output mode
+    if [ "${AIRPLAY_OUTPUT_MODE}" = "direct" ]; then
+        CONFIG_TEMPLATE="/app/config/shairport-sync-direct.conf"
+        echo "[SETUP] Using DIRECT audio output to hardware"
+    else
+        CONFIG_TEMPLATE="/app/config/shairport-sync.conf"
+        echo "[SETUP] Using PIPE output to Snapcast"
+    fi
+
     # Create shairport-sync configuration from template
     echo "[SETUP] Generating shairport-sync config with device name: ${AIRPLAY_DEVICE_NAME}, port: ${AIRPLAY_PORT}"
     sed "s/%AIRPLAY_DEVICE_NAME%/${AIRPLAY_DEVICE_NAME}/g; s/%AIRPLAY_PORT%/${AIRPLAY_PORT}/g" \
-        /app/config/shairport-sync.conf > /tmp/shairport-sync.conf
-    
-    # Always overwrite the config file (remove -n flag)
+        "${CONFIG_TEMPLATE}" > /tmp/shairport-sync.conf
+
     cp /tmp/shairport-sync.conf /app/config/shairport-sync.conf
     rm -f /tmp/shairport-sync.conf
     

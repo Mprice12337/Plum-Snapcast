@@ -3,19 +3,31 @@ services:
     image: ${DOCKER_USERNAME}/plum-snapcast-server:${TAG:-latest}
     container_name: plum-snapcast-server
     restart: always
+    privileged: true  # Required for audio device access
     environment:
-      TZ: "${TZ:-UTC}"
-      AIRPLAY_CONFIG_ENABLED: "${AIRPLAY_CONFIG_ENABLED:-1}"
-      AIRPLAY_SOURCE_NAME: "${AIRPLAY_SOURCE_NAME:-Airplay}"
-      AIRPLAY_DEVICE_NAME: "${AIRPLAY_DEVICE_NAME:-Snapcast}"
-      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-0}"
-      PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
-      HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
+      TZ: "${TZ:-America/Los_Angeles}"
+      AIRPLAY_CONFIG_ENABLED: "1"
+      AIRPLAY_SOURCE_NAME: "Airplay"
+      AIRPLAY_DEVICE_NAME: "Plum Audio"
+      AIRPLAY_OUTPUT_MODE: "direct"  # NEW: Use direct audio output
+      AIRPLAY_PORT: "5000"
+      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-1}"
+      SPOTIFY_SOURCE_NAME: "Spotify"
+      SPOTIFY_DEVICE_NAME: "Plum Audio"
+      SPOTIFY_BITRATE: "320"
+      SPOTIFY_ACCESS_TOKEN: "${SPOTIFY_ACCESS_TOKEN:-}"  # Add your token here
+      PIPE_CONFIG_ENABLED: "0"
+      HTTPS_ENABLED: "1"
     network_mode: host
     volumes:
       - snapcast-data:/app/data/
       - snapcast-config:/app/config/
       - snapcast-certs:/app/certs/
+      - /tmp:/tmp
+    devices:
+      - /dev/snd:/dev/snd  # Audio device access
+    group_add:
+      - audio  # Add container to audio group
 
   frontend:
     image: ${DOCKER_USERNAME}/plum-snapcast-frontend:${TAG:-latest}
@@ -30,6 +42,6 @@ volumes:
   snapcast-data:
     driver: local
   snapcast-config:
-    driver: local  
+    driver: local
   snapcast-certs:
     driver: local
