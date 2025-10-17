@@ -74,7 +74,13 @@ RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib \
   && chmod 777 /etc/avahi/avahi-daemon.conf \
   && mkdir -p /var/run/avahi-daemon \
   && chown avahi:avahi /var/run/avahi-daemon \
-  && chmod 777 /var/run/avahi-daemon
+  && chmod 777 /var/run/avahi-daemon \
+  #
+  # Fix audio group GID to match Raspberry Pi host (GID 29)
+  # This is critical for snapclient to access /dev/snd devices
+  && delgroup audio 2>/dev/null || true \
+  && addgroup -g 29 audio \
+  && addgroup snapcast audio
 
 
 ###

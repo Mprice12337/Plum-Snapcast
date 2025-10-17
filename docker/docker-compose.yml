@@ -4,6 +4,8 @@ services:
     container_name: plum-snapcast-server
     restart: always
     privileged: true  # Required for audio device access
+    group_add:
+      - audio  # Add container to audio group
     environment:
       TZ: "${TZ:-America/Los_Angeles}"
       AIRPLAY_CONFIG_ENABLED: "1"

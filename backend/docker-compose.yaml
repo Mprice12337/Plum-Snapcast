@@ -3,6 +3,9 @@ services:
     image: ${DOCKER_USERNAME}/plum-snapcast-server:${TAG:-latest}
     container_name: plum-snapcast-server
     restart: always
+    privileged: true
+    group_add:
+      - audio  # Add container to audio group
     network_mode: host
     environment:
       TZ: "${TZ:-UTC}"
