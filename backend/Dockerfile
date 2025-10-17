@@ -169,7 +169,7 @@ ENV SNAPCLIENT_LATENCY="0"
 # Install steps
 # - install and configure supervisord
 # - copy runtime scripts
-RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq \
+RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq bc shairport-sync-metadata-reader \
   && mkdir -p /app/config /app/data /app/certs/ /tmp/metadata \
   #
   # Create metadata pipes and directories

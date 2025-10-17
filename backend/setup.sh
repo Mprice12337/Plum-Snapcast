@@ -8,6 +8,8 @@ mkdir -p /tmp/metadata
 if [ ! -p /tmp/shairport-sync-metadata ]; then
     mkfifo /tmp/shairport-sync-metadata
     chmod 666 /tmp/shairport-sync-metadata
+    mkdir -p /tmp/metadata/artwork
+    chmod 777 /tmp/metadata/artwork
 fi
 
 #
