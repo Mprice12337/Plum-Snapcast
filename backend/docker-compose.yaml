@@ -16,6 +16,11 @@ services:
       SPOTIFY_BITRATE: "${SPOTIFY_BITRATE:-320}"
       PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
       HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
+      # Snapclient configuration (integrated in same container)
+      SNAPCLIENT_ENABLED: "${SNAPCLIENT_ENABLED:-1}"
+      SNAPCLIENT_HOST: "localhost"
+      SNAPCLIENT_SOUNDCARD: "${AUDIO_DEVICE:-hw:Headphones}"
+      SNAPCLIENT_LATENCY: "${AUDIO_LATENCY:-0}"
     volumes:
       - snapcast-data:/app/data/
       - snapcast-config:/app/config/
@@ -39,6 +44,6 @@ volumes:
   snapcast-data:
     driver: local
   snapcast-config:
-    driver: local  
+    driver: local
   snapcast-certs:
     driver: local

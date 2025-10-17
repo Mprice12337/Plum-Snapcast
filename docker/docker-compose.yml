@@ -19,6 +19,11 @@ services:
       SPOTIFY_BITRATE: "320"
       SPOTIFY_ACCESS_TOKEN: "${SPOTIFY_ACCESS_TOKEN:-}"
       HTTPS_ENABLED: "1"
+      # Snapclient configuration (integrated in same container)
+      SNAPCLIENT_ENABLED: "${SNAPCLIENT_ENABLED:-1}"
+      SNAPCLIENT_HOST: "localhost"
+      SNAPCLIENT_SOUNDCARD: "${AUDIO_DEVICE:-hw:Headphones}"
+      SNAPCLIENT_LATENCY: "${AUDIO_LATENCY:-0}"
     network_mode: host
     volumes:
       - snapcast-data:/app/data/

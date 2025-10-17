@@ -1,7 +1,7 @@
 FROM alpine:edge AS snapcast
 
-# Install snapcast-server and snapweb
-RUN apk add --no-cache --upgrade snapcast-server \
+# Install snapcast-server, snapcast-client, and snapweb
+RUN apk add --no-cache --upgrade snapcast-server snapcast-client \
   # Install latest release of snapweb
   # (its not shipped with snapcast-server, and not shipped with snapcast since 0.28.0 anymore)
   && wget -O /tmp/snapweb.zip https://github.com/badaix/snapweb/releases/latest/download/snapweb.zip \
@@ -154,6 +154,11 @@ ENV SKIP_CERT_GENERATION="0"
 ENV CERT_SERVER_CN="snapserver"
 ENV CERT_SERVER_DNS="snapserver snapserver.local"
 
+# Snapclient environment variables
+ENV SNAPCLIENT_ENABLED="1"
+ENV SNAPCLIENT_HOST="localhost"
+ENV SNAPCLIENT_SOUNDCARD="hw:Headphones"
+ENV SNAPCLIENT_LATENCY="0"
 
 # Install steps
 # - install and configure supervisord
@@ -177,6 +182,7 @@ RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq \
 
 # Copy supervisord configuration and shairport-sync config
 COPY --chown=snapcast:snapcast config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
+COPY --chown=snapcast:snapcast config/supervisord/snapclient.ini /app/supervisord/snapclient.ini
 COPY --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
 
 # Copy setup and utility scripts
