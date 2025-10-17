@@ -50,7 +50,22 @@ if [ ! -p "$METADATA_PIPE" ]; then
 fi
 
 # Use the metadata reader to parse the binary format
-shairport-sync-metadata-reader < "$METADATA_PIPE" | while read -r line; do
+# Try to find the metadata reader in common locations
+METADATA_READER=""
+for path in /usr/bin/shairport-sync-metadata-reader /usr/local/bin/shairport-sync-metadata-reader shairport-sync-metadata-reader; do
+    if command -v $path &> /dev/null; then
+        METADATA_READER=$path
+        echo "[INFO] Found metadata reader at: $METADATA_READER"
+        break
+    fi
+done
+
+if [ -z "$METADATA_READER" ]; then
+    echo "[ERROR] shairport-sync-metadata-reader not found. Please install shairport-sync package."
+    exit 1
+fi
+
+$METADATA_READER < "$METADATA_PIPE" | while read -r line; do
     # Parse the line format: "key=value"
     if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
         key="${BASH_REMATCH[1]}"
