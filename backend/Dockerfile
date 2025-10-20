@@ -32,6 +32,7 @@ RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib \
   && mkdir -p /app/build \
   && CONF_OPTIONS="\
       --with-stdout \
+      --with-pipe \
       --with-dbus-interface \
       --with-avahi \
       --with-ssl=openssl \
@@ -169,7 +170,7 @@ ENV SNAPCLIENT_LATENCY="0"
 # Install steps
 # - install and configure supervisord
 # - copy runtime scripts
-RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq bc shairport-sync \
+RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq bc \
   && mkdir -p /app/config /app/data /app/certs/ /tmp/metadata \
   #
   # Create metadata pipes and directories
@@ -192,7 +193,7 @@ COPY --chown=snapcast:snapcast config/supervisord/snapclient.ini /app/supervisor
 COPY --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
 
 # Copy setup and utility scripts
-COPY --chown=snapcast:snapcast --chmod=0775 setup.sh gen-certs.sh healthcheck.sh process-airplay-metadata.sh /app/
+COPY --chown=snapcast:snapcast --chmod=0775 setup.sh gen-certs.sh healthcheck.sh process-airplay-metadata.sh handle-playback-controls.sh /app/
 
 USER snapcast:snapcast
 WORKDIR /app

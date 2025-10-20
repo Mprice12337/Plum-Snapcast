@@ -90,26 +90,31 @@ $(echo -e "${SNAPCAST_CONFIG}")
 
 [logging]
 EOF
-fi
 
-#
-# SETUP HTTPS
-#
-if [ "${HTTPS_ENABLED}" -eq 1 ]; then
-    # Generate CA and certificates
-    if [ "${SKIP_CERT_GENERATION}" -eq 0 ]; then
-        /bin/bash /app/gen-certs.sh
+    #
+    # SETUP HTTPS - Only modify if we just created the config
+    #
+    if [ "${HTTPS_ENABLED}" -eq 1 ]; then
+        # Generate CA and certificates
+        if [ "${SKIP_CERT_GENERATION}" -eq 0 ]; then
+            /bin/bash /app/gen-certs.sh
+        fi
+
+        # Enable HTTPS in configuration
+        sed -i 's|^#\?ssl_enabled =.*|ssl_enabled = true|' /tmp/snapserver.conf
+        sed -i 's|^#\?certificate =.*|certificate = /app/certs/snapserver.crt|' /tmp/snapserver.conf
+        sed -i 's|^#\?certificate_key =.*|certificate_key = /app/certs/snapserver.key|' /tmp/snapserver.conf
     fi
 
-    # Enable HTTPS in configuration
-    sed -i 's|^#\?ssl_enabled =.*|ssl_enabled = true|' /tmp/snapserver.conf
-    sed -i 's|^#\?certificate =.*|certificate = /app/certs/snapserver.crt|' /tmp/snapserver.conf
-    sed -i 's|^#\?certificate_key =.*|certificate_key = /app/certs/snapserver.key|' /tmp/snapserver.conf
+    # Copy created configuration to config directory
+    cp /tmp/snapserver.conf /app/config/snapserver.conf
+    rm /tmp/snapserver.conf
+else
+    # Config already exists, just generate certs if needed
+    if [ "${HTTPS_ENABLED}" -eq 1 ] && [ "${SKIP_CERT_GENERATION}" -eq 0 ]; then
+        /bin/bash /app/gen-certs.sh
+    fi
 fi
-
-# Copy created configuration to config directory, if not existent yet
-cp -n /tmp/snapserver.conf /app/config/snapserver.conf
-rm /tmp/snapserver.conf
 
 #
 # SETUP SHAIRPORT-SYNC AIRPLAY-2
