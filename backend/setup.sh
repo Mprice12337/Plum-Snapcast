@@ -90,11 +90,6 @@ $(echo -e "${SNAPCAST_CONFIG}")
 
 [logging]
 EOF
-
-    # Add custom source if specified
-    if [ ! -z "${SNAPCAST_CONFIG}" ]; then
-        sed -i "/^\[stream\]/a ${SNAPCAST_CONFIG}" /tmp/snapserver.conf
-    fi
 fi
 
 #
