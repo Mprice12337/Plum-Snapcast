@@ -87,16 +87,6 @@ All services run in a single Docker container managed by supervisord for simplif
 
 ```
 ├── backend/
-│   ├── config/
-│   │   ├── supervisord/
-│   │   │   ├── supervisord.ini    # Main services config
-│   │   │   └── snapclient.ini     # Snapclient audio output config
-│   │   └── shairport-sync.conf    # AirPlay configuration
-│   ├── scripts/                    # Helper scripts
-│   ├── .github/workflows/          # CI/CD workflows
-│   ├── Dockerfile                  # Container build definition
-│   ├── setup.sh                   # Container initialization script
-│   └── process-airplay-metadata.sh # Metadata extraction
 ├── frontend/
 │   ├── components/                # React components
 │   ├── services/                  # API services
@@ -105,12 +95,7 @@ All services run in a single Docker container managed by supervisord for simplif
 │   ├── types.ts                   # TypeScript definitions
 │   └── vite.config.ts            # Vite configuration
 ├── docker/
-│   ├── docker-compose.yml        # Production compose
-│   └── .env                      # Environment variables
 ├── scripts/
-│   ├── setup-audio.sh           # Raspberry Pi audio setup
-│   ├── build-and-push.sh        # Build & deploy to Docker Hub
-│   └── deploy-on-pi.sh          # Deploy on Raspberry Pi
 └── CLAUDE.md                     # This file
 ```
 
@@ -120,20 +105,7 @@ All services run in a single Docker container managed by supervisord for simplif
 
 When deploying to a new Raspberry Pi, these steps must be performed once:
 
-#### 1. Audio Configuration
-```bash
-cd ~/Plum-Snapcast
-chmod +x scripts/setup-audio.sh
-sudo scripts/setup-audio.sh
-```
-
-This script:
-- Forces audio output to 3.5mm jack via `raspi-config`
-- Creates ALSA configuration at `/etc/asound.conf`
-- Sets initial volume to 80%
-- Creates `plum-volume` helper command
-
-#### 2. Docker Audio Permissions
+#### 1. Docker Audio Permissions
 Create a udev rule so Docker containers can access `/dev/snd`:
 
 ```bash
