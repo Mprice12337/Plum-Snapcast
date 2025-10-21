@@ -1,13 +1,25 @@
 import {snapcastService} from './snapcastService';
 import type {Client, Stream, Track} from '../types';
 
+// Fixed album art placeholder SVG - clean music note icon
+const DEFAULT_ALBUM_ART = `data:image/svg+xml;base64,${btoa(`
+<svg width="400" height="400" viewBox="0 0 400 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="400" height="400" fill="#2A2A36"/>
+  <circle cx="160" cy="280" r="35" fill="#F0F0F0"/>
+  <circle cx="260" cy="260" r="35" fill="#F0F0F0"/>
+  <rect x="155" y="150" width="10" height="130" fill="#F0F0F0"/>
+  <rect x="255" y="130" width="10" height="130" fill="#F0F0F0"/>
+  <path d="M165 150 L265 130 L265 180 L165 200 Z" fill="#F0F0F0"/>
+</svg>
+`)}`;
+
 // Default fallback data for when no metadata is available
 const createDefaultTrack = (): Track => ({
     id: 'unknown',
     title: 'Unknown Track',
     artist: 'Unknown Artist',
     album: 'Unknown Album',
-    albumArtUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+',
+    albumArtUrl: DEFAULT_ALBUM_ART,
     duration: 0,
 });
 
@@ -118,17 +130,24 @@ const convertSnapcastStreamToStream = (snapStream: any): Stream => {
         title: metadata.title || 'Unknown Track',
         artist: formatArtist(metadata.artist),
         album: metadata.album || 'Unknown Album',
-        albumArtUrl: metadata.artUrl || createDefaultTrack().albumArtUrl,
+        albumArtUrl: metadata.artUrl || DEFAULT_ALBUM_ART,
         duration: metadata.duration || 0,
     };
+
+    // Determine stream status - if playing or has valid metadata, it's playing
+    const hasMetadata = metadata.title && metadata.title !== 'Unknown Track';
+    const isPlaying = snapStream.status === 'playing' ||
+        (snapStream.properties?.playbackStatus?.toLowerCase() === 'playing');
+    const streamStatus = (isPlaying || hasMetadata) ? 'playing' : 'idle';
 
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
         currentTrack: track,
-        isPlaying: snapStream.status === 'playing',
+        isPlaying: isPlaying,
         progress: 0, // Snapcast doesn't provide current position in the status
+        status: streamStatus,
     };
 };
 
@@ -137,6 +156,7 @@ const convertSnapcastClientToClient = (snapClient: any, groupStreamId: string | 
     name: snapClient.config?.name || snapClient.host?.name || 'Unknown Device',
     currentStreamId: groupStreamId,
     volume: snapClient.config?.volume?.percent || 0,
+    isConnected: snapClient.connected !== false, // Track connection status
 });
 
 export const getSnapcastData = async (): Promise<{
@@ -195,6 +215,7 @@ export const getSnapcastData = async (): Promise<{
                 name: 'My Device (You)',
                 currentStreamId: initialStreams.length > 0 ? initialStreams[0].id : null,
                 volume: 75,
+                isConnected: true,
             });
         }
 
@@ -222,12 +243,14 @@ export const getSnapcastData = async (): Promise<{
                 currentTrack: createDefaultTrack(),
                 isPlaying: false,
                 progress: 0,
+                status: 'idle',
             }],
             initialClients: [{
                 id: 'client-1',
                 name: 'My Device (You)',
                 currentStreamId: 'error-stream',
                 volume: 75,
+                isConnected: true,
             }],
             serverName: 'Snapcast Server (Disconnected)'
         };
