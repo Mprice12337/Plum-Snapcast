@@ -3,6 +3,11 @@
 # Prepare dbus-daemon environment
 dbus-uuidgen --ensure
 
+# Allow FIFO writes in /tmp (required for shairport-sync pipe)
+if [ -w /proc/sys/fs/protected_fifos ]; then
+    echo 0 > /proc/sys/fs/protected_fifos 2>/dev/null || true
+fi
+
 # Create metadata directories and pipes if they don't exist
 mkdir -p /tmp/metadata
 if [ ! -p /tmp/shairport-sync-metadata ]; then
@@ -46,7 +51,7 @@ fi
 SNAPCAST_CONFIG=""
 
 if [ "${PIPE_CONFIG_ENABLED}" -eq 1 ]; then
-    SNAPCAST_CONFIG="${SNAPCAST_CONFIG}source = pipe://${PIPE_PATH}?name=${PIPE_SOURCE_NAME}&mode=${PIPE_MODE}${PIPE_EXTRA_ARGS}\n"
+    SNAPCAST_CONFIG="${SNAPCAST_CONFIG}source = pipe://${PIPE_PATH}?name=${PIPE_SOURCE_NAME}&mode=${PIPE_MODE}&sampleformat=44100:16:2&codec=flac${PIPE_EXTRA_ARGS}\n"
 fi
 
 # NOTE: We do NOT add an airplay:// source here because shairport-sync outputs to the pipe

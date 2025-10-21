@@ -18,6 +18,7 @@ services:
       SPOTIFY_DEVICE_NAME: "${SPOTIFY_DEVICE_NAME:-Snapcast}"
       SPOTIFY_BITRATE: "${SPOTIFY_BITRATE:-320}"
       PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
+      PIPE_EXTRA_ARGS: "&sampleformat=44100:16:2&codec=flac"
       HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
       # Snapclient configuration (integrated in same container)
       SNAPCLIENT_ENABLED: "${SNAPCLIENT_ENABLED:-1}"
