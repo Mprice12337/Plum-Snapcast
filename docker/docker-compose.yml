@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  snapcast-server:
+    build:
+      context: ../backend
+      dockerfile: ../backend/Dockerfile
+    image: ${DOCKER_USERNAME}/plum-snapcast-server:latest
+    container_name: plum-snapcast-server
+    hostname: snapserver
+    network_mode: host
+    privileged: true
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+      - AIRPLAY_CONFIG_ENABLED=1
+      - AIRPLAY_SOURCE_NAME=Airplay
+      - AIRPLAY_DEVICE_NAME=${AIRPLAY_DEVICE_NAME:-Plum Audio}
+      - SPOTIFY_CONFIG_ENABLED=${SPOTIFY_CONFIG_ENABLED:-0}
+      - SPOTIFY_SOURCE_NAME=Spotify
+      - SPOTIFY_DEVICE_NAME=${SPOTIFY_DEVICE_NAME:-Snapcast}
+      - SPOTIFY_BITRATE=320
+      - SPOTIFY_ACCESS_TOKEN=${SPOTIFY_ACCESS_TOKEN:-}
+      - PIPE_CONFIG_ENABLED=0
+      - META_CONFIG_ENABLED=0
+      - HTTPS_ENABLED=1
+      - SKIP_CERT_GENERATION=0
+      - CERT_SERVER_CN=snapserver
+      - CERT_SERVER_DNS=snapserver snapserver.local ${HOSTNAME:-raspberrypi}.local
+      - SNAPCLIENT_ENABLED=1
+      - SNAPCLIENT_HOST=localhost
+      - SNAPCLIENT_SOUNDCARD=${SNAPCLIENT_SOUNDCARD:-hw:Headphones}
+      - SNAPCLIENT_LATENCY=0
+    volumes:
+      - snapcast-config:/app/config
+      - snapcast-data:/app/data
+      - snapcast-certs:/app/certs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1780/jsonrpc"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  snapcast-frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../frontend/Dockerfile
+    image: ${DOCKER_USERNAME}/plum-snapcast-frontend:latest
+    container_name: plum-snapcast-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    environment:
+      - SNAPCAST_HOST=${SNAPCAST_HOST:-localhost}
+      - SNAPCAST_PORT=${SNAPCAST_PORT:-1704}
+    restart: unless-stopped
+    depends_on:
+      - snapcast-server
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  snapcast-config:
+    driver: local
+  snapcast-data:
+    driver: local
+  snapcast-certs:
+    driver: local
