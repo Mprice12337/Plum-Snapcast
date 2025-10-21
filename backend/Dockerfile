@@ -87,6 +87,9 @@ ENV SNAPCLIENT_HOST="localhost"
 ENV SNAPCLIENT_SOUNDCARD="plughw:1,0"
 ENV SNAPCLIENT_LATENCY="0"
 
+# Supervisord configuration path (so supervisorctl knows where to find it)
+ENV SUPERVISOR_CONF="/app/supervisord/supervisord.conf"
+
 # Install supervisor and utilities
 RUN apk add --no-cache supervisor tzdata curl bash openssl
 
@@ -101,7 +104,8 @@ RUN addgroup -g 1000 snapcast \
 # Copy supervisord main config
 RUN cp /etc/supervisord.conf /app/supervisord/supervisord.conf \
     && sed -i 's|^files =.*|files = /app/supervisord/*.ini|g' /app/supervisord/supervisord.conf \
-    && sed -i 's|/run/supervisord.sock|/run/supervisord/supervisord.sock|g' /app/supervisord/supervisord.conf
+    && sed -i 's|/run/supervisord.sock|/run/supervisord/supervisord.sock|g' /app/supervisord/supervisord.conf \
+    && ln -sf /app/supervisord/supervisord.conf /etc/supervisord.conf
 
 # Copy configuration files
 COPY --chown=snapcast:snapcast config/supervisord/*.ini /app/supervisord/
@@ -120,4 +124,4 @@ EXPOSE 1704-1705 1780 1788 3689 5000 6000-6009/udp 5353
 HEALTHCHECK CMD ["/bin/sh", "/app/healthcheck.sh"]
 
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["/app/setup.sh && /usr/bin/supervisord -c /app/supervisord/supervisord.conf"]
+CMD ["set -e && /app/setup.sh && exec /usr/bin/supervisord -c /app/supervisord/supervisord.conf"]
