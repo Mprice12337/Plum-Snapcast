@@ -93,6 +93,7 @@ docker buildx build \
     --tag "$DOCKER_USERNAME/$BACKEND_IMAGE_NAME:$TAG" \
     --push \
     --progress=plain \
+    --no-cache \
     backend/
 
 log "✅ Backend build complete: $DOCKER_USERNAME/$BACKEND_IMAGE_NAME:$TAG"
@@ -109,6 +110,7 @@ docker buildx build \
     --build-arg VITE_SNAPCAST_WEB_PORT=1780 \
     --push \
     --progress=plain \
+    --no-cache \
     frontend/
 
 log "✅ Frontend build complete: $DOCKER_USERNAME/$FRONTEND_IMAGE_NAME:$TAG"
