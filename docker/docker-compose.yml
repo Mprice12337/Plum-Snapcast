@@ -1,37 +1,43 @@
+version: '3.8'
+
 services:
   snapserver:
     image: ${DOCKER_USERNAME}/plum-snapcast-server:${TAG:-latest}
     container_name: plum-snapcast-server
     restart: always
-    privileged: true  # Required for audio device access
-    group_add:
-      - audio  # Add container to audio group
+    network_mode: host  # Required for AirPlay mDNS discovery
+    privileged: true    # Simplest way to ensure audio access
     environment:
-      TZ: "${TZ:-America/Los_Angeles}"
+      TZ: "${TZ:-America/New_York}"
+      
+      # AirPlay Configuration
       AIRPLAY_CONFIG_ENABLED: "1"
-      AIRPLAY_SOURCE_NAME: "Airplay"
-      AIRPLAY_DEVICE_NAME: "Plum Audio"
-      PIPE_CONFIG_ENABLED: "1"
-      PIPE_SOURCE_NAME: "Airplay"
-      PIPE_PATH: "/tmp/snapfifo"
-      PIPE_MODE: "read"
-      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-1}"
-      SPOTIFY_SOURCE_NAME: "Spotify"
-      SPOTIFY_DEVICE_NAME: "Plum Audio"
+      AIRPLAY_DEVICE_NAME: "${AIRPLAY_DEVICE_NAME:-Plum Audio}"
+      
+      # Snapclient Configuration (integrated audio output)
+      SNAPCLIENT_ENABLED: "1"
+      SNAPCLIENT_HOST: "localhost"
+      SNAPCLIENT_SOUNDCARD: "plughw:1,0"  # RPi 4 headphone jack
+      SNAPCLIENT_LATENCY: "0"
+      
+      # HTTPS Configuration
+      HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
+      SKIP_CERT_GENERATION: "${SKIP_CERT_GENERATION:-0}"
+      
+      # Optional: Spotify (disabled by default)
+      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-0}"
+      SPOTIFY_DEVICE_NAME: "${SPOTIFY_DEVICE_NAME:-Plum Audio}"
       SPOTIFY_BITRATE: "320"
       SPOTIFY_ACCESS_TOKEN: "${SPOTIFY_ACCESS_TOKEN:-}"
-      HTTPS_ENABLED: "1"
-      # Snapclient configuration (integrated in same container)
-      SNAPCLIENT_ENABLED: "${SNAPCLIENT_ENABLED:-1}"
-      SNAPCLIENT_HOST: "localhost"
-      SNAPCLIENT_SOUNDCARD: "${AUDIO_DEVICE:-hw:Headphones}"
-      SNAPCLIENT_LATENCY: "${AUDIO_LATENCY:-0}"
-    network_mode: host
+      
+      # Disable unnecessary features
+      PIPE_CONFIG_ENABLED: "0"
+      META_CONFIG_ENABLED: "0"
     volumes:
       - snapcast-data:/app/data/
       - snapcast-config:/app/config/
       - snapcast-certs:/app/certs/
-      - /tmp:/tmp
+      - /tmp:/tmp  # Share /tmp for FIFO pipes
     devices:
       - /dev/snd:/dev/snd  # Audio device access
 
@@ -46,8 +52,5 @@ services:
 
 volumes:
   snapcast-data:
-    driver: local
   snapcast-config:
-    driver: local
   snapcast-certs:
-    driver: local

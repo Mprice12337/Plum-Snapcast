@@ -1,53 +1,43 @@
+version: '3.8'
+
 services:
-  snapserver:
-    image: ${DOCKER_USERNAME}/plum-snapcast-server:${TAG:-latest}
-    container_name: plum-snapcast-server
-    restart: always
-    privileged: true
-    group_add:
-      - audio  # Add container to audio group
+  snapcast:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        AIRPLAY_VERSION: "1"  # Use AirPlay 1 for simplicity
+    container_name: snapcast-dev
+    restart: unless-stopped
     network_mode: host
+    privileged: true
     environment:
-      TZ: "${TZ:-UTC}"
-      AIRPLAY_CONFIG_ENABLED: "${AIRPLAY_CONFIG_ENABLED:-1}"
-      AIRPLAY_SOURCE_NAME: "${AIRPLAY_SOURCE_NAME:-Airplay}"
-      AIRPLAY_DEVICE_NAME: "${AIRPLAY_DEVICE_NAME:-Snapcast}"
-      AIRPLAY_PORT: "${AIRPLAY_PORT:-5000}"
-      SPOTIFY_CONFIG_ENABLED: "${SPOTIFY_CONFIG_ENABLED:-0}"
-      SPOTIFY_SOURCE_NAME: "${SPOTIFY_SOURCE_NAME:-Spotify}"
-      SPOTIFY_DEVICE_NAME: "${SPOTIFY_DEVICE_NAME:-Snapcast}"
-      SPOTIFY_BITRATE: "${SPOTIFY_BITRATE:-320}"
-      PIPE_CONFIG_ENABLED: "${PIPE_CONFIG_ENABLED:-0}"
-      PIPE_EXTRA_ARGS: "&sampleformat=44100:16:2&codec=flac"
-      HTTPS_ENABLED: "${HTTPS_ENABLED:-1}"
-      # Snapclient configuration (integrated in same container)
-      SNAPCLIENT_ENABLED: "${SNAPCLIENT_ENABLED:-1}"
+      TZ: "America/New_York"
+      
+      # AirPlay Configuration (enabled by default)
+      AIRPLAY_CONFIG_ENABLED: "1"
+      AIRPLAY_DEVICE_NAME: "Snapcast Dev"
+      
+      # Snapclient Configuration (integrated audio output)
+      SNAPCLIENT_ENABLED: "1"
       SNAPCLIENT_HOST: "localhost"
-      SNAPCLIENT_SOUNDCARD: "${AUDIO_DEVICE:-hw:Headphones}"
-      SNAPCLIENT_LATENCY: "${AUDIO_LATENCY:-0}"
+      SNAPCLIENT_SOUNDCARD: "plughw:1,0"  # RPi 4 headphone jack
+      SNAPCLIENT_LATENCY: "0"
+      
+      # HTTPS (disabled for dev to simplify)
+      HTTPS_ENABLED: "0"
+      
+      # Disable unnecessary features
+      SPOTIFY_CONFIG_ENABLED: "0"
+      PIPE_CONFIG_ENABLED: "0"
+      META_CONFIG_ENABLED: "0"
     volumes:
       - snapcast-data:/app/data/
       - snapcast-config:/app/config/
-      - snapcast-certs:/app/certs/
-      - /tmp:/tmp  # Share /tmp for pipes
+      - /tmp:/tmp
     devices:
-      - /dev/snd:/dev/snd  # Audio device access
-    cap_add:
-      - SYS_NICE  # For audio priority
-
-  frontend:
-    image: ${DOCKER_USERNAME}/plum-snapcast-frontend:${TAG:-latest}
-    container_name: plum-snapcast-frontend
-    restart: always
-    ports:
-      - "3000:80"
-    depends_on:
-      - snapserver
+      - /dev/snd:/dev/snd
 
 volumes:
   snapcast-data:
-    driver: local
   snapcast-config:
-    driver: local
-  snapcast-certs:
-    driver: local
