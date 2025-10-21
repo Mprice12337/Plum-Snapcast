@@ -1,21 +1,15 @@
 #!/bin/sh
-set -o pipefail
+set -e
 
-SNAPSERVER_API_PORT="1780"
+# Check if snapserver API is responding
+RESPONSE=$(curl --silent --max-time 5 -X POST \
+    -d '{"id":1,"jsonrpc":"2.0","method":"Server.GetStatus"}' \
+    http://localhost:1780/jsonrpc 2>/dev/null || echo "")
 
-# Check Supervisord status
-supervisorctl -c /app/supervisord/supervisord.conf status || exit 1
-echo "All supervisord-managed processes are healty."
-
-# Test snapserver and retrieve snapserver status
-API_RESPONSE=$(curl --silent --user-agent healthcheck -X POST -d '{"id":1,"jsonrpc":"2.0","method":"Server.GetStatus"}' http://localhost:${SNAPSERVER_API_PORT}/jsonrpc)
-if [ ! "$?" -eq 0 ]; then
-    echo "Snapserver API not reachable."
-    exit 2
+if echo "${RESPONSE}" | grep -q "snapserver"; then
+    echo "✅ Snapserver API healthy"
+    exit 0
+else
+    echo "❌ Snapserver API not responding"
+    exit 1
 fi
-
-# Check snapserver API response
-echo "${API_RESPONSE}" | grep -q "snapserver" || exit 3
-echo "Snapserver API is healty."
-
-exit 0

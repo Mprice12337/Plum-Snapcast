@@ -1,215 +1,123 @@
-FROM alpine:edge AS snapcast
+# Stage 1: Build base snapcast image with server and client
+FROM alpine:edge AS snapcast-base
 
-# Install snapcast-server, snapcast-client, and snapweb
-RUN apk add --no-cache --upgrade snapcast-server snapcast-client \
-  # Install latest release of snapweb
-  # (its not shipped with snapcast-server, and not shipped with snapcast since 0.28.0 anymore)
-  && wget -O /tmp/snapweb.zip https://github.com/badaix/snapweb/releases/latest/download/snapweb.zip \
-  && unzip -o /tmp/snapweb.zip -d /usr/share/snapserver/snapweb/ \
-  && rm /tmp/snapweb.zip \
-  # Install dependencies for snapserver metadata scripts
-  # (located in https://github.com/badaix/snapcast/blob/develop/server/etc/plug-ins/meta_mopidy.py and meta_mpd.py)
-  && apk add --no-cache --upgrade py3-websocket-client py3-mpd2 py3-musicbrainzngs py3-gobject3 py3-dbus py3-requests
+# Install snapcast server, client, and web interface
+RUN apk add --no-cache snapcast-server snapcast-client \
+    && wget -O /tmp/snapweb.zip https://github.com/badaix/snapweb/releases/latest/download/snapweb.zip \
+    && unzip -o /tmp/snapweb.zip -d /usr/share/snapserver/snapweb/ \
+    && rm /tmp/snapweb.zip
 
-# Expose Ports
-## Snapcast Ports: 1704-1705 1780 1788
-EXPOSE 1704-1705 1780 1788
+# Stage 2: Add AirPlay support via shairport-sync
+FROM snapcast-base AS snapcast-airplay
 
-ENTRYPOINT [ "/usr/bin/snapserver" ]
+# Install runtime dependencies for shairport-sync
+RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib alsa-lib alsa-utils
 
-
-###
-# Airplay with Shairport-Sync
-# - install shairport-sync runtime dependencies
-# - build shairport sync
-FROM snapcast AS snapcast-airport
-ARG AIRPLAY_VERSION
-ENV BUILD_AIRPLAY_VERSION="${AIRPLAY_VERSION:-1}"
-
-RUN apk add --no-cache dbus popt openssl soxr avahi libconfig glib \
-    alsa-lib alsa-utils \
-  && apk add --no-cache --upgrade --virtual .build-deps git build-base autoconf automake libtool popt-dev openssl-dev soxr-dev avahi-dev libconfig-dev glib-dev \
-  && mkdir -p /app/build \
-  && CONF_OPTIONS="\
-      --with-stdout \
-      --with-pipe \
-      --with-dbus-interface \
-      --with-avahi \
-      --with-ssl=openssl \
-      --with-soxr \
-      --with-metadata" \
-  #
-  # Airplay-2 support: If enabled, add and build its dependencies
-  && if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then \
-    CONF_OPTIONS="${CONF_OPTIONS} --with-airplay-2" \
-    && apk add --no-cache --upgrade ffmpeg libplist libsodium libgcrypt libuuid \
-    && apk add --no-cache --upgrade --virtual .build-deps-airplay2 ffmpeg-dev libplist-dev libsodium-dev libgcrypt-dev xxd \
+# Install build dependencies and build shairport-sync from source
+RUN apk add --no-cache --virtual .build-deps \
+        git build-base autoconf automake libtool \
+        popt-dev openssl-dev soxr-dev avahi-dev libconfig-dev \
+        glib-dev alsa-lib-dev \
+    && mkdir -p /app/build \
     && cd /app/build \
-    && git clone https://github.com/mikebrady/nqptp.git nqptp.git \
-    && cd nqptp.git \
+    && git clone --depth 1 --branch master https://github.com/mikebrady/shairport-sync.git \
+    && cd shairport-sync \
     && autoreconf -fi \
     && ./configure \
-    && make \
+        --prefix=/usr/local \
+        --with-alsa \
+        --with-soxr \
+        --with-avahi \
+        --with-ssl=openssl \
+        --with-stdout \
+        --with-pipe \
+        --with-dbus-interface \
+        --with-metadata \
+        --sysconfdir=/etc \
+    && make -j$(nproc) \
     && make install \
-  ; fi \
-  #
-  # Build shairport-sync with metadata, stdout and pipe support (apk repo is without)
-  && cd /app/build \
-  && git clone https://github.com/mikebrady/shairport-sync.git shairport-sync.git \
-  && cd shairport-sync.git \
-  && autoreconf -i -f \
-  && ./configure ${CONF_OPTIONS} \
-  && make \
-  && make install \
-  #
-  # Cleanup build environment
-  && apk del --purge .build-deps \
-  && if [ "${BUILD_AIRPLAY_VERSION}" -eq 2 ]; then apk del --purge .build-deps-airplay2; fi \
-  && rm -rf /app/build \
-  #
-  # Configure dbus-daemon and avahi-daemon for rootless execution
-  # Ref: https://gnaneshkunal.github.io/avahi-docker-non-root.html
-  && echo "<busconfig><listen>unix:path=/var/run/dbus/system_bus_socket</listen></busconfig>" > /usr/share/dbus-1/session.d/custom.conf \
-  && mkdir -p /var/run/dbus \
-  && chmod 777 /var/run/dbus/ \
-  && chmod 777 /etc/avahi/avahi-daemon.conf \
-  && mkdir -p /var/run/avahi-daemon \
-  && chown avahi:avahi /var/run/avahi-daemon \
-  && chmod 777 /var/run/avahi-daemon \
-  #
-  # Fix audio group GID to match Raspberry Pi host (GID 29)
-  # This is critical for snapclient to access /dev/snd devices
-  && delgroup audio 2>/dev/null || true \
-  && addgroup -g 29 audio \
-  && addgroup snapcast audio
+    && cd / \
+    && rm -rf /app/build \
+    && apk del .build-deps
 
+# Stage 3: Add Spotify support (optional - we'll disable by default)
+FROM snapcast-airplay AS snapcast-spotify
 
-###
-# Build and install librespot (Spotify Client)
-# Use a stable release instead of dev branch
-FROM snapcast-airport AS snapcast-airport-spotify
+RUN apk add --no-cache --virtual .build-deps \
+        git cargo build-base alsa-lib-dev protobuf-dev \
+    && mkdir -p /app/build \
+    && cd /app/build \
+    && git clone --depth 1 --branch v0.5.0 https://github.com/librespot-org/librespot.git \
+    && cd librespot \
+    && cargo build --release --no-default-features --features alsa-backend \
+    && cp target/release/librespot /usr/local/bin/ \
+    && cd / \
+    && rm -rf /app/build /root/.cargo \
+    && apk del .build-deps
 
-# Install rust and build dependencies
-RUN apk add --no-cache --upgrade --virtual .build-deps \
-    git \
-    libconfig-dev \
-    cargo \
-    build-base \
-    cmake \
-    rust-bindgen \
-    clang18-dev \
-    curl \
-    pkgconfig \
-    openssl-dev \
-    alsa-lib-dev
+# Stage 4: Final image with all components
+FROM snapcast-spotify AS final
 
-# Create build directory and download librespot stable release
-RUN mkdir -p /app/build && cd /app/build \
-  && git clone https://github.com/librespot-org/librespot.git librespot.git \
-  && cd librespot.git \
-  && git checkout v0.7.1
-
-# Build librespot with better error handling and simpler target
-WORKDIR /app/build/librespot.git
-RUN cargo build \
-    --release \
-    --no-default-features \
-    --features "with-avahi,native-tls" \
-    && cp ./target/release/librespot /usr/sbin/ \
-    && chmod +x /usr/sbin/librespot
-
-# Cleanup build environment
-RUN cargo clean \
-  && apk del --purge .build-deps \
-  && rm -rf /app/build ~/.cargo
-
-WORKDIR /
-
-###
-# Create final image
-FROM --platform=linux/arm64 snapcast-airport-spotify AS snapcast-extended
-
+# Set environment variables with defaults
 ENV TZ="Etc/UTC"
-
+ENV AIRPLAY_CONFIG_ENABLED="1"
+ENV AIRPLAY_SOURCE_NAME="Airplay"
+ENV AIRPLAY_DEVICE_NAME="Snapcast"
+ENV SPOTIFY_CONFIG_ENABLED="0"
+ENV SPOTIFY_SOURCE_NAME="Spotify"
+ENV SPOTIFY_DEVICE_NAME="Snapcast"
+ENV SPOTIFY_BITRATE="320"
+ENV SPOTIFY_ACCESS_TOKEN=""
 ENV PIPE_CONFIG_ENABLED="0"
 ENV PIPE_SOURCE_NAME="Pipe"
 ENV PIPE_PATH="/tmp/snapfifo"
 ENV PIPE_MODE="create"
-ENV PIPE_EXTRA_ARGS=""
-
-ENV AIRPLAY_CONFIG_ENABLED="1"
-ENV AIRPLAY_SOURCE_NAME="Airplay"
-ENV AIRPLAY_DEVICE_NAME="Snapcast"
-ENV AIRPLAY_EXTRA_ARGS=""
-
-ENV SPOTIFY_CONFIG_ENABLED="0"
-ENV SPOTIFY_SOURCE_NAME="Spotify"
-ENV SPOTIFY_ACCESS_TOKEN=""
-ENV SPOTIFY_DEVICE_NAME="Snapcast"
-ENV SPOTIFY_BITRATE="320"
-ENV SPOTIFY_EXTRA_ARGS=""
-
 ENV META_CONFIG_ENABLED="0"
 ENV META_SOURCE_NAME="Mix"
 ENV META_SOURCES=""
-ENV META_EXTRA_ARGS=""
-
 ENV SOURCE_CUSTOM=""
-
 ENV HTTPS_ENABLED="1"
 ENV SKIP_CERT_GENERATION="0"
 ENV CERT_SERVER_CN="snapserver"
 ENV CERT_SERVER_DNS="snapserver snapserver.local"
 
-# Snapclient environment variables
+# Snapclient configuration for local audio output
 ENV SNAPCLIENT_ENABLED="1"
 ENV SNAPCLIENT_HOST="localhost"
-ENV SNAPCLIENT_SOUNDCARD="hw:Headphones"
+ENV SNAPCLIENT_SOUNDCARD="plughw:1,0"
 ENV SNAPCLIENT_LATENCY="0"
 
-# Install steps
-# - install and configure supervisord
-# - copy runtime scripts
-RUN apk add --no-cache --upgrade supervisor tzdata curl bash jq bc \
-  && mkdir -p /app/config /app/data /app/certs/ /tmp/metadata \
-  #
-  # Create metadata pipes and directories
-  && mkfifo /tmp/shairport-sync-metadata \
-  && chmod 666 /tmp/shairport-sync-metadata \
-  #
-  # Create configuration and environment for supervisord
-  && mkdir -p /app/supervisord /run/supervisord /var/log/supervisord \
-  && cp /etc/supervisord.conf /app/supervisord/supervisord.conf \
-  && sed -i 's/^files =.*/files = \/app\/supervisord\/*.ini/g' /app/supervisord/supervisord.conf \
-  && sed -i 's/\/run\/supervisord.sock/\/run\/supervisord\/supervisord.sock/g' /app/supervisord/supervisord.conf \
-  && chown -R snapcast:snapcast /run/supervisord /app/supervisord /var/log/supervisord /tmp/metadata \
-  #
-  # Configure app directory owner
-  && chown -R snapcast:snapcast /app
+# Install supervisor and utilities
+RUN apk add --no-cache supervisor tzdata curl bash openssl
 
-# Copy supervisord configuration and shairport-sync config
-COPY --chown=snapcast:snapcast config/supervisord/supervisord.ini /app/supervisord/snapcast.ini
-COPY --chown=snapcast:snapcast config/supervisord/snapclient.ini /app/supervisord/snapclient.ini
-COPY --chown=snapcast:snapcast config/shairport-sync.conf /app/config/shairport-sync.conf
+# Create non-root user and required directories
+RUN addgroup -g 1000 snapcast \
+    && adduser -D -u 1000 -G snapcast -s /bin/sh snapcast \
+    && mkdir -p /app/config /app/data /app/certs /tmp/metadata \
+    && mkdir -p /app/supervisord /run/supervisord /var/log/supervisord \
+    && mkdir -p /var/run/dbus \
+    && chown -R snapcast:snapcast /app /tmp/metadata /var/log/supervisord /run/supervisord
 
-# Copy setup and utility scripts
-COPY --chown=snapcast:snapcast --chmod=0775 setup.sh gen-certs.sh healthcheck.sh process-airplay-metadata.sh handle-playback-controls.sh /app/
+# Copy supervisord main config
+RUN cp /etc/supervisord.conf /app/supervisord/supervisord.conf \
+    && sed -i 's|^files =.*|files = /app/supervisord/*.ini|g' /app/supervisord/supervisord.conf \
+    && sed -i 's|/run/supervisord.sock|/run/supervisord/supervisord.sock|g' /app/supervisord/supervisord.conf
+
+# Copy configuration files
+COPY --chown=snapcast:snapcast config/supervisord/*.ini /app/supervisord/
+COPY --chown=snapcast:snapcast --chmod=0755 setup.sh gen-certs.sh healthcheck.sh /app/
 
 USER snapcast:snapcast
 WORKDIR /app
-VOLUME [ "/app/config", "/app/data", "/app/certs" ]
 
-HEALTHCHECK CMD [ "/bin/sh", "/app/healthcheck.sh" ]
+VOLUME ["/app/config", "/app/data", "/app/certs"]
 
-# Expose Ports
-## Snapcast Ports:   1704-1705 1780 1788
-## Shairport-Sync:
-### Ref: https://github.com/mikebrady/shairport-sync/blob/master/TROUBLESHOOTING.md#ufw-firewall-blocking-ports-commonly-includes-raspberry-pi
-### AirPlay ports:    3689/tcp 5000/tcp 6000-6009/udp
-### AirPlay-2 ports:  3689/tcp 5000/tcp 6000-6009/udp 7000/tcp for airplay, 319-320/udp for NQPTP
-### Avahi ports:      5353
-EXPOSE 1704-1705 1780 1788 3689 5000 6000-6009/udp 7000 319-320/udp 5353
+# Expose ports
+# Snapcast: 1704-1705 (control/audio), 1780 (HTTP), 1788 (HTTPS)
+# AirPlay: 3689, 5000, 6000-6009/udp, 5353 (mDNS)
+EXPOSE 1704-1705 1780 1788 3689 5000 6000-6009/udp 5353
 
-# Run start script
-ENTRYPOINT [ "/bin/sh", "-c" ]
-CMD [ "/app/setup.sh && /usr/bin/supervisord -c /app/supervisord/supervisord.conf" ]
+HEALTHCHECK CMD ["/bin/sh", "/app/healthcheck.sh"]
+
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["/app/setup.sh && /usr/bin/supervisord -c /app/supervisord/supervisord.conf"]
