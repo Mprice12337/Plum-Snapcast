@@ -31,6 +31,11 @@ RUN apk add --no-cache \
     libuuid \
     ffmpeg-libs
 
+# Add edge repository and install snapcast
+RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
+    apk update && \
+    apk add --no-cache snapcast-server@edge snapcast-client@edge
+
 # Install build dependencies
 RUN apk add --no-cache --virtual .build-deps \
     git \
@@ -52,16 +57,20 @@ RUN apk add --no-cache --virtual .build-deps \
     mbedtls-dev \
     soxr-dev \
     libgcrypt-dev \
-    ffmpeg-dev \
-    cargo \
-    rust
+    ffmpeg-dev
 
-# Install snapcast from Alpine edge repository
-RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
-    apk add --no-cache snapcast-server@edge snapcast-client@edge
+# Build Apple ALAC library first (required for shairport-sync)
+WORKDIR /tmp
+RUN git clone --depth 1 https://github.com/mikebrady/alac.git && \
+    cd alac && \
+    autoreconf -fi && \
+    ./configure && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf alac
 
 # Build shairport-sync with metadata and AirPlay support
-WORKDIR /tmp
 RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-sync.git && \
     cd shairport-sync && \
     autoreconf -fi && \
@@ -80,19 +89,25 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
     cd .. && \
     rm -rf shairport-sync
 
-# Build librespot for Spotify Connect
-RUN cargo install librespot --no-default-features --features "alsa-backend with-dns-sd" && \
-    cp /root/.cargo/bin/librespot /usr/local/bin/
+# Cleanup build dependencies and temporary files
+# Use --force-broken-world because we have packages from @edge that aren't in the cache
+RUN apk del --force-broken-world .build-deps && \
+    rm -rf /var/cache/apk/* /tmp/*
 
-# Cleanup build dependencies
-RUN apk del .build-deps && \
-    rm -rf /root/.cargo /var/cache/apk/* /tmp/*
+# Fix the world file to only include packages we want to keep
+RUN apk fix
 
-# Create snapcast user and group (GID 29 matches audio group on Raspberry Pi)
-RUN addgroup -g 29 audio || true && \
-    addgroup -g 1000 snapcast && \
-    adduser -D -u 1000 -G snapcast -h /app snapcast && \
-    addgroup snapcast audio
+# Try to install librespot from Alpine edge repository (optional)
+RUN apk add --no-cache librespot@edge 2>/dev/null || \
+    echo "Spotify Connect (librespot) not available - continuing without it"
+
+# Configure users and groups
+# The snapcast package may have already created a snapcast user/group, so handle gracefully
+RUN addgroup -g 29 audio 2>/dev/null || true && \
+    (addgroup -g 1000 snapcast 2>/dev/null || true) && \
+    (adduser -D -u 1000 -G snapcast -h /app snapcast 2>/dev/null || \
+     (deluser snapcast 2>/dev/null && adduser -D -u 1000 -G snapcast -h /app snapcast)) && \
+    addgroup snapcast audio 2>/dev/null || true
 
 # Create required directories
 RUN mkdir -p \
