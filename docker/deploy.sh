@@ -46,7 +46,7 @@ docker-compose up -d
 
 # Wait for services to be healthy
 echo -e "${YELLOW}Waiting for services to be healthy...${NC}"
-sleep 10
+sleep 90
 
 # Check status
 echo ""
