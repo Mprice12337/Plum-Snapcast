@@ -115,9 +115,8 @@ RUN deluser snapcast 2>/dev/null || true && \
     addgroup -S shairport-sync 2>/dev/null || true && \
     adduser -S -G shairport-sync -H -s /sbin/nologin shairport-sync 2>/dev/null || true
 
-# Configure Avahi to disable D-Bus (simpler and more reliable in containers)
-RUN sed -i 's/#enable-dbus=yes/enable-dbus=no/g' /etc/avahi/avahi-daemon.conf && \
-    mkdir -p /run/avahi-daemon && \
+# Configure Avahi with D-Bus enabled (required for shairport-sync mDNS advertisement)
+RUN mkdir -p /run/avahi-daemon && \
     chown avahi:avahi /run/avahi-daemon && \
     chmod 755 /run/avahi-daemon
 

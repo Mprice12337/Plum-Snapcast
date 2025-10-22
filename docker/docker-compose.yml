@@ -38,7 +38,8 @@ services:
       - snapcast-certs:/app/certs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:1780/jsonrpc"]
+      # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:1780/ >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
