@@ -9,7 +9,6 @@ interface SyncedDevicesProps {
     onStreamChange: (clientId: string, streamId: string | null) => void;
     onGroupVolumeAdjust: (direction: 'up' | 'down') => void;
     onGroupMute: () => void;
-    isStreaming: boolean; // New prop to indicate if actively streaming
 }
 
 const SyncedDevice: React.FC<{
@@ -106,31 +105,19 @@ export const SyncedDevices: React.FC<SyncedDevicesProps> = ({
                                                                 onVolumeChange,
                                                                 onStreamChange,
                                                                 onGroupVolumeAdjust,
-                                                                onGroupMute,
-                                                                isStreaming
+                                                                onGroupMute
                                                             }) => {
-    // Only show if there are synced devices AND we're actively streaming
-    if (clients.length === 0 || !isStreaming) {
+    if (clients.length === 0) {
         return null;
     }
 
     return (
         <div className="mt-6 pt-6 border-t border-[var(--border-color)]">
-            <div className="flex items-center gap-2 mb-4">
-                <i className="fas fa-tower-broadcast text-[var(--accent-color)]"></i>
-                <h3 className="text-xl font-bold text-[var(--text-primary)]">
-                    Streaming to {clients.length} {clients.length === 1 ? 'Device' : 'Devices'}
-                </h3>
-            </div>
+            <h3 className="text-xl font-bold text-[var(--text-secondary)] mb-4">Synced Devices</h3>
             <div className="space-y-2">
                 {clients.map(client => (
-                    <SyncedDevice
-                        key={client.id}
-                        client={client}
-                        streams={streams}
-                        onVolumeChange={onVolumeChange}
-                        onStreamChange={onStreamChange}
-                    />
+                    <SyncedDevice key={client.id} client={client} streams={streams} onVolumeChange={onVolumeChange}
+                                  onStreamChange={onStreamChange}/>
                 ))}
             </div>
             <GroupVolumeControl onAdjust={onGroupVolumeAdjust} onMute={onGroupMute}/>

@@ -25,7 +25,6 @@ const App: React.FC = () => {
         integrations: {
             airplay: true,
             spotifyConnect: false,
-            bluetooth: false, // Added bluetooth
             snapcast: true,
             visualizer: false,
         },
@@ -67,19 +66,7 @@ const App: React.FC = () => {
     const myClient = clients.find(c => c.id === MY_CLIENT_ID) || clients[0];
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
-    // Determine if there's an active audio source
-    const hasActiveSource = currentStream?.isPlaying ?? false;
-
-    // Get synced devices (other clients on same stream, excluding yourself)
-    const syncedClients = clients.filter(c =>
-        c.id !== myClient?.id &&
-        c.currentStreamId === myClient?.currentStreamId &&
-        c.isConnected !== false // Only include connected clients
-    );
-
-    // Check if we're streaming out to other devices
-    const isStreamingOut = hasActiveSource && syncedClients.length > 0;
-
+    const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
     const otherClients = clients.filter(c => c.currentStreamId !== myClient?.currentStreamId);
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
@@ -123,7 +110,7 @@ const App: React.FC = () => {
         const interval = setInterval(syncStreamStatus, 5000);
 
         return () => clearInterval(interval);
-    }, [currentStream?.id, currentStream?.isPlaying]);
+    }, [currentStream?.id]);
 
     useEffect(() => {
         let isCancelled = false;
@@ -175,10 +162,23 @@ const App: React.FC = () => {
                     setConnectionError('Unable to connect to Snapcast server. Please check your configuration.');
                 }
             } catch (error) {
-                console.error('Error fetching data:', error);
-                setConnectionError('Failed to load Snapcast data. Please check your connection.');
+                if (isCancelled) return;
+
+                console.error('Error loading Snapcast data:', error);
+                setConnectionError('Failed to load Snapcast data');
+
+                // Set minimal fallback data
+                setStreams([]);
+                setClients([{
+                    id: 'client-1',
+                    name: 'My Device (You)',
+                    currentStreamId: null,
+                    volume: 75,
+                }]);
             } finally {
-                setIsLoading(false);
+                if (!isCancelled) {
+                    setIsLoading(false);
+                }
             }
         };
 
@@ -187,371 +187,206 @@ const App: React.FC = () => {
         return () => {
             isCancelled = true;
         };
-    }, []);
+    }, []); // Empty dependency array - only run once
 
-    const handleVolumeChange = useCallback(async (newVolume: number) => {
-        if (!myClient) return;
-
-        const oldVolume = myClient.volume;
+    const handleVolumeChange = async (clientId: string, volume: number) => {
+        // Update local state immediately for responsiveness
         setClients(prevClients =>
-            prevClients.map(c => c.id === myClient.id ? {...c, volume: newVolume} : c)
+            prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
         );
 
+        // Send to Snapcast server
         try {
-            await snapcastService.setClientVolume(myClient.id, newVolume);
+            await snapcastService.setClientVolume(clientId, volume);
+            console.log(`Successfully set volume for client ${clientId} to ${volume}%`);
         } catch (error) {
-            console.error('Failed to set volume:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === myClient.id ? {...c, volume: oldVolume} : c)
-            );
+            console.error(`Failed to set volume for client ${clientId}:`, error);
+            // Could revert local state here if needed
         }
-    }, [myClient]);
+    };
 
-    const handleStreamChange = useCallback(async (streamId: string | null) => {
-        if (!myClient) return;
-
-        const groupId = clientGroupMap[myClient.id];
-        if (!groupId) {
-            console.error('Could not find group for client:', myClient.id);
-            return;
-        }
-
-        const oldStreamId = myClient.currentStreamId;
-        setClients(prevClients =>
-            prevClients.map(c => c.id === myClient.id ? {...c, currentStreamId: streamId} : c)
-        );
-
-        try {
-            if (streamId) {
-                await snapcastService.setGroupStream(groupId, streamId);
-            }
-        } catch (error) {
-            console.error('Failed to change stream:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === myClient.id ? {...c, currentStreamId: oldStreamId} : c)
-            );
-        }
-    }, [myClient, clientGroupMap]);
-
-    const handleSyncedClientVolumeChange = useCallback(async (clientId: string, newVolume: number) => {
-        const client = clients.find(c => c.id === clientId);
-        if (!client) return;
-
-        const oldVolume = client.volume;
-        setClients(prevClients =>
-            prevClients.map(c => c.id === clientId ? {...c, volume: newVolume} : c)
-        );
-
-        try {
-            await snapcastService.setClientVolume(clientId, newVolume);
-        } catch (error) {
-            console.error('Failed to set synced client volume:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === clientId ? {...c, volume: oldVolume} : c)
-            );
-        }
-    }, [clients]);
-
-    const handleSyncedClientStreamChange = useCallback(async (clientId: string, streamId: string | null) => {
-        const groupId = clientGroupMap[clientId];
-        if (!groupId) {
-            console.error('Could not find group for client:', clientId);
-            return;
-        }
-
-        const client = clients.find(c => c.id === clientId);
-        if (!client) return;
-
-        const oldStreamId = client.currentStreamId;
-        setClients(prevClients =>
-            prevClients.map(c => c.id === clientId ? {...c, currentStreamId: streamId} : c)
-        );
-
-        try {
-            if (streamId) {
-                await snapcastService.setGroupStream(groupId, streamId);
-            }
-        } catch (error) {
-            console.error('Failed to change synced client stream:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === clientId ? {...c, currentStreamId: oldStreamId} : c)
-            );
-        }
-    }, [clients, clientGroupMap]);
-
-    const handleOtherClientVolumeChange = useCallback(async (clientId: string, newVolume: number) => {
-        const client = clients.find(c => c.id === clientId);
-        if (!client) return;
-
-        const oldVolume = client.volume;
-        setClients(prevClients =>
-            prevClients.map(c => c.id === clientId ? {...c, volume: newVolume} : c)
-        );
-
-        try {
-            await snapcastService.setClientVolume(clientId, newVolume);
-        } catch (error) {
-            console.error('Failed to set other client volume:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === clientId ? {...c, volume: oldVolume} : c)
-            );
-        }
-    }, [clients]);
-
-    const handleOtherClientStreamChange = useCallback(async (clientId: string, streamId: string | null) => {
-        const groupId = clientGroupMap[clientId];
-        if (!groupId) {
-            console.error('Could not find group for client:', clientId);
-            return;
-        }
-
-        const client = clients.find(c => c.id === clientId);
-        if (!client) return;
-
-        const oldStreamId = client.currentStreamId;
-        setClients(prevClients =>
-            prevClients.map(c => c.id === clientId ? {...c, currentStreamId: streamId} : c)
-        );
-
-        try {
-            if (streamId) {
-                await snapcastService.setGroupStream(groupId, streamId);
-            }
-        } catch (error) {
-            console.error('Failed to change other client stream:', error);
-            setClients(prevClients =>
-                prevClients.map(c => c.id === clientId ? {...c, currentStreamId: oldStreamId} : c)
-            );
-        }
-    }, [clients, clientGroupMap]);
-
-    const handleGroupVolumeAdjust = useCallback(async (direction: 'up' | 'down') => {
-        if (!myClient || !currentStream) return;
-
-        const groupClients = clients.filter(c => c.currentStreamId === myClient.currentStreamId);
+    const handleGroupVolumeAdjust = (streamId: string | null, direction: 'up' | 'down') => {
+        if (!streamId) return;
         const adjustment = direction === 'up' ? VOLUME_STEP : -VOLUME_STEP;
 
-        const oldVolumes = groupClients.map(c => ({id: c.id, volume: c.volume}));
-
-        setClients(prevClients =>
-            prevClients.map(c => {
-                if (c.currentStreamId === myClient.currentStreamId) {
-                    return {...c, volume: Math.max(0, Math.min(100, c.volume + adjustment))};
-                }
-                return c;
-            })
-        );
-
-        try {
-            await Promise.all(
-                groupClients.map(c =>
-                    snapcastService.setClientVolume(c.id, Math.max(0, Math.min(100, c.volume + adjustment)))
-                )
-            );
-        } catch (error) {
-            console.error('Failed to adjust group volume:', error);
-            setClients(prevClients =>
-                prevClients.map(c => {
-                    const oldVol = oldVolumes.find(ov => ov.id === c.id);
-                    return oldVol ? {...c, volume: oldVol.volume} : c;
-                })
-            );
-        }
-    }, [myClient, currentStream, clients]);
-
-    const handleGroupMute = useCallback(async () => {
-        if (!myClient || !currentStream) return;
-
-        const groupId = clientGroupMap[myClient.id];
-        if (!groupId) return;
-
-        const groupClients = clients.filter(c => c.currentStreamId === myClient.currentStreamId);
-
-        const currentlyMuted = preMuteGroupVolumes[groupId] !== undefined;
-
-        if (currentlyMuted) {
-            const savedVolumes = preMuteGroupVolumes[groupId];
-            setClients(prevClients =>
-                prevClients.map(c => {
-                    if (c.currentStreamId === myClient.currentStreamId && savedVolumes[c.id] !== undefined) {
-                        return {...c, volume: savedVolumes[c.id]};
-                    }
-                    return c;
-                })
-            );
-
-            try {
-                await Promise.all(
-                    Object.entries(savedVolumes).map(([clientId, volume]) =>
-                        snapcastService.setClientVolume(clientId, volume)
-                    )
-                );
-                setPreMuteGroupVolumes(prev => {
-                    const next = {...prev};
-                    delete next[groupId];
-                    return next;
-                });
-            } catch (error) {
-                console.error('Failed to unmute group:', error);
-            }
-        } else {
-            const volumeMap: Record<string, number> = {};
-            groupClients.forEach(c => {
-                volumeMap[c.id] = c.volume;
-            });
-
-            setPreMuteGroupVolumes(prev => ({...prev, [groupId]: volumeMap}));
-
-            setClients(prevClients =>
-                prevClients.map(c =>
-                    c.currentStreamId === myClient.currentStreamId ? {...c, volume: 0} : c
-                )
-            );
-
-            try {
-                await Promise.all(
-                    groupClients.map(c => snapcastService.setClientVolume(c.id, 0))
-                );
-            } catch (error) {
-                console.error('Failed to mute group:', error);
-                setPreMuteGroupVolumes(prev => {
-                    const next = {...prev};
-                    delete next[groupId];
-                    return next;
-                });
-            }
-        }
-    }, [myClient, currentStream, clients, clientGroupMap, preMuteGroupVolumes]);
-
-    const handleOtherGroupVolumeAdjust = useCallback(async (streamId: string, direction: 'up' | 'down') => {
-        const groupClients = clients.filter(c => c.currentStreamId === streamId);
-        const adjustment = direction === 'up' ? VOLUME_STEP : -VOLUME_STEP;
-
-        const oldVolumes = groupClients.map(c => ({id: c.id, volume: c.volume}));
-
-        setClients(prevClients =>
-            prevClients.map(c => {
+        setClients(prevClients => {
+            const updatedClients = prevClients.map(c => {
                 if (c.currentStreamId === streamId) {
-                    return {...c, volume: Math.max(0, Math.min(100, c.volume + adjustment))};
+                    const newVolume = Math.max(0, Math.min(100, c.volume + adjustment));
+
+                    // Send volume change to server for this client
+                    snapcastService.setClientVolume(c.id, newVolume).catch(error => {
+                        console.error(`Failed to adjust volume for client ${c.id}:`, error);
+                    });
+
+                    return {...c, volume: newVolume};
                 }
                 return c;
-            })
-        );
+            });
 
-        try {
-            await Promise.all(
-                groupClients.map(c =>
-                    snapcastService.setClientVolume(c.id, Math.max(0, Math.min(100, c.volume + adjustment)))
-                )
-            );
-        } catch (error) {
-            console.error('Failed to adjust other group volume:', error);
+            return updatedClients;
+        });
+    };
+
+    const handleGroupMute = (streamId: string | null) => {
+        if (!streamId) return;
+
+        const isMuted = preMuteGroupVolumes[streamId];
+
+        if (isMuted) {
             setClients(prevClients =>
                 prevClients.map(c => {
-                    const oldVol = oldVolumes.find(ov => ov.id === c.id);
-                    return oldVol ? {...c, volume: oldVol.volume} : c;
-                })
-            );
-        }
-    }, [clients]);
+                    if (c.currentStreamId === streamId && preMuteGroupVolumes[streamId][c.id] !== undefined) {
+                        const restoredVolume = preMuteGroupVolumes[streamId][c.id];
 
-    const handleOtherGroupMute = useCallback(async (streamId: string) => {
-        const groupClients = clients.filter(c => c.currentStreamId === streamId);
-        const currentlyMuted = preMuteGroupVolumes[streamId] !== undefined;
+                        // Unmute on server
+                        snapcastService.setClientVolume(c.id, restoredVolume, false).catch(error => {
+                            console.error(`Failed to unmute client ${c.id}:`, error);
+                        });
 
-        if (currentlyMuted) {
-            const savedVolumes = preMuteGroupVolumes[streamId];
-            setClients(prevClients =>
-                prevClients.map(c => {
-                    if (c.currentStreamId === streamId && savedVolumes[c.id] !== undefined) {
-                        return {...c, volume: savedVolumes[c.id]};
+                        return {...c, volume: restoredVolume};
                     }
                     return c;
                 })
             );
-
-            try {
-                await Promise.all(
-                    Object.entries(savedVolumes).map(([clientId, volume]) =>
-                        snapcastService.setClientVolume(clientId, volume)
-                    )
-                );
-                setPreMuteGroupVolumes(prev => {
-                    const next = {...prev};
-                    delete next[streamId];
-                    return next;
-                });
-            } catch (error) {
-                console.error('Failed to unmute other group:', error);
-            }
+            setPreMuteGroupVolumes(prev => {
+                const newPreMuteVolumes = {...prev};
+                delete newPreMuteVolumes[streamId];
+                return newPreMuteVolumes;
+            });
         } else {
-            const volumeMap: Record<string, number> = {};
-            groupClients.forEach(c => {
-                volumeMap[c.id] = c.volume;
+            const volumesToStore: Record<string, number> = {};
+            clients.forEach(c => {
+                if (c.currentStreamId === streamId) {
+                    volumesToStore[c.id] = c.volume;
+                }
             });
 
-            setPreMuteGroupVolumes(prev => ({...prev, [streamId]: volumeMap}));
+            if (Object.keys(volumesToStore).length > 0) {
+                setPreMuteGroupVolumes(prev => ({
+                    ...prev,
+                    [streamId]: volumesToStore,
+                }));
+            }
 
             setClients(prevClients =>
-                prevClients.map(c =>
-                    c.currentStreamId === streamId ? {...c, volume: 0} : c
-                )
+                prevClients.map(c => {
+                    if (c.currentStreamId === streamId) {
+                        // Mute on server
+                        snapcastService.setClientVolume(c.id, 0, true).catch(error => {
+                            console.error(`Failed to mute client ${c.id}:`, error);
+                        });
+
+                        return {...c, volume: 0};
+                    }
+                    return c;
+                })
             );
-
-            try {
-                await Promise.all(
-                    groupClients.map(c => snapcastService.setClientVolume(c.id, 0))
-                );
-            } catch (error) {
-                console.error('Failed to mute other group:', error);
-                setPreMuteGroupVolumes(prev => {
-                    const next = {...prev};
-                    delete next[streamId];
-                    return next;
-                });
-            }
         }
-    }, [clients, preMuteGroupVolumes]);
+    };
 
-    const handlePlayPause = useCallback(async () => {
-        if (!currentStream) return;
+    const handleStreamChange = async (clientId: string, streamId: string | null) => {
+        console.log(`Changing stream for client ${clientId} to ${streamId}`);
 
+        // Update local state immediately for responsiveness
+        setClients(prevClients =>
+            prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
+        );
+
+        // Send to Snapcast server
         try {
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-            if (currentStream.isPlaying && capabilities.canPause) {
-                await snapcastService.pauseStream(currentStream.id);
-                setStreams(prevStreams =>
-                    prevStreams.map(s =>
-                        s.id === currentStream.id ? {...s, isPlaying: false} : s
-                    )
-                );
-            } else if (!currentStream.isPlaying && capabilities.canPlay) {
-                await snapcastService.playStream(currentStream.id);
-                setStreams(prevStreams =>
-                    prevStreams.map(s =>
-                        s.id === currentStream.id ? {...s, isPlaying: true} : s
-                    )
-                );
+            const groupId = clientGroupMap[clientId];
+            if (groupId && streamId) {
+                await snapcastService.setGroupStream(groupId, streamId);
+                console.log(`Successfully changed group ${groupId} to stream ${streamId}`);
+            } else if (groupId && streamId === null) {
+                // For setting to "no stream", we might need a different approach
+                // This depends on how Snapcast handles idle streams
+                console.log(`Setting group ${groupId} to idle (stream: null)`);
+                // You might need to set it to a default idle stream instead
+            } else {
+                console.warn(`Could not find group for client ${clientId}`);
             }
         } catch (error) {
-            console.error('Play/Pause failed:', error);
-        }
-    }, [currentStream]);
+            console.error(`Failed to change stream for client ${clientId}:`, error);
 
-    const handleSkip = useCallback(async (direction: 'next' | 'prev') => {
+            // Revert local state on error
+            setClients(prevClients =>
+                prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
+            );
+        }
+    };
+
+    const handlePlayPause = async () => {
         if (!currentStream) return;
 
+        console.log('Play/Pause button clicked for stream:', currentStream.id);
+
         try {
+            // Check stream capabilities first
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-            if (direction === 'next' && capabilities.canGoNext) {
-                await snapcastService.nextTrack(currentStream.id);
-            } else if (direction === 'prev' && capabilities.canGoPrevious) {
-                await snapcastService.previousTrack(currentStream.id);
+            console.log('Stream capabilities:', capabilities);
+
+            if (currentStream.isPlaying) {
+                // Try to pause
+                if (capabilities.canPause) {
+                    await snapcastService.pauseStream(currentStream.id);
+                    setStreams(prevStreams =>
+                        prevStreams.map(s =>
+                            s.id === currentStream.id ? {...s, isPlaying: false} : s
+                        )
+                    );
+                    console.log(`Successfully paused stream ${currentStream.id}`);
+                } else {
+                    console.log(`Stream ${currentStream.id} does not support pause`);
+                }
+            } else {
+                // Try to play
+                if (capabilities.canPlay) {
+                    await snapcastService.playStream(currentStream.id);
+                    setStreams(prevStreams =>
+                        prevStreams.map(s =>
+                            s.id === currentStream.id ? {...s, isPlaying: true} : s
+                        )
+                    );
+                    console.log(`Successfully started playing stream ${currentStream.id}`);
+                } else {
+                    console.log(`Stream ${currentStream.id} does not support play`);
+                }
+            }
+        } catch (error) {
+            console.error(`Playback control failed for stream ${currentStream.id}:`, error);
+        }
+    };
+
+    const handleSkip = async (direction: 'next' | 'prev') => {
+        if (!currentStream) return;
+
+        console.log(`Skip ${direction} button clicked for stream:`, currentStream.id);
+
+        try {
+            // Check stream capabilities first
+            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+
+            if (direction === 'next') {
+                if (capabilities.canGoNext) {
+                    await snapcastService.nextTrack(currentStream.id);
+                    console.log(`Successfully skipped to next track for stream ${currentStream.id}`);
+                } else {
+                    console.log(`Stream ${currentStream.id} does not support next track`);
+                }
+            } else {
+                if (capabilities.canGoPrevious) {
+                    await snapcastService.previousTrack(currentStream.id);
+                    console.log(`Successfully skipped to previous track for stream ${currentStream.id}`);
+                } else {
+                    console.log(`Stream ${currentStream.id} does not support previous track`);
+                }
             }
         } catch (error) {
             console.error(`Skip ${direction} failed for stream ${currentStream.id}:`, error);
         }
-    }, [currentStream]);
+    };
 
     // Debug logging
     console.log('App render state:', {
@@ -588,85 +423,102 @@ const App: React.FC = () => {
     }
 
     return (
-        <div className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8">
-            <div className="max-w-4xl mx-auto">
-                {/* Header */}
-                <div className="flex items-center justify-between mb-8">
-                    <div>
-                        <h1 className="text-3xl font-bold">Plum Audio</h1>
-                        <p className="text-sm text-[var(--text-muted)] mt-1">{serverName}</p>
+        <div
+            className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8 flex flex-col">
+            {connectionError && (
+                <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
+                    <div className="flex items-center">
+                        <i className="fas fa-exclamation-triangle text-red-400 mr-2"></i>
+                        <span className="text-red-400">{connectionError}</span>
                     </div>
-                    <button
-                        onClick={() => setIsSettingsOpen(true)}
-                        className="w-10 h-10 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
-                        aria-label="Settings"
-                    >
-                        <i className="fas fa-cog"></i>
-                    </button>
+                </div>
+            )}
+
+            <div className="w-full max-w-7xl mx-auto flex-grow grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+                <div className="lg:col-span-2 bg-[var(--bg-secondary)] p-6 rounded-2xl shadow-2xl flex flex-col">
+                    <div className="border-b border-[var(--border-color)] pb-4">
+                        <div className="flex items-center justify-between mb-4">
+                            <h1 className="text-xl font-semibold text-[var(--accent-color)]">{serverName}</h1>
+                            <div className="flex items-center text-sm text-[var(--text-muted)]">
+                                <i className="fas fa-broadcast-tower mr-2"></i>
+                                <span>Connected</span>
+                            </div>
+                        </div>
+                        <StreamSelector
+                            streams={streams}
+                            currentStreamId={myClient.currentStreamId}
+                            onSelectStream={(streamId) => handleStreamChange(myClient.id, streamId)}
+                        />
+                    </div>
+                    {currentStream ? (
+                        <div className="flex-grow flex flex-col">
+                            <div className="space-y-6">
+                                <NowPlaying stream={currentStream}/>
+                                <PlayerControls
+                                    stream={currentStream}
+                                    volume={myClient.volume}
+                                    onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                                    onPlayPause={handlePlayPause}
+                                    onSkip={handleSkip}
+                                />
+                            </div>
+                            <SyncedDevices
+                                clients={syncedClients}
+                                streams={streams}
+                                onVolumeChange={handleVolumeChange}
+                                onStreamChange={handleStreamChange}
+                                onGroupVolumeAdjust={(dir) => handleGroupVolumeAdjust(myClient.currentStreamId, dir)}
+                                onGroupMute={() => handleGroupMute(myClient.currentStreamId)}
+                            />
+                        </div>
+                    ) : (
+                        <div
+                            className="flex-grow flex flex-col items-center justify-center bg-[var(--bg-secondary)] rounded-lg p-8 h-full min-h-[300px]">
+                            <i className="fas fa-music text-6xl text-[var(--text-muted)] mb-4"></i>
+                            <h2 className="text-2xl font-semibold text-[var(--text-secondary)]">No Stream Selected</h2>
+                            <p className="text-[var(--text-muted)] mt-2">Choose a source to begin.</p>
+                        </div>
+                    )}
                 </div>
 
-                {connectionError && (
-                    <div className="mb-4 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200">
-                        <i className="fas fa-exclamation-triangle mr-2"></i>
-                        {connectionError}
-                    </div>
-                )}
-
-                {/* Main Card */}
-                <div className="bg-[var(--bg-secondary)] rounded-xl shadow-2xl overflow-hidden mb-6">
-                    <NowPlaying
-                        stream={currentStream || null}
-                        settings={settings}
-                        hasActiveSource={hasActiveSource}
-                    />
-
-                    <div className="px-6 pb-6">
-                        <PlayerControls
-                            stream={currentStream || null}
-                            volume={myClient?.volume || 0}
-                            onVolumeChange={handleVolumeChange}
-                            onPlayPause={handlePlayPause}
-                            onSkip={handleSkip}
-                            hasActiveSource={hasActiveSource}
-                        />
-
-                        <SyncedDevices
-                            clients={syncedClients}
+                <div className="space-y-8">
+                    <div className="bg-[var(--bg-secondary)] p-6 rounded-2xl shadow-2xl">
+                        <h2 className="text-2xl font-bold text-[var(--accent-color)] border-b border-[var(--border-color)] pb-4 mb-4">Other
+                            Streams &amp; Devices</h2>
+                        <ClientManager
+                            clients={otherClients}
                             streams={streams}
-                            onVolumeChange={handleSyncedClientVolumeChange}
-                            onStreamChange={handleSyncedClientStreamChange}
+                            myClientStreamId={myClient.currentStreamId}
+                            onVolumeChange={handleVolumeChange}
+                            onStreamChange={handleStreamChange}
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
-                            isStreaming={isStreamingOut}
                         />
                     </div>
                 </div>
-
-                {/* Stream Selector and Client Manager */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <StreamSelector
-                        streams={streams}
-                        currentStreamId={currentStream?.id || null}
-                        onSelectStream={handleStreamChange}
-                    />
-                    <ClientManager
-                        clients={otherClients}
-                        streams={streams}
-                        myClientStreamId={myClient?.currentStreamId || null}
-                        onVolumeChange={handleOtherClientVolumeChange}
-                        onStreamChange={handleOtherClientStreamChange}
-                        onGroupVolumeAdjust={handleOtherGroupVolumeAdjust}
-                        onGroupMute={handleOtherGroupMute}
-                    />
-                </div>
             </div>
-
-            <SettingsModal
-                isOpen={isSettingsOpen}
-                onClose={() => setIsSettingsOpen(false)}
-                settings={settings}
-                onSettingsChange={setSettings}
-            />
+            <footer
+                className="w-full max-w-7xl mx-auto grid grid-cols-3 items-center text-[var(--text-muted)] mt-12 text-sm">
+                <div>{/* Spacer */}</div>
+                <p className="text-center">Sync Audio Controller &copy; 2024</p>
+                <div className="flex justify-end">
+                    <button
+                        onClick={() => setIsSettingsOpen(true)}
+                        className="p-2 rounded-full hover:bg-[var(--bg-secondary)]"
+                        aria-label="Open Settings"
+                    >
+                        <i className="fas fa-cog text-lg"></i>
+                    </button>
+                </div>
+            </footer>
+            {isSettingsOpen && (
+                <SettingsModal
+                    settings={settings}
+                    onSettingsChange={setSettings}
+                    onClose={() => setIsSettingsOpen(false)}
+                />
+            )}
         </div>
     );
 };

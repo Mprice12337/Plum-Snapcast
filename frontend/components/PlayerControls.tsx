@@ -2,20 +2,18 @@ import React from 'react';
 import type {Stream} from '../types';
 
 interface PlayerControlsProps {
-    stream: Stream | null;
+    stream: Stream;
     volume: number;
     onVolumeChange: (volume: number) => void;
     onPlayPause: () => void;
     onSkip: (direction: 'next' | 'prev') => void;
-    hasActiveSource: boolean;
 }
 
-const ControlButton: React.FC<{
-    onClick?: () => void;
-    icon: string;
-    size?: 'sm' | 'md' | 'lg';
-    disabled?: boolean;
-}> = ({onClick, icon, size = 'md', disabled = false}) => {
+const ControlButton: React.FC<{ onClick?: () => void; icon: string; size?: 'sm' | 'md' | 'lg' }> = ({
+                                                                                                        onClick,
+                                                                                                        icon,
+                                                                                                        size = 'md'
+                                                                                                    }) => {
     const sizeClasses = {
         sm: 'w-10 h-10 text-base',
         md: 'w-12 h-12 text-lg',
@@ -24,8 +22,7 @@ const ControlButton: React.FC<{
     return (
         <button
             onClick={onClick}
-            disabled={disabled}
-            className={`flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200 ${sizeClasses[size]} ${disabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+            className={`flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200 ${sizeClasses[size]}`}
             aria-label={icon.includes('play') ? 'Play' : icon.includes('pause') ? 'Pause' : icon.includes('backward') ? 'Previous track' : 'Next track'}
         >
             <i className={`fas ${icon}`}></i>
@@ -38,35 +35,19 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
                                                                   volume,
                                                                   onVolumeChange,
                                                                   onPlayPause,
-                                                                  onSkip,
-                                                                  hasActiveSource
+                                                                  onSkip
                                                               }) => {
     const volumePercentage = volume;
     const sliderStyle = {
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
-    const isDisabled = !stream || !hasActiveSource;
-
     return (
         <div className="flex flex-col md:flex-row items-center justify-between gap-6 px-4">
             <div className="flex items-center gap-4 order-2 md:order-1">
-                <ControlButton
-                    icon="fa-backward-step"
-                    onClick={() => onSkip('prev')}
-                    disabled={isDisabled}
-                />
-                <ControlButton
-                    icon={stream?.isPlaying ? 'fa-pause' : 'fa-play'}
-                    onClick={onPlayPause}
-                    size="lg"
-                    disabled={isDisabled}
-                />
-                <ControlButton
-                    icon="fa-forward-step"
-                    onClick={() => onSkip('next')}
-                    disabled={isDisabled}
-                />
+                <ControlButton icon="fa-backward-step" onClick={() => onSkip('prev')}/>
+                <ControlButton icon={stream.isPlaying ? 'fa-pause' : 'fa-play'} onClick={onPlayPause} size="lg"/>
+                <ControlButton icon="fa-forward-step" onClick={() => onSkip('next')}/>
             </div>
 
             <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2">

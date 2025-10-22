@@ -14,7 +14,6 @@ export interface Stream {
     currentTrack: Track;
     isPlaying: boolean;
     progress: number; // in seconds
-    status?: 'idle' | 'playing'; // Add status field to track stream state
 }
 
 export interface Client {
@@ -22,7 +21,6 @@ export interface Client {
     name: string;
     currentStreamId: string | null;
     volume: number; // 0-100
-    isConnected?: boolean; // Track if client is actively connected
 }
 
 export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red';
@@ -32,7 +30,6 @@ export interface Settings {
     integrations: {
         airplay: boolean;
         spotifyConnect: boolean;
-        bluetooth: boolean; // Add bluetooth integration
         snapcast: boolean;
         visualizer: boolean;
     };
