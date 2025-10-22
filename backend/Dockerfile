@@ -102,24 +102,25 @@ RUN apk add --no-cache librespot@edge 2>/dev/null || \
     echo "Spotify Connect (librespot) not available - continuing without it"
 
 # Configure users and groups
-# The snapcast package may have already created a snapcast user/group, so handle gracefully
-RUN addgroup -g 29 audio 2>/dev/null || true && \
-    (addgroup -g 1000 snapcast 2>/dev/null || true) && \
-    (adduser -D -u 1000 -G snapcast -h /app snapcast 2>/dev/null || \
-     (deluser snapcast 2>/dev/null && adduser -D -u 1000 -G snapcast -h /app snapcast)) && \
+# First remove any existing snapcast user/group from the snapcast package
+# Then create them with the correct IDs
+RUN deluser snapcast 2>/dev/null || true && \
+    delgroup snapcast 2>/dev/null || true && \
+    addgroup -g 1000 snapcast && \
+    adduser -D -u 1000 -G snapcast -h /app snapcast && \
     addgroup snapcast audio 2>/dev/null || true
 
 # Create required directories
+# Note: /tmp/snapfifo is created by setup.sh as a FIFO pipe, not a directory
 RUN mkdir -p \
     /app/config \
     /app/data \
     /app/certs \
     /app/scripts \
     /app/supervisord \
-    /tmp/snapfifo \
     /var/run/dbus \
     /var/run/avahi-daemon \
-    && chown -R snapcast:snapcast /app /tmp/snapfifo
+    && chown -R snapcast:snapcast /app
 
 # Copy configuration and scripts
 COPY config/supervisord/ /app/supervisord/
