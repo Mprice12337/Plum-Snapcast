@@ -102,13 +102,24 @@ RUN apk add --no-cache librespot@edge 2>/dev/null || \
     echo "Spotify Connect (librespot) not available - continuing without it"
 
 # Configure users and groups
-# First remove any existing snapcast user/group from the snapcast package
-# Then create them with the correct IDs
+# Create all required system users
 RUN deluser snapcast 2>/dev/null || true && \
     delgroup snapcast 2>/dev/null || true && \
     addgroup -g 1000 snapcast && \
     adduser -D -u 1000 -G snapcast -h /app snapcast && \
-    addgroup snapcast audio 2>/dev/null || true
+    addgroup snapcast audio 2>/dev/null || true && \
+    addgroup -S messagebus 2>/dev/null || true && \
+    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true && \
+    addgroup -S avahi 2>/dev/null || true && \
+    adduser -S -G avahi -H -s /sbin/nologin avahi 2>/dev/null || true && \
+    addgroup -S shairport-sync 2>/dev/null || true && \
+    adduser -S -G shairport-sync -H -s /sbin/nologin shairport-sync 2>/dev/null || true
+
+# Configure Avahi to disable D-Bus (simpler and more reliable in containers)
+RUN sed -i 's/#enable-dbus=yes/enable-dbus=no/g' /etc/avahi/avahi-daemon.conf && \
+    mkdir -p /run/avahi-daemon && \
+    chown avahi:avahi /run/avahi-daemon && \
+    chmod 755 /run/avahi-daemon
 
 # Create required directories
 # Note: /tmp/snapfifo is created by setup.sh as a FIFO pipe, not a directory
@@ -120,7 +131,13 @@ RUN mkdir -p \
     /app/supervisord \
     /var/run/dbus \
     /var/run/avahi-daemon \
-    && chown -R snapcast:snapcast /app
+    /var/log/supervisord \
+    && chown -R snapcast:snapcast /app \
+    && chown messagebus:messagebus /var/run/dbus \
+    && chmod 755 /var/run/dbus \
+    && chown avahi:avahi /var/run/avahi-daemon \
+    && chmod 755 /var/run/avahi-daemon \
+    && chmod 755 /var/log/supervisord
 
 # Copy configuration and scripts
 COPY config/supervisord/ /app/supervisord/
@@ -166,8 +183,7 @@ ENV TZ=Etc/UTC \
 # Volume mount points
 VOLUME ["/app/config", "/app/data", "/app/certs"]
 
-# Run as snapcast user
-USER snapcast
-
-# Start with setup script
+# Supervisord must run as root to manage services with different privilege levels
+# Individual services will run as their respective users (snapcast, avahi, etc.)
+# Start with setup script which will exec supervisord
 CMD ["/bin/bash", "/app/scripts/setup.sh"]
