@@ -11,6 +11,18 @@ while [ ! -S /var/run/dbus/system_bus_socket ] && [ $timeout -gt 0 ]; do
     ((timeout--))
 done
 
+# Fix D-Bus socket permissions to ensure all services can communicate
+echo "Fixing D-Bus socket permissions..."
+if [ -S /var/run/dbus/system_bus_socket ]; then
+    chmod 666 /var/run/dbus/system_bus_socket 2>/dev/null || true
+    chown messagebus:messagebus /var/run/dbus/system_bus_socket 2>/dev/null || true
+fi
+
+# Ensure avahi-daemon directory has correct permissions
+mkdir -p /var/run/avahi-daemon
+chown avahi:avahi /var/run/avahi-daemon
+chmod 755 /var/run/avahi-daemon
+
 # Generate snapserver configuration if it doesn't exist
 if [ ! -f /app/config/snapserver.conf ]; then
     echo "Generating snapserver.conf..."
