@@ -103,11 +103,13 @@ RUN apk add --no-cache librespot@edge 2>/dev/null || \
 
 # Configure users and groups
 # Create all required system users
+# FIXED: Added snapcast to avahi group for mDNS advertising
 RUN deluser snapcast 2>/dev/null || true && \
     delgroup snapcast 2>/dev/null || true && \
     addgroup -g 1000 snapcast && \
     adduser -D -u 1000 -G snapcast -h /app snapcast && \
     addgroup snapcast audio 2>/dev/null || true && \
+    addgroup snapcast avahi 2>/dev/null || true && \
     addgroup -S messagebus 2>/dev/null || true && \
     adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true && \
     addgroup -S avahi 2>/dev/null || true && \
@@ -119,6 +121,10 @@ RUN deluser snapcast 2>/dev/null || true && \
 RUN mkdir -p /run/avahi-daemon && \
     chown avahi:avahi /run/avahi-daemon && \
     chmod 755 /run/avahi-daemon
+
+# FIXED: Copy D-Bus policy for shairport-sync and Avahi configuration
+COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/shairport-sync.conf
+COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
 
 # Create required directories
 # Note: /tmp/snapfifo is created by setup.sh as a FIFO pipe, not a directory
