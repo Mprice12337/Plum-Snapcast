@@ -86,9 +86,9 @@ docker buildx build \
     $NO_CACHE_FLAG \
     --platform linux/amd64,linux/arm64 \
     --tag $DOCKER_USERNAME/plum-snapcast-server:latest \
-    --tag $DOCKER_USERNAME/plum-snapcast-server:$(date +%Y%m%d) \
     --push \
     ../backend
+    #--tag $DOCKER_USERNAME/plum-snapcast-server:$(date +%Y%m%d) \
 
 echo -e "${GREEN}✓ Backend build and push complete${NC}"
 
@@ -100,9 +100,9 @@ docker buildx build \
     $NO_CACHE_FLAG \
     --platform linux/amd64,linux/arm64 \
     --tag $DOCKER_USERNAME/plum-snapcast-frontend:latest \
-    --tag $DOCKER_USERNAME/plum-snapcast-frontend:$(date +%Y%m%d) \
     --push \
     ../frontend
+    #--tag $DOCKER_USERNAME/plum-snapcast-frontend:$(date +%Y%m%d) \
 
 echo -e "${GREEN}✓ Frontend build and push complete${NC}"
 
@@ -111,9 +111,9 @@ echo -e "${GREEN}=== Build Complete ===${NC}"
 echo ""
 echo "Images pushed:"
 echo "  - $DOCKER_USERNAME/plum-snapcast-server:latest"
-echo "  - $DOCKER_USERNAME/plum-snapcast-server:$(date +%Y%m%d)"
+#echo "  - $DOCKER_USERNAME/plum-snapcast-server:$(date +%Y%m%d)"
 echo "  - $DOCKER_USERNAME/plum-snapcast-frontend:latest"
-echo "  - $DOCKER_USERNAME/plum-snapcast-frontend:$(date +%Y%m%d)"
+#echo "  - $DOCKER_USERNAME/plum-snapcast-frontend:$(date +%Y%m%d)"
 echo ""
 echo "To deploy on your Raspberry Pi, run:"
 echo "  cd docker"
