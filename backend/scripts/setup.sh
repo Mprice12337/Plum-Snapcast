@@ -11,6 +11,14 @@ while [ ! -S /var/run/dbus/system_bus_socket ] && [ $timeout -gt 0 ]; do
     ((timeout--))
 done
 
+# Test Avahi is working
+echo "Testing Avahi daemon..."
+timeout 5 avahi-browse -at || echo "Avahi initial browse failed (this is normal)"
+
+# Ensure shairport-sync can write to the FIFO
+chmod 666 /tmp/snapfifo 2>/dev/null || true
+chmod 666 /tmp/shairport-sync-metadata 2>/dev/null || true
+
 # Fix D-Bus socket permissions to ensure all services can communicate
 echo "Fixing D-Bus socket permissions..."
 if [ -S /var/run/dbus/system_bus_socket ]; then

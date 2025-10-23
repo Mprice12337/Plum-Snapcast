@@ -103,28 +103,22 @@ RUN apk add --no-cache librespot@edge 2>/dev/null || \
 
 # Configure users and groups
 # Create all required system users
-# FIXED: Added snapcast to avahi group for mDNS advertising
 RUN deluser snapcast 2>/dev/null || true && \
     delgroup snapcast 2>/dev/null || true && \
     addgroup -g 1000 snapcast && \
     adduser -D -u 1000 -G snapcast -h /app snapcast && \
-    addgroup snapcast audio 2>/dev/null || true && \
-    addgroup snapcast avahi 2>/dev/null || true && \
+    addgroup snapcast audio && \
     addgroup -S messagebus 2>/dev/null || true && \
-    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true && \
-    addgroup -S avahi 2>/dev/null || true && \
-    adduser -S -G avahi -H -s /sbin/nologin avahi 2>/dev/null || true && \
-    addgroup -S shairport-sync 2>/dev/null || true && \
-    adduser -S -G shairport-sync -H -s /sbin/nologin shairport-sync 2>/dev/null || true
+    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true
 
-# Configure Avahi with D-Bus enabled (required for shairport-sync mDNS advertisement)
-RUN mkdir -p /run/avahi-daemon && \
-    chown avahi:avahi /run/avahi-daemon && \
-    chmod 755 /run/avahi-daemon
+# Configure Avahi
+RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
+    chmod 755 /run/avahi-daemon /var/run/dbus
 
-# FIXED: Copy D-Bus policy for shairport-sync and Avahi configuration
-COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/shairport-sync.conf
+# FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
+COPY config/shairport-sync.conf /app/config/
+
 
 # Create required directories
 # Note: /tmp/snapfifo is created by setup.sh as a FIFO pipe, not a directory
