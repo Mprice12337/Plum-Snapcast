@@ -34,7 +34,10 @@ RUN apk add --no-cache \
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
     apk update && \
-    apk add --no-cache snapcast-server@edge snapcast-client@edge
+    apk add --no-cache \
+        snapcast-server@edge \
+        snapcast-client@edge \
+        alsa-utils  # Add this for aplay/speaker-test
 
 # Install build dependencies
 RUN apk add --no-cache --virtual .build-deps \
