@@ -27,8 +27,9 @@ fi
 # Generate snapserver configuration if it doesn't exist
 if [ ! -f /app/config/snapserver.conf ]; then
     echo "Generating snapserver.conf..."
-    cat > /app/config/snapserver.conf << 'SNAPCONF'
+    cat > /app/config/snapserver.conf << SNAPCONF
 [stream]
+port = 1705
 
 [http]
 enabled = true
@@ -50,10 +51,11 @@ port = 1704
 datadir = /app/data
 SNAPCONF
 
-    # Add AirPlay source
+    # Add AirPlay source to [stream] section
     if [ "${AIRPLAY_CONFIG_ENABLED}" = "1" ]; then
         echo "Adding AirPlay source..."
-        echo "source = pipe:///tmp/snapfifo?name=${AIRPLAY_SOURCE_NAME}&sampleformat=44100:16:2&codec=pcm${AIRPLAY_EXTRA_ARGS}" >> /app/config/snapserver.conf
+        # Insert source after [stream] line
+        sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
     fi
 fi
 
@@ -71,7 +73,7 @@ fi
 
 # Update shairport-sync device name
 if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
-    sed -i "s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/" /app/config/shairport-sync.conf
+    sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
 fi
 
 echo "Setup complete. Starting supervisord..."
