@@ -7,7 +7,7 @@ ARG BUILDPLATFORM
 LABEL maintainer="Plum-Snapcast"
 LABEL description="Snapcast server with AirPlay and Spotify support"
 
-# Install runtime dependencies
+# Install runtime dependencies (ADDED python3 for metadata processor)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -29,7 +29,8 @@ RUN apk add --no-cache \
     soxr \
     libgcrypt \
     libuuid \
-    ffmpeg-libs
+    ffmpeg-libs \
+    python3
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
@@ -141,11 +142,12 @@ RUN mkdir -p \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord
 
-# Copy configuration and scripts
+# Copy configuration and scripts (UPDATED to include new metadata processor)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
-COPY scripts/ /app/scripts/
-RUN chmod +x /app/scripts/*.sh && \
+COPY scripts/setup.sh /app/scripts/
+COPY scripts/process-airplay-metadata-v2.py /app/scripts/
+RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
     chown -R snapcast:snapcast /app
 
 # Expose ports
