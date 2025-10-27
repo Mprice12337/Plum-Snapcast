@@ -16,7 +16,7 @@ from typing import Dict, Optional
 # Configuration
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
 SNAPCAST_HOST = "localhost"
-SNAPCAST_PORT = 1705
+SNAPCAST_PORT = 1780  # HTTP API port (works, unlike TCP 1704)
 STREAM_NAME = "Airplay"  # Should match AIRPLAY_SOURCE_NAME from environment (note: lowercase 'p')
 COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
 
@@ -29,7 +29,10 @@ class SnapcastClient:
         self.request_id = 0
 
     def _send_request(self, method: str, params: Optional[Dict] = None) -> Optional[Dict]:
-        """Send JSON-RPC request to Snapcast"""
+        """Send JSON-RPC request to Snapcast via HTTP API"""
+        import urllib.request
+        import urllib.error
+
         self.request_id += 1
         request = {
             "jsonrpc": "2.0",
@@ -40,25 +43,18 @@ class SnapcastClient:
             request["params"] = params
 
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            sock.connect((self.host, self.port))
-            sock.sendall((json.dumps(request) + "\r\n").encode())
+            # Use HTTP API on port 1780 instead of raw TCP
+            url = f"http://{self.host}:1780/jsonrpc"
+            data = json.dumps(request).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
 
-            response_data = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response_data += chunk
-                if b"\r\n" in response_data:
-                    break
-
-            sock.close()
-
-            response_str = response_data.decode().strip()
-            if response_str:
-                return json.loads(response_str)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                response_data = response.read().decode('utf-8')
+                if response_data:
+                    return json.loads(response_data)
+        except urllib.error.URLError as e:
+            print(f"Error communicating with Snapcast HTTP API: {e}", file=sys.stderr)
+            return None
         except Exception as e:
             print(f"Error communicating with Snapcast: {e}", file=sys.stderr)
             return None
