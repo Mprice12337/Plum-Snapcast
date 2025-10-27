@@ -17,7 +17,7 @@ from typing import Dict, Optional
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
 SNAPCAST_HOST = "localhost"
 SNAPCAST_PORT = 1705
-STREAM_NAME = "AirPlay"  # Should match AIRPLAY_SOURCE_NAME from environment
+STREAM_NAME = "Airplay"  # Should match AIRPLAY_SOURCE_NAME from environment (note: lowercase 'p')
 COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
 
 class SnapcastClient:
