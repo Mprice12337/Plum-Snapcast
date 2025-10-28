@@ -54,8 +54,8 @@ SNAPCONF
     # Add AirPlay source to [stream] section
     if [ "${AIRPLAY_CONFIG_ENABLED}" = "1" ]; then
         echo "Adding AirPlay source..."
-        # Insert source after [stream] line
-        sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+        # Insert source after [stream] line with control script for metadata
+        sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
     fi
 fi
 

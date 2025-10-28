@@ -69,7 +69,9 @@ class SnapcastClient:
             "property": property_name,
             "value": value
         }
+        print(f"  [API] Calling Stream.SetProperty with: {params}", flush=True)
         response = self._send_request("Stream.SetProperty", params)
+        print(f"  [API] Response: {response}", flush=True)
         return response is not None and "result" in response
 
     def find_stream_by_name(self, name: str) -> Optional[str]:
@@ -92,7 +94,7 @@ class MetadataParser:
             "title": None,
             "artist": None,
             "album": None,
-            "cover_art_path": None
+            "cover_art_data": None
         }
         self.pending_cover_data = []
 
@@ -131,27 +133,30 @@ class MetadataParser:
             if code == "asar":  # Artist
                 self.current_metadata["artist"] = decoded
                 updated = True
-                print(f"  Artist: {decoded}", flush=True)
+                print(f"  [DEBUG] Set artist: '{decoded}'", flush=True)
             elif code == "minm":  # Title/Track name
                 self.current_metadata["title"] = decoded
                 updated = True
-                print(f"  Title: {decoded}", flush=True)
+                print(f"  [DEBUG] Set title: '{decoded}'", flush=True)
             elif code == "asal":  # Album
                 self.current_metadata["album"] = decoded
                 updated = True
-                print(f"  Album: {decoded}", flush=True)
+                print(f"  [DEBUG] Set album: '{decoded}'", flush=True)
             elif code == "PICT":  # Cover art
                 # Cover art is sent in chunks, collect them
                 if encoding == "base64" and data_text:
                     self.pending_cover_data.append(data_text)
+                    print(f"  [DEBUG] Collected cover art chunk ({len(data_text)} chars)", flush=True)
             elif code == "ssnc":
                 # End of cover art or other control message
                 if decoded == "PICT" and self.pending_cover_data:
                     self._save_cover_art()
                     updated = True
                     self.pending_cover_data = []
+                    print(f"  [DEBUG] Saved cover art", flush=True)
 
             if updated and self._is_complete():
+                print(f"  [DEBUG] Metadata complete! Returning: {self.current_metadata}", flush=True)
                 return self.current_metadata.copy()
 
         except ET.ParseError as e:
@@ -162,32 +167,23 @@ class MetadataParser:
         return None
 
     def _save_cover_art(self):
-        """Save collected cover art data to a file"""
+        """Store cover art data as base64 for Snapcast"""
         if not self.pending_cover_data:
             return
 
         try:
-            # Combine all chunks
+            # Combine all chunks into single base64 string
             cover_data_b64 = "".join(self.pending_cover_data)
-            cover_data = base64.b64decode(cover_data_b64)
 
-            # Save to file
-            cover_dir = Path(COVER_ART_DIR)
-            cover_dir.mkdir(parents=True, exist_ok=True)
-
-            cover_path = cover_dir / "current.jpg"
-            with open(cover_path, "wb") as f:
-                f.write(cover_data)
-
-            self.current_metadata["cover_art_path"] = str(cover_path)
-            print(f"  Cover art saved: {cover_path}", flush=True)
+            # Store as base64 - Snapcast will decode, cache, and serve it
+            self.current_metadata["cover_art_data"] = cover_data_b64
 
         except Exception as e:
-            print(f"Error saving cover art: {e}", file=sys.stderr, flush=True)
+            print(f"Error processing cover art: {e}", file=sys.stderr, flush=True)
 
     def _is_complete(self) -> bool:
         """Check if we have enough metadata to update"""
-        return (self.current_metadata["title"] is not None or
+        return (self.current_metadata["title"] is not None and
                 self.current_metadata["artist"] is not None)
 
     def reset(self):
@@ -196,12 +192,18 @@ class MetadataParser:
             "title": None,
             "artist": None,
             "album": None,
-            "cover_art_path": None
+            "cover_art_data": None
         }
         self.pending_cover_data = []
 
 def update_snapcast_metadata(client: SnapcastClient, stream_id: str, metadata: Dict[str, str]):
     """Update Snapcast stream properties with metadata"""
+    # Debug: show what we received (but truncate cover art for readability)
+    debug_metadata = metadata.copy()
+    if "cover_art_data" in debug_metadata and debug_metadata["cover_art_data"]:
+        debug_metadata["cover_art_data"] = f"<base64 data: {len(debug_metadata['cover_art_data'])} chars>"
+    print(f"\n📡 Received metadata: {debug_metadata}", flush=True)
+
     properties_to_set = {}
 
     if metadata.get("title"):
@@ -213,42 +215,25 @@ def update_snapcast_metadata(client: SnapcastClient, stream_id: str, metadata: D
     if metadata.get("album"):
         properties_to_set["album"] = metadata["album"]
 
-    if metadata.get("cover_art_path"):
-        properties_to_set["artUrl"] = f"file://{metadata['cover_art_path']}"
+    # Use artData with base64 encoding - Snapcast will cache and serve via HTTP
+    if metadata.get("cover_art_data"):
+        properties_to_set["artData"] = metadata["cover_art_data"]
+
+    print(f"📡 Updating Snapcast with {len(properties_to_set)} properties:", flush=True)
+
+    if not properties_to_set:
+        print("  ⚠️  No properties to set (all values were empty/None)", flush=True)
+        return
 
     # Set all properties
     for key, value in properties_to_set.items():
+        # Truncate artData in log output for readability
+        display_value = f"<base64 image: {len(value)} chars>" if key == "artData" else value
         success = client.set_stream_property(stream_id, key, value)
         if success:
-            print(f"✓ Updated {key}: {value}", flush=True)
+            print(f"  ✓ {key}: {display_value}", flush=True)
         else:
-            print(f"✗ Failed to update {key}", file=sys.stderr, flush=True)
-
-def read_complete_item(pipe) -> Optional[str]:
-    """Read from pipe until we get a complete <item>...</item>"""
-    buffer = ""
-    while True:
-        chunk = pipe.read(1024)
-        if not chunk:
-            time.sleep(0.1)
-            continue
-
-        buffer += chunk
-
-        # Look for complete items
-        while "<item>" in buffer and "</item>" in buffer:
-            start = buffer.find("<item>")
-            end = buffer.find("</item>") + len("</item>")
-
-            if start != -1 and end > start:
-                item = buffer[start:end]
-                buffer = buffer[end:]
-                return item
-
-        # Keep buffer from growing too large
-        if len(buffer) > 100000:
-            print("Warning: Buffer overflow, clearing", file=sys.stderr, flush=True)
-            buffer = buffer[-10000:]
+            print(f"  ✗ Failed to update {key}", file=sys.stderr, flush=True)
 
 def main():
     """Main processing loop"""
@@ -271,6 +256,14 @@ def main():
         stream_id = snapcast.find_stream_by_name(STREAM_NAME)
         if stream_id:
             print(f"Found AirPlay stream with ID: {stream_id}", flush=True)
+
+            # Debug: show current stream state
+            status = snapcast.get_status()
+            if status:
+                for stream in status.get("server", {}).get("streams", []):
+                    if stream["id"] == stream_id:
+                        print(f"[DEBUG] Current stream properties: {stream.get('properties', {})}", flush=True)
+                        print(f"[DEBUG] Stream URI: {stream.get('uri', {})}", flush=True)
             break
         print(f"Waiting for AirPlay stream... (attempt {attempt + 1}/10)", flush=True)
         time.sleep(2)
@@ -281,25 +274,52 @@ def main():
 
     # Process metadata from pipe
     print("Reading metadata from pipe...", flush=True)
+
+    buffer = ""
     try:
-        with open(METADATA_PIPE, 'r') as pipe:
+        # Open in binary mode to avoid encoding issues
+        with open(METADATA_PIPE, 'rb') as pipe:
             while True:
                 try:
-                    # Read a complete XML item
-                    item_xml = read_complete_item(pipe)
+                    # Read available data
+                    chunk = pipe.read(4096)
+                    if not chunk:
+                        time.sleep(0.1)
+                        continue
 
-                    if item_xml:
+                    # Decode and add to buffer
+                    try:
+                        buffer += chunk.decode('utf-8', errors='ignore')
+                    except:
+                        continue
+
+                    # Process all complete items in buffer
+                    while "<item>" in buffer and "</item>" in buffer:
+                        start_idx = buffer.find("<item>")
+                        end_idx = buffer.find("</item>", start_idx)
+
+                        if end_idx == -1:
+                            break
+
+                        end_idx += len("</item>")
+                        item_xml = buffer[start_idx:end_idx]
+                        buffer = buffer[end_idx:]
+
                         # Parse the item
                         metadata = parser.parse_item(item_xml)
 
                         # If we got complete metadata, update Snapcast
                         if metadata:
-                            print(f"\n🎵 New metadata received:", flush=True)
                             update_snapcast_metadata(snapcast, stream_id, metadata)
                             parser.reset()
 
+                    # Keep buffer from growing too large
+                    if len(buffer) > 100000:
+                        print("Warning: Buffer overflow, keeping last 10KB", file=sys.stderr, flush=True)
+                        buffer = buffer[-10000:]
+
                 except Exception as e:
-                    print(f"Error processing item: {e}", file=sys.stderr, flush=True)
+                    print(f"Error processing chunk: {e}", file=sys.stderr, flush=True)
 
     except KeyboardInterrupt:
         print("\nShutting down...", flush=True)

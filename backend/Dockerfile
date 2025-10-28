@@ -142,11 +142,12 @@ RUN mkdir -p \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord
 
-# Copy configuration and scripts (UPDATED to include new metadata processor)
+# Copy configuration and scripts (UPDATED to include control script)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
 COPY scripts/setup.sh /app/scripts/
 COPY scripts/process-airplay-metadata-v2.py /app/scripts/
+COPY scripts/airplay-control-script.py /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
     chown -R snapcast:snapcast /app
 
