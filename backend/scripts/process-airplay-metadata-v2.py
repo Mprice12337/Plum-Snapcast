@@ -6,7 +6,6 @@ Reads metadata from shairport-sync pipe and updates Snapcast stream properties
 
 import base64
 import json
-import socket
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -16,8 +15,8 @@ from typing import Dict, Optional
 # Configuration
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
 SNAPCAST_HOST = "localhost"
-SNAPCAST_PORT = 1780  # HTTP API port (works, unlike TCP 1704)
-STREAM_NAME = "Airplay"  # Should match AIRPLAY_SOURCE_NAME from environment (note: lowercase 'p')
+SNAPCAST_PORT = 1780  # HTTP API port
+STREAM_NAME = "Airplay"  # Should match AIRPLAY_SOURCE_NAME from environment
 COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
 
 class SnapcastClient:
@@ -43,8 +42,7 @@ class SnapcastClient:
             request["params"] = params
 
         try:
-            # Use HTTP API on port 1780 instead of raw TCP
-            url = f"http://{self.host}:1780/jsonrpc"
+            url = f"http://{self.host}:{self.port}/jsonrpc"
             data = json.dumps(request).encode('utf-8')
             req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
 
@@ -53,10 +51,10 @@ class SnapcastClient:
                 if response_data:
                     return json.loads(response_data)
         except urllib.error.URLError as e:
-            print(f"Error communicating with Snapcast HTTP API: {e}", file=sys.stderr)
+            print(f"Error communicating with Snapcast HTTP API: {e}", file=sys.stderr, flush=True)
             return None
         except Exception as e:
-            print(f"Error communicating with Snapcast: {e}", file=sys.stderr)
+            print(f"Error communicating with Snapcast: {e}", file=sys.stderr, flush=True)
             return None
 
     def get_status(self) -> Optional[Dict]:
@@ -98,15 +96,10 @@ class MetadataParser:
         }
         self.pending_cover_data = []
 
-    def parse_line(self, line: str) -> Optional[Dict[str, str]]:
-        """Parse a metadata line and return updated metadata if complete"""
-        line = line.strip()
-        if not line:
-            return None
-
+    def parse_item(self, item_xml: str) -> Optional[Dict[str, str]]:
+        """Parse a complete XML item and return updated metadata if complete"""
         try:
-            # Shairport-sync metadata format: <item><type>73736e63</type><code>70696374</code><length>12345</length><data encoding="base64">...</data></item>
-            root = ET.fromstring(line)
+            root = ET.fromstring(item_xml)
 
             # Get the code (metadata type)
             code_elem = root.find("code")
@@ -122,10 +115,10 @@ class MetadataParser:
                 return None
 
             encoding = data_elem.get("encoding", "")
-            data_text = data_elem.text or ""
+            data_text = (data_elem.text or "").strip()
 
             # Decode based on encoding
-            if encoding == "base64":
+            if encoding == "base64" and data_text:
                 try:
                     decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
                 except:
@@ -138,31 +131,33 @@ class MetadataParser:
             if code == "asar":  # Artist
                 self.current_metadata["artist"] = decoded
                 updated = True
+                print(f"  Artist: {decoded}", flush=True)
             elif code == "minm":  # Title/Track name
                 self.current_metadata["title"] = decoded
                 updated = True
+                print(f"  Title: {decoded}", flush=True)
             elif code == "asal":  # Album
                 self.current_metadata["album"] = decoded
                 updated = True
+                print(f"  Album: {decoded}", flush=True)
             elif code == "PICT":  # Cover art
                 # Cover art is sent in chunks, collect them
-                if encoding == "base64":
+                if encoding == "base64" and data_text:
                     self.pending_cover_data.append(data_text)
-            elif code == "ssnc" and decoded == "PICT":
-                # End of cover art, save it
-                if self.pending_cover_data:
+            elif code == "ssnc":
+                # End of cover art or other control message
+                if decoded == "PICT" and self.pending_cover_data:
                     self._save_cover_art()
                     updated = True
-                self.pending_cover_data = []
+                    self.pending_cover_data = []
 
             if updated and self._is_complete():
                 return self.current_metadata.copy()
 
-        except ET.ParseError:
-            # Not valid XML, might be a plain text line
-            pass
+        except ET.ParseError as e:
+            print(f"XML Parse error: {e}", file=sys.stderr, flush=True)
         except Exception as e:
-            print(f"Error parsing metadata: {e}", file=sys.stderr)
+            print(f"Error parsing metadata: {e}", file=sys.stderr, flush=True)
 
         return None
 
@@ -185,10 +180,10 @@ class MetadataParser:
                 f.write(cover_data)
 
             self.current_metadata["cover_art_path"] = str(cover_path)
-            print(f"Saved cover art to {cover_path}")
+            print(f"  Cover art saved: {cover_path}", flush=True)
 
         except Exception as e:
-            print(f"Error saving cover art: {e}", file=sys.stderr)
+            print(f"Error saving cover art: {e}", file=sys.stderr, flush=True)
 
     def _is_complete(self) -> bool:
         """Check if we have enough metadata to update"""
@@ -219,27 +214,52 @@ def update_snapcast_metadata(client: SnapcastClient, stream_id: str, metadata: D
         properties_to_set["album"] = metadata["album"]
 
     if metadata.get("cover_art_path"):
-        # For cover art, we'll store the path - the frontend can fetch it
         properties_to_set["artUrl"] = f"file://{metadata['cover_art_path']}"
 
     # Set all properties
     for key, value in properties_to_set.items():
         success = client.set_stream_property(stream_id, key, value)
         if success:
-            print(f"Updated {key}: {value}")
+            print(f"✓ Updated {key}: {value}", flush=True)
         else:
-            print(f"Failed to update {key}", file=sys.stderr)
+            print(f"✗ Failed to update {key}", file=sys.stderr, flush=True)
+
+def read_complete_item(pipe) -> Optional[str]:
+    """Read from pipe until we get a complete <item>...</item>"""
+    buffer = ""
+    while True:
+        chunk = pipe.read(1024)
+        if not chunk:
+            time.sleep(0.1)
+            continue
+
+        buffer += chunk
+
+        # Look for complete items
+        while "<item>" in buffer and "</item>" in buffer:
+            start = buffer.find("<item>")
+            end = buffer.find("</item>") + len("</item>")
+
+            if start != -1 and end > start:
+                item = buffer[start:end]
+                buffer = buffer[end:]
+                return item
+
+        # Keep buffer from growing too large
+        if len(buffer) > 100000:
+            print("Warning: Buffer overflow, clearing", file=sys.stderr, flush=True)
+            buffer = buffer[-10000:]
 
 def main():
     """Main processing loop"""
-    print("Starting AirPlay metadata processor...")
+    print("Starting AirPlay metadata processor...", flush=True)
 
     # Wait for pipe to exist
     while not Path(METADATA_PIPE).exists():
-        print(f"Waiting for metadata pipe: {METADATA_PIPE}")
+        print(f"Waiting for metadata pipe: {METADATA_PIPE}", flush=True)
         time.sleep(1)
 
-    print(f"Metadata pipe found: {METADATA_PIPE}")
+    print(f"Metadata pipe found: {METADATA_PIPE}", flush=True)
 
     # Initialize clients
     snapcast = SnapcastClient(SNAPCAST_HOST, SNAPCAST_PORT)
@@ -250,49 +270,41 @@ def main():
     for attempt in range(10):
         stream_id = snapcast.find_stream_by_name(STREAM_NAME)
         if stream_id:
-            print(f"Found AirPlay stream with ID: {stream_id}")
+            print(f"Found AirPlay stream with ID: {stream_id}", flush=True)
             break
-        print(f"Waiting for AirPlay stream... (attempt {attempt + 1}/10)")
+        print(f"Waiting for AirPlay stream... (attempt {attempt + 1}/10)", flush=True)
         time.sleep(2)
 
     if not stream_id:
-        print(f"Warning: Could not find stream named '{STREAM_NAME}'. Metadata updates may fail.", file=sys.stderr)
-        stream_id = "0"  # Try with default stream ID
+        print(f"Warning: Could not find stream named '{STREAM_NAME}'. Metadata updates may fail.", file=sys.stderr, flush=True)
+        stream_id = "Airplay"  # Try with default stream ID
 
     # Process metadata from pipe
-    print("Reading metadata from pipe...")
+    print("Reading metadata from pipe...", flush=True)
     try:
         with open(METADATA_PIPE, 'r') as pipe:
             while True:
                 try:
-                    line = pipe.readline()
-                    if not line:
-                        time.sleep(0.1)
-                        continue
+                    # Read a complete XML item
+                    item_xml = read_complete_item(pipe)
 
-                    # Parse the line
-                    metadata = parser.parse_line(line)
+                    if item_xml:
+                        # Parse the item
+                        metadata = parser.parse_item(item_xml)
 
-                    # If we got complete metadata, update Snapcast
-                    if metadata:
-                        print(f"\nNew metadata received:")
-                        print(f"  Title: {metadata.get('title', 'N/A')}")
-                        print(f"  Artist: {metadata.get('artist', 'N/A')}")
-                        print(f"  Album: {metadata.get('album', 'N/A')}")
-                        print(f"  Cover: {metadata.get('cover_art_path', 'N/A')}")
-
-                        update_snapcast_metadata(snapcast, stream_id, metadata)
-
-                        # Reset for next track
-                        parser.reset()
+                        # If we got complete metadata, update Snapcast
+                        if metadata:
+                            print(f"\n🎵 New metadata received:", flush=True)
+                            update_snapcast_metadata(snapcast, stream_id, metadata)
+                            parser.reset()
 
                 except Exception as e:
-                    print(f"Error processing line: {e}", file=sys.stderr)
+                    print(f"Error processing item: {e}", file=sys.stderr, flush=True)
 
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print("\nShutting down...", flush=True)
     except Exception as e:
-        print(f"Fatal error: {e}", file=sys.stderr)
+        print(f"Fatal error: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":
