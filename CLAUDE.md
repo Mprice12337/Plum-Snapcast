@@ -122,6 +122,19 @@ sudo udevadm trigger
 
 **Why this is needed**: The container's audio group (GID 18) doesn't match the host's audio device group (GID 29). The Dockerfile fixes the container's audio group to GID 29, but the host device permissions still need to allow access.
 
+#### 2. Disable Host Avahi Services
+Disable the host's Avahi daemon to avoid conflicts with the container's Avahi:
+
+```bash
+# Disable Avahi service and socket
+sudo systemctl disable avahi-daemon.service
+sudo systemctl disable avahi-daemon.socket
+```
+
+**Why this is needed**: The container runs its own Avahi daemon for AirPlay service discovery. Having both the host and container Avahi daemons running causes conflicts. The container's Avahi uses the host's D-Bus socket via a volume mount.
+
+**Note on D-Bus**: The host's D-Bus service must remain enabled and running. It is socket-activated by default on Raspberry Pi OS and will start automatically. The container's Avahi daemon connects to the host's D-Bus socket at `/var/run/dbus/system_bus_socket` via the docker-compose volume mount.
+
 #### 3. Reboot
 ```bash
 sudo reboot
@@ -516,13 +529,20 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 
 4. **AirPlay Metadata Extraction**: AirPlay metadata flows through `shairport-sync` → custom processing script → Snapcast stream properties. Format varies by source app.
 
-5. **Multi-room Synchronization Accuracy**: Snapcast achieves sample-accurate synchronization. Don't introduce processing that might add latency or jitter.
+5. **AirPlay Album Artwork Workaround**: Snapcast's plugin system filters out custom metadata fields including `artUrl`. To work around this limitation:
+   - The control script saves cover art to `/usr/share/snapserver/snapweb/coverart/{hash}.jpg`
+   - It also writes `/usr/share/snapserver/snapweb/airplay-artwork.json` with the artwork URL
+   - The frontend fetches this JSON file via nginx proxy at `/snapcast-api/airplay-artwork.json` to avoid CORS
+   - The nginx proxy in the frontend container proxies `/snapcast-api/*` to `http://snapcast-host:1780/`
+   - This requires the `extra_hosts: snapcast-host:host-gateway` setting in docker-compose.yml
 
-6. **Container Network Mode**: For AirPlay/Spotify discovery, container uses `network_mode: host` for proper mDNS broadcast.
+6. **Multi-room Synchronization Accuracy**: Snapcast achieves sample-accurate synchronization. Don't introduce processing that might add latency or jitter.
 
-7. **Certificate Management**: HTTPS certificates auto-generate as self-signed. For production, mount custom certificates or use a reverse proxy with proper TLS.
+7. **Container Network Mode**: For AirPlay/Spotify discovery, container uses `network_mode: host` for proper mDNS broadcast.
 
-8. **Integrated Snapclient**: Unlike typical Snapcast deployments, this project runs snapclient in the same container as snapserver for simplified single-device setup. This works well for Raspberry Pi deployments but limits multi-room expansion.
+8. **Certificate Management**: HTTPS certificates auto-generate as self-signed. For production, mount custom certificates or use a reverse proxy with proper TLS.
+
+9. **Integrated Snapclient**: Unlike typical Snapcast deployments, this project runs snapclient in the same container as snapserver for simplified single-device setup. This works well for Raspberry Pi deployments but limits multi-room expansion.
 
 ## Resources
 

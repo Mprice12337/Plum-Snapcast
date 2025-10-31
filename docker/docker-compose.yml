@@ -58,6 +58,8 @@ services:
     environment:
       - SNAPCAST_HOST=${SNAPCAST_HOST:-localhost}
       - SNAPCAST_PORT=${SNAPCAST_PORT:-1704}
+    extra_hosts:
+      - "snapcast-host:host-gateway"
     restart: unless-stopped
     depends_on:
       - snapcast-server

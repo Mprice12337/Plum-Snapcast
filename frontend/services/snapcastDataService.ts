@@ -29,7 +29,15 @@ const extractMetadataFromStream = (snapStream: any): {
 
         // Look for metadata in properties
         if (snapStream.properties.metadata) {
-            metadata = snapStream.properties.metadata;
+            // Snapcast control script metadata format
+            const meta = snapStream.properties.metadata;
+            metadata = {
+                title: meta.name || meta.title,  // Snapcast uses 'name' for track title
+                artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
+                album: meta.album,
+                artUrl: meta['mpris:artUrl'] || meta.artUrl,  // Check MPRIS field first
+                duration: meta.duration
+            };
         } else if (snapStream.properties.meta) {
             metadata = snapStream.properties.meta;
         } else {
@@ -110,15 +118,43 @@ const getSourceDevice = (snapStream: any): string => {
     return 'Unknown Source';
 };
 
-const convertSnapcastStreamToStream = (snapStream: any): Stream => {
+const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> => {
     const metadata = extractMetadataFromStream(snapStream);
+
+    // For AirPlay streams, try to fetch artwork from the JSON endpoint
+    let albumArtUrl = metadata.artUrl || createDefaultTrack().albumArtUrl;
+
+    if (snapStream.uri?.query?.name === 'Airplay') {
+        try {
+            // Use proxied endpoint to avoid CORS issues
+            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
+            if (artworkResponse.ok) {
+                const artworkData = await artworkResponse.json();
+                if (artworkData.artUrl) {
+                    // Construct full URL for the artwork (also proxied)
+                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                    console.log('Fetched AirPlay artwork:', albumArtUrl);
+                }
+            }
+        } catch (error) {
+            console.log('Could not fetch AirPlay artwork:', error);
+        }
+    } else if (metadata.artUrl) {
+        // For other streams, use metadata artUrl
+        if (metadata.artUrl.startsWith('/')) {
+            // Relative path - prepend Snapcast HTTP server URL
+            albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+        } else {
+            albumArtUrl = metadata.artUrl;
+        }
+    }
 
     const track: Track = {
         id: snapStream.id || 'unknown',
         title: metadata.title || 'Unknown Track',
         artist: formatArtist(metadata.artist),
         album: metadata.album || 'Unknown Album',
-        albumArtUrl: metadata.artUrl || createDefaultTrack().albumArtUrl,
+        albumArtUrl: albumArtUrl,
         duration: metadata.duration || 0,
     };
 
@@ -164,10 +200,11 @@ export const getSnapcastData = async (): Promise<{
             'Snapcast Server';
         console.log('Server name:', serverName);
 
-        // Convert streams
-        const initialStreams: Stream[] = server.streams?.map((snapStream: any) =>
+        // Convert streams (now async to fetch artwork)
+        const streamPromises = server.streams?.map((snapStream: any) =>
             convertSnapcastStreamToStream(snapStream)
         ) || [];
+        const initialStreams: Stream[] = await Promise.all(streamPromises);
 
         console.log('Converted streams:', initialStreams);
 

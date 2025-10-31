@@ -435,6 +435,14 @@ export class SnapcastService {
         }
     }
 
+    /**
+     * Get the base HTTP URL for the Snapcast server
+     * Used for constructing cover art URLs
+     */
+    getHttpUrl(): string {
+        return `http://${this.host}:${this.port}`;
+    }
+
     disconnect() {
         if (this.ws) {
             this.ws.close();
