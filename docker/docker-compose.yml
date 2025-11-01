@@ -36,8 +36,7 @@ services:
       - snapcast-config:/app/config
       - snapcast-data:/app/data
       - snapcast-certs:/app/certs
-      - /var/run/avahi-daemon:/var/run/avahi-daemon:rw  # Mount host's Avahi
-      - /var/run/dbus:/var/run/dbus:rw  # Mount host's D-Bus
+      # Container runs its own D-Bus and Avahi services (no host mounts needed)
     restart: unless-stopped
     healthcheck:
       # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
