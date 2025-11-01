@@ -115,6 +115,10 @@ RUN deluser snapcast 2>/dev/null || true && \
     addgroup -S messagebus 2>/dev/null || true && \
     adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true
 
+# Configure D-Bus machine-id (required for D-Bus to create socket)
+RUN mkdir -p /var/lib/dbus && \
+    dbus-uuidgen > /var/lib/dbus/machine-id
+
 # Configure Avahi
 RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
     chmod 755 /run/avahi-daemon /var/run/dbus
