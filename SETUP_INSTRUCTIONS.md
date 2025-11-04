@@ -172,12 +172,48 @@ For Raspberry Pi, the setup handles:
 2. **Device Access** - Privileged mode for /dev/snd
 3. **Network** - Host mode for AirPlay discovery
 
+### Critical Architecture for AirPlay
+
+**IMPORTANT**: For AirPlay to function correctly, the following architecture must be maintained:
+
+- **Host runs**: D-Bus system service (provides `/var/run/dbus/system_bus_socket`)
+- **Container runs**: Avahi daemon (creates `/var/run/avahi-daemon/socket`)
+- **Volume mounts**: Both `/var/run/dbus` and `/var/run/avahi-daemon` must be mounted
+- **Host Avahi**: MUST be disabled to avoid conflicts
+
+This configuration is defined in `docker-compose.yml`:
+```yaml
+volumes:
+  - /var/run/avahi-daemon:/var/run/avahi-daemon:rw
+  - /var/run/dbus:/var/run/dbus:rw
+```
+
+And in `backend/config/supervisord/snapcast.ini`:
+```ini
+[program:dbus]
+autostart=false  # DISABLED - using host's D-Bus
+
+[program:avahi]
+autostart=true   # ENABLED - runs in container
+```
+
 ### One-Time Pi Setup
 
 ```bash
 # Force 3.5mm audio
 sudo raspi-config
 # System Options → Audio → Force 3.5mm jack
+
+# CRITICAL: Disable host Avahi to prevent conflicts
+sudo systemctl disable avahi-daemon
+sudo systemctl stop avahi-daemon
+sudo systemctl stop avahi-daemon.socket
+sudo systemctl disable avahi-daemon.socket
+sudo systemctl mask avahi-daemon.service
+
+# Ensure host D-Bus is running
+sudo systemctl enable dbus
+sudo systemctl start dbus
 
 # Deploy
 cd docker
@@ -199,11 +235,49 @@ docker exec plum-snapcast-server aplay -l
 ```
 
 ### AirPlay Not Visible
-```bash
-# Check avahi
-docker exec plum-snapcast-server ps aux | grep avahi
 
-# Restart
+First, verify the correct architecture is in place:
+
+```bash
+# Check host D-Bus is running
+systemctl status dbus
+# Should show: active (running)
+
+# Check host Avahi is DISABLED
+systemctl status avahi-daemon
+# Should show: inactive (dead) or masked
+
+# Check container services
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf status
+
+# Expected output:
+# avahi              RUNNING
+# dbus               STOPPED (this is correct - using host's D-Bus)
+# shairport-sync     RUNNING
+
+# Verify D-Bus socket exists on host
+ls -la /var/run/dbus/system_bus_socket
+# Should show the socket file
+
+# Scan for AirPlay services on network
+avahi-browse -r _raop._tcp
+# Should show your device (e.g., "Plum Audio")
+```
+
+If services aren't running correctly:
+
+```bash
+# If container D-Bus is running (it shouldn't be), stop it
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf stop dbus
+
+# If host D-Bus socket is missing, restart it
+sudo systemctl restart dbus.socket
+
+# Restart Avahi and shairport-sync in container
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf restart avahi
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf restart shairport-sync
+
+# If all else fails, restart the entire container
 docker-compose restart snapcast-server
 ```
 

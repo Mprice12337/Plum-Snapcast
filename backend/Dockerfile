@@ -141,9 +141,7 @@ RUN mkdir -p \
     /var/log/supervisord \
     /usr/share/snapserver/snapweb/coverart \
     && chown -R snapcast:snapcast /app \
-    && chown messagebus:messagebus /var/run/dbus \
     && chmod 755 /var/run/dbus \
-    && chown avahi:avahi /var/run/avahi-daemon \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
