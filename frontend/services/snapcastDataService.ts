@@ -126,13 +126,14 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
 
     if (snapStream.uri?.query?.name === 'Airplay') {
         try {
-            // Use proxied endpoint to avoid CORS issues
-            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
+            // Fetch artwork metadata from snapserver HTTP interface
+            const artworkUrl = `${snapcastService.getHttpUrl()}/airplay-artwork.json`;
+            const artworkResponse = await fetch(artworkUrl);
             if (artworkResponse.ok) {
                 const artworkData = await artworkResponse.json();
                 if (artworkData.artUrl) {
-                    // Construct full URL for the artwork (also proxied)
-                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                    // Construct full URL for the artwork from snapserver
+                    albumArtUrl = `${snapcastService.getHttpUrl()}${artworkData.artUrl}`;
                     console.log('Fetched AirPlay artwork:', albumArtUrl);
                 }
             }

@@ -81,31 +81,68 @@ const App: React.FC = () => {
 
     useAudioSync(currentStream, updateStreamProgress);
 
-    // Periodically sync stream status and progress with server
+    // Periodically sync stream status, metadata, and progress with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
         const syncStreamStatus = async () => {
             try {
-                const serverStream = await snapcastService.getStreamStatus(currentStream.id);
+                // Re-fetch full stream data to get latest metadata
+                const serverStatus = await snapcastService.getServerStatus();
+                const serverStream = serverStatus.server?.streams?.find((s: any) => s.id === currentStream.id);
+
                 if (serverStream) {
+                    // Extract metadata from stream properties
+                    const metadata = serverStream.properties?.metadata || {};
+                    const title = metadata.name || metadata.title || currentStream.currentTrack.title;
+                    const artist = Array.isArray(metadata.artist) ? metadata.artist.join(', ') :
+                                  (metadata.artist || currentStream.currentTrack.artist);
+                    const album = metadata.album || currentStream.currentTrack.album;
+
+                    // Extract artwork URL
+                    let albumArtUrl = currentStream.currentTrack.albumArtUrl;
+                    if (metadata['mpris:artUrl']) {
+                        albumArtUrl = `${snapcastService.getHttpUrl()}${metadata['mpris:artUrl']}`;
+                    } else if (serverStream.properties?.artUrl) {
+                        albumArtUrl = `${snapcastService.getHttpUrl()}${serverStream.properties.artUrl}`;
+                    }
+
+                    // Check playing status
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Extract position from properties if available (in ms, convert to seconds)
+                    // Extract position
                     let serverProgress = currentStream.progress;
                     if (serverStream.properties?.position !== undefined) {
                         serverProgress = Math.floor(serverStream.properties.position / 1000);
                     }
 
-                    // Update if status or progress has changed significantly (>2 seconds difference)
-                    const progressDiff = Math.abs(serverProgress - currentStream.progress);
-                    const shouldUpdate = isPlaying !== currentStream.isPlaying || progressDiff > 2;
+                    // Check if anything changed
+                    const metadataChanged =
+                        title !== currentStream.currentTrack.title ||
+                        artist !== currentStream.currentTrack.artist ||
+                        album !== currentStream.currentTrack.album ||
+                        albumArtUrl !== currentStream.currentTrack.albumArtUrl;
 
-                    if (shouldUpdate) {
+                    const statusChanged = isPlaying !== currentStream.isPlaying;
+                    const progressDiff = Math.abs(serverProgress - currentStream.progress);
+                    const progressChanged = progressDiff > 2;
+
+                    if (metadataChanged || statusChanged || progressChanged) {
                         setStreams(prevStreams =>
                             prevStreams.map(s =>
                                 s.id === currentStream.id
-                                    ? {...s, isPlaying, progress: serverProgress}
+                                    ? {
+                                        ...s,
+                                        isPlaying,
+                                        progress: serverProgress,
+                                        currentTrack: {
+                                            ...s.currentTrack,
+                                            title,
+                                            artist,
+                                            album,
+                                            albumArtUrl
+                                        }
+                                    }
                                     : s
                             )
                         );
@@ -113,15 +150,16 @@ const App: React.FC = () => {
                 }
             } catch (error) {
                 // Silently handle errors to avoid spam
+                console.error('Error syncing stream status:', error);
             }
         };
 
-        // Sync immediately and then every 3 seconds (more frequent for position updates)
+        // Sync immediately and then every 3 seconds
         syncStreamStatus();
         const interval = setInterval(syncStreamStatus, 3000);
 
         return () => clearInterval(interval);
-    }, [currentStream?.id, currentStream?.progress, currentStream?.isPlaying]);
+    }, [currentStream?.id, currentStream?.currentTrack, currentStream?.progress, currentStream?.isPlaying]);
 
     // Subscribe to real-time stream property updates
     useEffect(() => {

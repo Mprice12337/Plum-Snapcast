@@ -47,19 +47,38 @@ class DBusInterface:
         self.is_playing = False
         self._initialize_dbus()
 
-    def _initialize_dbus(self):
-        """Initialize D-Bus connection to shairport-sync"""
+    def _initialize_dbus(self, max_retries=10, retry_delay=1):
+        """Initialize D-Bus connection to shairport-sync with retry logic"""
         try:
             import dbus
-            self.bus = dbus.SystemBus()
 
-            # Get remote control interface
-            try:
-                proxy = self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH)
-                self.remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.RemoteControl')
-                log("[DBUS] Connected to RemoteControl interface")
-            except Exception as e:
-                log(f"[DBUS] RemoteControl interface not available: {e}")
+            # Retry D-Bus connection - it might not be ready at startup
+            for attempt in range(max_retries):
+                try:
+                    self.bus = dbus.SystemBus()
+                    log(f"[DBUS] Connected to D-Bus system bus (attempt {attempt + 1})")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        log(f"[DBUS] D-Bus not ready yet (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                    else:
+                        log(f"[DBUS] Failed to connect to D-Bus after {max_retries} attempts: {e}")
+                        return
+
+            # Get remote control interface with retry
+            for attempt in range(max_retries):
+                try:
+                    proxy = self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH)
+                    self.remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.RemoteControl')
+                    log("[DBUS] Connected to RemoteControl interface")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        log(f"[DBUS] Waiting for shairport-sync RemoteControl (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(retry_delay)
+                    else:
+                        log(f"[DBUS] RemoteControl interface not available after {max_retries} attempts: {e}")
 
             # Get advanced remote control interface for position tracking
             try:
