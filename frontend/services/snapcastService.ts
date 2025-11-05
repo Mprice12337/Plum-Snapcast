@@ -406,16 +406,6 @@ export class SnapcastService {
         return this.sendStreamControl(streamId, 'seek', {position: position});
     }
 
-    // Toggle play/pause - more reliable for many stream plugins
-    async togglePlayPause(streamId: string): Promise<any> {
-        const properties = await this.getStreamProperties(streamId);
-        if (!properties.canPause) {
-            throw new Error(`Stream ${streamId} does not support play/pause control`);
-        }
-
-        return this.sendStreamControl(streamId, 'playPause');
-    }
-
     // Stop playback
     async stopStream(streamId: string): Promise<any> {
         console.log(`Stopping stream ${streamId}`);
