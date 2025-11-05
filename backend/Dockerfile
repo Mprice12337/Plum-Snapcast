@@ -147,12 +147,14 @@ RUN mkdir -p \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
     && chmod 755 /usr/share/snapserver/snapweb
 
-# Copy configuration and scripts (UPDATED to include control script)
+# Copy configuration and scripts (UPDATED to include control script and Spotify scripts)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
 COPY scripts/setup.sh /app/scripts/
 COPY scripts/process-airplay-metadata-v2.py /app/scripts/
 COPY scripts/airplay-control-script.py /app/scripts/
+COPY scripts/spotify-event-handler.sh /app/scripts/
+COPY scripts/spotify-control-script.py /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
     chown -R snapcast:snapcast /app
 

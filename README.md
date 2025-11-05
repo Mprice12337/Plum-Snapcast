@@ -2,6 +2,15 @@
 
 A comprehensive multi-room audio streaming solution combining Snapcast with a modern React frontend.
 
+## Features
+
+- **Multi-room Audio Synchronization**: Sample-accurate synchronized playback across multiple devices
+- **AirPlay Support**: Stream audio from iOS, macOS, and iTunes
+- **Spotify Connect**: Direct streaming from the Spotify app with metadata and album artwork
+- **Hardware Audio Output**: Integrated snapclient outputs to Raspberry Pi 3.5mm jack
+- **Modern Web Interface**: Real-time control of streams, clients, and volume
+- **Metadata Display**: Real-time track information and album artwork for AirPlay and Spotify
+
 ## Project Structure
 
 This project consists of two main components:
@@ -112,6 +121,7 @@ After deployment:
 
 - **Web Interface**: http://raspberrypi.local:3000 or http://<pi-ip-address>:3000
 - **AirPlay Device**: Look for "Plum Audio" in AirPlay devices on iOS/macOS
+- **Spotify Connect**: Look for "Plum Audio" in Spotify's device list (enable by setting `SPOTIFY_CONFIG_ENABLED=1` in `.env`)
 
 ### Verification
 
@@ -124,7 +134,7 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 Expected output:
 ```
 avahi              RUNNING
-dbus               RUNNING
+librespot          RUNNING (if Spotify enabled)
 shairport-sync     RUNNING
 snapclient         RUNNING
 snapserver         RUNNING
@@ -133,7 +143,10 @@ snapserver         RUNNING
 ### Configuration
 
 Edit `docker/.env` to customize:
-- `AIRPLAY_DEVICE_NAME`: Name shown in AirPlay device list
+- `AIRPLAY_DEVICE_NAME`: Name shown in AirPlay device list (default: "Plum Audio")
+- `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (0=disabled, 1=enabled, default: 0)
+- `SPOTIFY_DEVICE_NAME`: Name shown in Spotify device list (default: "Plum Audio")
+- `SPOTIFY_BITRATE`: Audio quality for Spotify (96, 160, or 320 kbps, default: 320)
 - `FRONTEND_PORT`: Web interface port (default: 3000)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device for audio output (default: hw:Headphones)
 

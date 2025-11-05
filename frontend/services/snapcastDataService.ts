@@ -121,7 +121,7 @@ const getSourceDevice = (snapStream: any): string => {
 const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> => {
     const metadata = extractMetadataFromStream(snapStream);
 
-    // For AirPlay streams, try to fetch artwork from the JSON endpoint
+    // For AirPlay and Spotify streams, try to fetch artwork from the JSON endpoint
     let albumArtUrl = metadata.artUrl || createDefaultTrack().albumArtUrl;
 
     if (snapStream.uri?.query?.name === 'Airplay') {
@@ -138,6 +138,21 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
             }
         } catch (error) {
             console.log('Could not fetch AirPlay artwork:', error);
+        }
+    } else if (snapStream.uri?.query?.name === 'Spotify') {
+        try {
+            // Use proxied endpoint to avoid CORS issues
+            const artworkResponse = await fetch('/snapcast-api/spotify-artwork.json');
+            if (artworkResponse.ok) {
+                const artworkData = await artworkResponse.json();
+                if (artworkData.artUrl) {
+                    // Construct full URL for the artwork (also proxied)
+                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                    console.log('Fetched Spotify artwork:', albumArtUrl);
+                }
+            }
+        } catch (error) {
+            console.log('Could not fetch Spotify artwork:', error);
         }
     } else if (metadata.artUrl) {
         // For other streams, use metadata artUrl

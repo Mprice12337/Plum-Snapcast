@@ -19,9 +19,15 @@ if [ ! -p /tmp/snapfifo ]; then
 fi
 
 if [ ! -p /tmp/shairport-sync-metadata ]; then
-    echo "Creating metadata pipe..."
+    echo "Creating AirPlay metadata pipe..."
     mkfifo /tmp/shairport-sync-metadata
     chmod 666 /tmp/shairport-sync-metadata
+fi
+
+if [ ! -p /tmp/spotifyfifo ]; then
+    echo "Creating Spotify FIFO pipe..."
+    mkfifo /tmp/spotifyfifo
+    chmod 666 /tmp/spotifyfifo
 fi
 
 # Generate snapserver configuration if it doesn't exist
@@ -56,6 +62,13 @@ SNAPCONF
         echo "Adding AirPlay source..."
         # Insert source after [stream] line with control script for metadata
         sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+    fi
+
+    # Add Spotify source to [stream] section
+    if [ "${SPOTIFY_CONFIG_ENABLED}" = "1" ]; then
+        echo "Adding Spotify source..."
+        # Insert source after [stream] line with control script for metadata
+        sed -i '/^\[stream\]/a source = pipe:///tmp/spotifyfifo?name='"${SPOTIFY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/spotify-control-script.py' /app/config/snapserver.conf
     fi
 fi
 
