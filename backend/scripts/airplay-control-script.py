@@ -431,6 +431,13 @@ class SnapcastControlScript:
             if metadata.get("artUrl"):
                 properties["artUrl"] = metadata["artUrl"]
 
+            # ALWAYS add control capabilities so they don't get lost on metadata updates
+            properties["canPlay"] = True
+            properties["canPause"] = True
+            properties["canGoNext"] = True
+            properties["canGoPrevious"] = True
+            properties["canSeek"] = False  # AirPlay doesn't typically support seeking
+
             # Add playback properties
             if include_position:
                 # Get position from D-Bus
@@ -443,13 +450,6 @@ class SnapcastControlScript:
 
                 # Add playback status
                 properties["playbackStatus"] = "Playing" if self.dbus.is_playing else "Paused"
-
-                # Add control capabilities
-                properties["canPlay"] = True
-                properties["canPause"] = True
-                properties["canGoNext"] = True
-                properties["canGoPrevious"] = True
-                properties["canSeek"] = False  # AirPlay doesn't typically support seeking
 
             # Send Plugin.Stream.Player.Properties
             self.send_notification("Plugin.Stream.Player.Properties", properties)
