@@ -116,8 +116,11 @@ const App: React.FC = () => {
                         }
                     }
 
-                    // Check playing status
-                    const isPlaying = snapcastService.isStreamPlaying(serverStream);
+                    // Check playing status from playbackStatus property (same as snapcastDataService)
+                    let isPlaying = serverStream.status === 'playing';
+                    if (serverStream.properties?.playbackStatus) {
+                        isPlaying = serverStream.properties.playbackStatus.toLowerCase() === 'playing';
+                    }
 
                     // Extract position
                     let serverProgress = currentStream.progress;

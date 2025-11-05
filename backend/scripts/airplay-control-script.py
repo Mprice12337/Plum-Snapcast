@@ -653,8 +653,26 @@ class SnapcastControlScript:
                                 if is_new_track:
                                     log(f"[DEBUG] New track: {metadata.get('title')} - {metadata.get('artist')}")
 
-                                self.last_metadata = metadata
-                                self.send_metadata_update(metadata)
+                                # Merge new metadata with existing, preserving artUrl if not in new data
+                                if self.last_metadata and not metadata.get("artUrl") and self.last_metadata.get("artUrl"):
+                                    # Preserve existing artUrl if new metadata doesn't have it
+                                    metadata["artUrl"] = self.last_metadata["artUrl"]
+                                    log(f"[DEBUG] Preserved existing artUrl: {metadata['artUrl']}")
+
+                                # Check if metadata actually changed before sending update
+                                should_send = (
+                                    not self.last_metadata or
+                                    is_new_track or
+                                    self.last_metadata.get("album") != metadata.get("album") or
+                                    self.last_metadata.get("artUrl") != metadata.get("artUrl")
+                                )
+
+                                if should_send:
+                                    self.last_metadata = metadata
+                                    self.send_metadata_update(metadata)
+                                else:
+                                    log(f"[DEBUG] Metadata unchanged, skipping update")
+                                    self.last_metadata = metadata
 
                                 # Only reset parser after we've processed cover art
                                 # Don't reset on new track - cover art for previous track may still be arriving
