@@ -456,29 +456,11 @@ const App: React.FC = () => {
         console.log('Play/Pause button clicked for stream:', currentStream.id);
 
         try {
-            // Check stream capabilities first
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-            console.log('Stream capabilities:', capabilities);
-
-            if (currentStream.isPlaying) {
-                // Try to pause
-                if (capabilities.canPause) {
-                    await snapcastService.pauseStream(currentStream.id);
-                    console.log(`Pause command sent for stream ${currentStream.id}, waiting for server update...`);
-                    // Don't optimistically update UI - let the notification handler update it
-                } else {
-                    console.log(`Stream ${currentStream.id} does not support pause`);
-                }
-            } else {
-                // Try to play
-                if (capabilities.canPlay) {
-                    await snapcastService.playStream(currentStream.id);
-                    console.log(`Play command sent for stream ${currentStream.id}, waiting for server update...`);
-                    // Don't optimistically update UI - let the notification handler update it
-                } else {
-                    console.log(`Stream ${currentStream.id} does not support play`);
-                }
-            }
+            // Use toggle command - doesn't depend on current state
+            // This prevents state desync issues
+            await snapcastService.togglePlayPause(currentStream.id);
+            console.log(`PlayPause toggle sent for stream ${currentStream.id}, waiting for server update...`);
+            // Don't optimistically update UI - let the notification handler update it
         } catch (error) {
             console.error(`Playback control failed for stream ${currentStream.id}:`, error);
         }

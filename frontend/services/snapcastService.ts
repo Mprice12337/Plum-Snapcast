@@ -360,6 +360,12 @@ export class SnapcastService {
         }
     }
 
+    async togglePlayPause(streamId: string): Promise<any> {
+        console.log(`Toggle play/pause for stream ${streamId}`);
+        // Use playPause command which toggles regardless of current state
+        return this.sendStreamControl(streamId, 'playPause');
+    }
+
     async nextTrack(streamId: string): Promise<any> {
         const properties = await this.getStreamProperties(streamId);
         console.log(`Next track for stream ${streamId} - capabilities:`, properties);

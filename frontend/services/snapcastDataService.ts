@@ -124,42 +124,33 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
     // Use proxied endpoint to avoid CORS issues
     let albumArtUrl = createDefaultTrack().albumArtUrl;
 
-    // Check if this is an AirPlay stream - use the JSON endpoint for artwork
-    if (snapStream.uri?.query?.name === 'Airplay') {
-        try {
-            // Fetch artwork from the JSON file via proxy
-            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
-            if (artworkResponse.ok) {
-                const artworkData = await artworkResponse.json();
-                if (artworkData.artUrl) {
-                    // Use proxied path for artwork
-                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
-                    console.log('Fetched AirPlay artwork via proxy:', albumArtUrl);
-                }
-            }
-        } catch (error) {
-            console.log('Could not fetch AirPlay artwork:', error);
+    // Priority 1: Check stream properties artUrl (comes from real-time notifications)
+    if (snapStream.properties?.artUrl) {
+        const artUrl = snapStream.properties.artUrl;
+        if (artUrl.startsWith('/')) {
+            albumArtUrl = `/snapcast-api${artUrl}`;
+            console.log('Using artwork from properties.artUrl via proxy:', albumArtUrl);
+        } else {
+            albumArtUrl = artUrl;
         }
     }
-
-    // Fall back to metadata artUrl if no AirPlay artwork was found
-    if (albumArtUrl === createDefaultTrack().albumArtUrl) {
-        if (metadata.artUrl) {
-            if (metadata.artUrl.startsWith('/')) {
-                // Use proxy for relative paths
-                albumArtUrl = `/snapcast-api${metadata.artUrl}`;
-                console.log('Using artwork from metadata via proxy:', albumArtUrl);
-            } else {
-                albumArtUrl = metadata.artUrl;
-            }
-        } else if (snapStream.properties?.artUrl) {
-            const artUrl = snapStream.properties.artUrl;
-            if (artUrl.startsWith('/')) {
-                albumArtUrl = `/snapcast-api${artUrl}`;
-                console.log('Using artwork from properties via proxy:', albumArtUrl);
-            } else {
-                albumArtUrl = artUrl;
-            }
+    // Priority 2: Check metadata mpris:artUrl
+    else if (metadata['mpris:artUrl']) {
+        const artUrl = metadata['mpris:artUrl'];
+        if (artUrl.startsWith('/')) {
+            albumArtUrl = `/snapcast-api${artUrl}`;
+            console.log('Using artwork from metadata mpris:artUrl via proxy:', albumArtUrl);
+        } else {
+            albumArtUrl = artUrl;
+        }
+    }
+    // Priority 3: Check metadata artUrl
+    else if (metadata.artUrl) {
+        if (metadata.artUrl.startsWith('/')) {
+            albumArtUrl = `/snapcast-api${metadata.artUrl}`;
+            console.log('Using artwork from metadata.artUrl via proxy:', albumArtUrl);
+        } else {
+            albumArtUrl = metadata.artUrl;
         }
     }
 
