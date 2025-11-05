@@ -156,6 +156,9 @@ cd frontend && npm install
 npm run dev
 # Opens at http://localhost:5173
 
+# Enable access from other devices
+npm run dev -- --host 0.0.0.0
+
 # Build for production
 npm run build
 
