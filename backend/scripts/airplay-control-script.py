@@ -21,8 +21,9 @@ COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 LOG_FILE = "/tmp/airplay-control-script.log"
 DBUS_SERVICE = "org.gnome.ShairportSync"
-DBUS_REMOTE_CONTROL_PATH = "/org/gnome/ShairportSync/RemoteControl"
-DBUS_ADVANCED_REMOTE_CONTROL_PATH = "/org/gnome/ShairportSync/AdvancedRemoteControl"
+DBUS_OBJECT_PATH = "/org/gnome/ShairportSync"
+DBUS_REMOTE_CONTROL_INTERFACE = "org.gnome.ShairportSync.RemoteControl"
+DBUS_ADVANCED_REMOTE_CONTROL_INTERFACE = "org.gnome.ShairportSync.AdvancedRemoteControl"
 
 # Set up logging to file
 def log(message: str):
@@ -69,8 +70,8 @@ class DBusInterface:
             # Get remote control interface with retry
             for attempt in range(max_retries):
                 try:
-                    proxy = self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH)
-                    self.remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.RemoteControl')
+                    proxy = self.bus.get_object(DBUS_SERVICE, DBUS_OBJECT_PATH)
+                    self.remote_control = dbus.Interface(proxy, DBUS_REMOTE_CONTROL_INTERFACE)
                     log("[DBUS] Connected to RemoteControl interface")
                     break
                 except Exception as e:
@@ -82,8 +83,8 @@ class DBusInterface:
 
             # Get advanced remote control interface for position tracking
             try:
-                proxy = self.bus.get_object(DBUS_SERVICE, DBUS_ADVANCED_REMOTE_CONTROL_PATH)
-                self.advanced_remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.AdvancedRemoteControl')
+                proxy = self.bus.get_object(DBUS_SERVICE, DBUS_OBJECT_PATH)
+                self.advanced_remote_control = dbus.Interface(proxy, DBUS_ADVANCED_REMOTE_CONTROL_INTERFACE)
                 log("[DBUS] Connected to AdvancedRemoteControl interface")
             except Exception as e:
                 log(f"[DBUS] AdvancedRemoteControl interface not available: {e}")
@@ -102,7 +103,7 @@ class DBusInterface:
             # Try to get metadata via D-Bus properties
             import dbus
             props_iface = dbus.Interface(
-                self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH),
+                self.bus.get_object(DBUS_SERVICE, DBUS_OBJECT_PATH),
                 'org.freedesktop.DBus.Properties'
             )
 
@@ -110,21 +111,21 @@ class DBusInterface:
 
             # Get standard MPRIS metadata fields
             try:
-                title = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Title')
+                title = props_iface.Get(DBUS_REMOTE_CONTROL_INTERFACE, 'Title')
                 if title:
                     metadata['title'] = str(title)
             except:
                 pass
 
             try:
-                artist = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Artist')
+                artist = props_iface.Get(DBUS_REMOTE_CONTROL_INTERFACE, 'Artist')
                 if artist:
                     metadata['artist'] = str(artist)
             except:
                 pass
 
             try:
-                album = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Album')
+                album = props_iface.Get(DBUS_REMOTE_CONTROL_INTERFACE, 'Album')
                 if album:
                     metadata['album'] = str(album)
             except:
