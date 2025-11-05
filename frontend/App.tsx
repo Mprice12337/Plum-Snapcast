@@ -188,19 +188,25 @@ const App: React.FC = () => {
 
                     setStreams(prevStreams => {
                         // Only update if streams actually changed to avoid unnecessary re-renders
-                        const hasChanges = initialStreams.some((newStream, idx) => {
+                        const hasChanges = initialStreams.some((newStream) => {
                             const oldStream = prevStreams.find(s => s.id === newStream.id);
                             if (!oldStream) return true;
 
+                            // Check all relevant fields for changes
                             return (
                                 oldStream.currentTrack.title !== newStream.currentTrack.title ||
                                 oldStream.currentTrack.artist !== newStream.currentTrack.artist ||
+                                oldStream.currentTrack.album !== newStream.currentTrack.album ||
                                 oldStream.currentTrack.albumArtUrl !== newStream.currentTrack.albumArtUrl ||
                                 oldStream.isPlaying !== newStream.isPlaying
                             );
                         });
 
-                        return hasChanges ? initialStreams : prevStreams;
+                        if (hasChanges) {
+                            console.log('Stream data changed, updating UI');
+                            return initialStreams;
+                        }
+                        return prevStreams;
                     });
 
                     console.log('Streams updated from notification');
@@ -455,12 +461,8 @@ const App: React.FC = () => {
                 // Try to pause
                 if (capabilities.canPause) {
                     await snapcastService.pauseStream(currentStream.id);
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: false} : s
-                        )
-                    );
-                    console.log(`Successfully paused stream ${currentStream.id}`);
+                    console.log(`Pause command sent for stream ${currentStream.id}, waiting for server update...`);
+                    // Don't optimistically update UI - let the notification handler update it
                 } else {
                     console.log(`Stream ${currentStream.id} does not support pause`);
                 }
@@ -468,12 +470,8 @@ const App: React.FC = () => {
                 // Try to play
                 if (capabilities.canPlay) {
                     await snapcastService.playStream(currentStream.id);
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: true} : s
-                        )
-                    );
-                    console.log(`Successfully started playing stream ${currentStream.id}`);
+                    console.log(`Play command sent for stream ${currentStream.id}, waiting for server update...`);
+                    // Don't optimistically update UI - let the notification handler update it
                 } else {
                     console.log(`Stream ${currentStream.id} does not support play`);
                 }

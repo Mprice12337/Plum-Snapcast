@@ -439,6 +439,9 @@ class SnapcastControlScript:
             properties["canGoPrevious"] = True
             properties["canSeek"] = False  # AirPlay doesn't typically support seeking
 
+            # ALWAYS add playback status so frontend stays in sync
+            properties["playbackStatus"] = "Playing" if self.dbus.is_playing else "Paused"
+
             # Add playback properties
             if include_position:
                 # Get position from D-Bus
@@ -448,9 +451,6 @@ class SnapcastControlScript:
                     position_ms = position_us // 1000
                     properties["position"] = position_ms
                     self.last_position = position_ms
-
-                # Add playback status
-                properties["playbackStatus"] = "Playing" if self.dbus.is_playing else "Paused"
 
             # Send Plugin.Stream.Player.Properties
             self.send_notification("Plugin.Stream.Player.Properties", properties)
