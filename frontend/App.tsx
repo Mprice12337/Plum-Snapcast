@@ -81,7 +81,7 @@ const App: React.FC = () => {
 
     useAudioSync(currentStream, updateStreamProgress);
 
-    // Periodically sync stream status with server
+    // Periodically sync stream status and progress with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
@@ -91,11 +91,22 @@ const App: React.FC = () => {
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Only update if the status has changed
-                    if (isPlaying !== currentStream.isPlaying) {
+                    // Extract position from properties if available (in ms, convert to seconds)
+                    let serverProgress = currentStream.progress;
+                    if (serverStream.properties?.position !== undefined) {
+                        serverProgress = Math.floor(serverStream.properties.position / 1000);
+                    }
+
+                    // Update if status or progress has changed significantly (>2 seconds difference)
+                    const progressDiff = Math.abs(serverProgress - currentStream.progress);
+                    const shouldUpdate = isPlaying !== currentStream.isPlaying || progressDiff > 2;
+
+                    if (shouldUpdate) {
                         setStreams(prevStreams =>
                             prevStreams.map(s =>
-                                s.id === currentStream.id ? {...s, isPlaying} : s
+                                s.id === currentStream.id
+                                    ? {...s, isPlaying, progress: serverProgress}
+                                    : s
                             )
                         );
                     }
@@ -105,12 +116,12 @@ const App: React.FC = () => {
             }
         };
 
-        // Sync immediately and then every 5 seconds
+        // Sync immediately and then every 3 seconds (more frequent for position updates)
         syncStreamStatus();
-        const interval = setInterval(syncStreamStatus, 5000);
+        const interval = setInterval(syncStreamStatus, 3000);
 
         return () => clearInterval(interval);
-    }, [currentStream?.id]);
+    }, [currentStream?.id, currentStream?.progress, currentStream?.isPlaying]);
 
     useEffect(() => {
         let isCancelled = false;

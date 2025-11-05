@@ -7,7 +7,7 @@ ARG BUILDPLATFORM
 LABEL maintainer="Plum-Snapcast"
 LABEL description="Snapcast server with AirPlay and Spotify support"
 
-# Install runtime dependencies (ADDED python3 for metadata processor)
+# Install runtime dependencies (ADDED python3 and py3-dbus for metadata processor)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -30,7 +30,8 @@ RUN apk add --no-cache \
     libgcrypt \
     libuuid \
     ffmpeg-libs \
-    python3
+    python3 \
+    py3-dbus
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \

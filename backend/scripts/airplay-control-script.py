@@ -2,6 +2,7 @@
 """
 Snapcast Control Script for AirPlay Metadata
 Reads metadata from shairport-sync pipe and provides it to Snapcast via JSON-RPC
+Supports initial metadata fetch, position tracking, and media controls via D-Bus
 """
 
 import argparse
@@ -12,13 +13,16 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 # Configuration
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
 COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 LOG_FILE = "/tmp/airplay-control-script.log"
+DBUS_SERVICE = "org.gnome.ShairportSync"
+DBUS_REMOTE_CONTROL_PATH = "/org/gnome/ShairportSync/RemoteControl"
+DBUS_ADVANCED_REMOTE_CONTROL_PATH = "/org/gnome/ShairportSync/AdvancedRemoteControl"
 
 # Set up logging to file
 def log(message: str):
@@ -31,6 +35,161 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+
+class DBusInterface:
+    """Interface to shairport-sync via D-Bus"""
+
+    def __init__(self):
+        self.bus = None
+        self.remote_control = None
+        self.advanced_remote_control = None
+        self.is_playing = False
+        self._initialize_dbus()
+
+    def _initialize_dbus(self):
+        """Initialize D-Bus connection to shairport-sync"""
+        try:
+            import dbus
+            self.bus = dbus.SystemBus()
+
+            # Get remote control interface
+            try:
+                proxy = self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH)
+                self.remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.RemoteControl')
+                log("[DBUS] Connected to RemoteControl interface")
+            except Exception as e:
+                log(f"[DBUS] RemoteControl interface not available: {e}")
+
+            # Get advanced remote control interface for position tracking
+            try:
+                proxy = self.bus.get_object(DBUS_SERVICE, DBUS_ADVANCED_REMOTE_CONTROL_PATH)
+                self.advanced_remote_control = dbus.Interface(proxy, 'org.gnome.ShairportSync.AdvancedRemoteControl')
+                log("[DBUS] Connected to AdvancedRemoteControl interface")
+            except Exception as e:
+                log(f"[DBUS] AdvancedRemoteControl interface not available: {e}")
+
+        except ImportError:
+            log("[DBUS] python-dbus not available, D-Bus features disabled")
+        except Exception as e:
+            log(f"[DBUS] Failed to initialize D-Bus: {e}")
+
+    def get_current_metadata(self) -> Optional[Dict[str, Any]]:
+        """Get current metadata from shairport-sync D-Bus interface"""
+        if not self.remote_control:
+            return None
+
+        try:
+            # Try to get metadata via D-Bus properties
+            import dbus
+            props_iface = dbus.Interface(
+                self.bus.get_object(DBUS_SERVICE, DBUS_REMOTE_CONTROL_PATH),
+                'org.freedesktop.DBus.Properties'
+            )
+
+            metadata = {}
+
+            # Get standard MPRIS metadata fields
+            try:
+                title = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Title')
+                if title:
+                    metadata['title'] = str(title)
+            except:
+                pass
+
+            try:
+                artist = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Artist')
+                if artist:
+                    metadata['artist'] = str(artist)
+            except:
+                pass
+
+            try:
+                album = props_iface.Get(DBUS_SERVICE + '.RemoteControl', 'Album')
+                if album:
+                    metadata['album'] = str(album)
+            except:
+                pass
+
+            if metadata:
+                log(f"[DBUS] Fetched initial metadata: {metadata}")
+                return metadata
+
+        except Exception as e:
+            log(f"[DBUS] Failed to get metadata: {e}")
+
+        return None
+
+    def get_position(self) -> Optional[int]:
+        """Get current playback position in microseconds"""
+        if not self.advanced_remote_control:
+            return None
+
+        try:
+            # GetPlayerPosition returns position in microseconds
+            position = self.advanced_remote_control.GetPlayerPosition()
+            return int(position)
+        except Exception as e:
+            # Not all versions of shairport-sync support this
+            return None
+
+    def play(self):
+        """Send play command"""
+        if self.remote_control:
+            try:
+                self.remote_control.Play()
+                log("[DBUS] Sent Play command")
+                self.is_playing = True
+                return True
+            except Exception as e:
+                log(f"[DBUS] Play failed: {e}")
+        return False
+
+    def pause(self):
+        """Send pause command"""
+        if self.remote_control:
+            try:
+                self.remote_control.Pause()
+                log("[DBUS] Sent Pause command")
+                self.is_playing = False
+                return True
+            except Exception as e:
+                log(f"[DBUS] Pause failed: {e}")
+        return False
+
+    def play_pause(self):
+        """Toggle play/pause"""
+        if self.remote_control:
+            try:
+                self.remote_control.PlayPause()
+                self.is_playing = not self.is_playing
+                log(f"[DBUS] Sent PlayPause command (now {'playing' if self.is_playing else 'paused'})")
+                return True
+            except Exception as e:
+                log(f"[DBUS] PlayPause failed: {e}")
+        return False
+
+    def next_track(self):
+        """Skip to next track"""
+        if self.remote_control:
+            try:
+                self.remote_control.Next()
+                log("[DBUS] Sent Next command")
+                return True
+            except Exception as e:
+                log(f"[DBUS] Next failed: {e}")
+        return False
+
+    def previous_track(self):
+        """Skip to previous track"""
+        if self.remote_control:
+            try:
+                self.remote_control.Previous()
+                log("[DBUS] Sent Previous command")
+                return True
+            except Exception as e:
+                log(f"[DBUS] Previous failed: {e}")
+        return False
 
 class MetadataParser:
     """Parse shairport-sync metadata format"""
@@ -190,6 +349,9 @@ class SnapcastControlScript:
         self.stream_id = stream_id
         self.metadata_parser = MetadataParser()
         self.last_metadata = {}
+        self.dbus = DBusInterface()
+        self.last_position = 0
+        self.position_update_interval = 2  # Update position every 2 seconds
         log(f"[DEBUG] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
@@ -221,7 +383,7 @@ class SnapcastControlScript:
         except Exception as e:
             log(f"Error writing artwork JSON: {e}")
 
-    def send_metadata_update(self, metadata: Dict):
+    def send_metadata_update(self, metadata: Dict, include_position: bool = False):
         """Send Plugin.Stream.Player.Properties with metadata"""
         # Build metadata dict (nested under "metadata" key as per Snapcast spec)
         meta_obj = {}
@@ -241,18 +403,42 @@ class SnapcastControlScript:
             # Use MPRIS standard field name for artwork
             meta_obj["mpris:artUrl"] = metadata["artUrl"]
 
-        if meta_obj:
+        if meta_obj or include_position:
             # Build the properties object
-            properties = {"metadata": meta_obj}
+            properties = {"metadata": meta_obj} if meta_obj else {}
 
             # Also add artUrl as a top-level property (not just in metadata)
             # since Snapcast might filter metadata fields but preserve top-level properties
             if metadata.get("artUrl"):
                 properties["artUrl"] = metadata["artUrl"]
 
+            # Add playback properties
+            if include_position:
+                # Get position from D-Bus
+                position_us = self.dbus.get_position()
+                if position_us is not None:
+                    # Convert microseconds to milliseconds for Snapcast
+                    position_ms = position_us // 1000
+                    properties["position"] = position_ms
+                    self.last_position = position_ms
+
+                # Add playback status
+                properties["playbackStatus"] = "Playing" if self.dbus.is_playing else "Paused"
+
+                # Add control capabilities
+                properties["canPlay"] = True
+                properties["canPause"] = True
+                properties["canGoNext"] = True
+                properties["canGoPrevious"] = True
+                properties["canSeek"] = False  # AirPlay doesn't typically support seeking
+
             # Send Plugin.Stream.Player.Properties
             self.send_notification("Plugin.Stream.Player.Properties", properties)
-            log(f"[DEBUG] Sent metadata update: {list(meta_obj.keys())}")
+
+            if meta_obj:
+                log(f"[DEBUG] Sent metadata update: {list(meta_obj.keys())}")
+            if include_position and "position" in properties:
+                log(f"[DEBUG] Sent position update: {properties['position']}ms, status: {properties.get('playbackStatus')}")
             if metadata.get("artUrl"):
                 log(f"[DEBUG] Also sent top-level artUrl: {metadata['artUrl']}")
 
@@ -261,14 +447,54 @@ class SnapcastControlScript:
         if metadata.get("artUrl"):
             self._write_artwork_json(metadata)
 
+    def fetch_and_send_initial_metadata(self):
+        """Fetch current metadata from D-Bus and send to Snapcast"""
+        log("[DEBUG] Fetching initial metadata from D-Bus...")
+        initial_metadata = self.dbus.get_current_metadata()
+
+        if initial_metadata:
+            self.last_metadata = initial_metadata
+            self.send_metadata_update(initial_metadata, include_position=True)
+            log("[DEBUG] Sent initial metadata to Snapcast")
+        else:
+            log("[DEBUG] No initial metadata available from D-Bus")
+
+    def update_position(self):
+        """Periodically update playback position"""
+        log("[DEBUG] Starting position updater thread")
+        while True:
+            try:
+                time.sleep(self.position_update_interval)
+
+                # Only send position updates if we have metadata
+                if self.last_metadata:
+                    position_us = self.dbus.get_position()
+                    if position_us is not None:
+                        position_ms = position_us // 1000
+
+                        # Only send update if position changed significantly (>1 second)
+                        if abs(position_ms - self.last_position) > 1000:
+                            # Send just the position update
+                            properties = {
+                                "position": position_ms,
+                                "playbackStatus": "Playing" if self.dbus.is_playing else "Paused"
+                            }
+                            self.send_notification("Plugin.Stream.Player.Properties", properties)
+                            self.last_position = position_ms
+
+            except Exception as e:
+                log(f"[DEBUG] Error in position updater: {e}")
+                time.sleep(5)  # Back off on error
+
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
         try:
             request = json.loads(line)
             method = request.get("method", "")
+            params = request.get("params", {})
             request_id = request.get("id")
 
-            log(f"[DEBUG] Received command: {method}")
+            log(f"[DEBUG] Received command: {method} with params: {params}")
 
             # Respond to getProperties with current metadata
             if method == "Plugin.Stream.Player.GetProperties":
@@ -286,10 +512,23 @@ class SnapcastControlScript:
                         # Use MPRIS standard field name for artwork
                         meta_obj["mpris:artUrl"] = self.last_metadata["artUrl"]
 
-                # Build result with metadata and top-level artUrl
+                # Build result with metadata, position, and capabilities
                 result = {"metadata": meta_obj}
                 if self.last_metadata and self.last_metadata.get("artUrl"):
                     result["artUrl"] = self.last_metadata["artUrl"]
+
+                # Add position if available
+                position_us = self.dbus.get_position()
+                if position_us is not None:
+                    result["position"] = position_us // 1000  # Convert to ms
+
+                # Add playback status and capabilities
+                result["playbackStatus"] = "Playing" if self.dbus.is_playing else "Paused"
+                result["canPlay"] = True
+                result["canPause"] = True
+                result["canGoNext"] = True
+                result["canGoPrevious"] = True
+                result["canSeek"] = False
 
                 response = {
                     "jsonrpc": "2.0",
@@ -299,6 +538,40 @@ class SnapcastControlScript:
                 response_str = json.dumps(response)
                 print(response_str, file=sys.stdout, flush=True)
                 log(f"[DEBUG] Sent GetProperties response: {response_str[:300]}")
+
+            # Handle control commands
+            elif method == "Plugin.Stream.Player.Control":
+                command = params.get("command", "")
+                log(f"[DEBUG] Received control command: {command}")
+
+                success = False
+                if command == "play":
+                    success = self.dbus.play()
+                elif command == "pause":
+                    success = self.dbus.pause()
+                elif command == "playPause":
+                    success = self.dbus.play_pause()
+                elif command == "next":
+                    success = self.dbus.next_track()
+                elif command == "previous" or command == "prev":
+                    success = self.dbus.previous_track()
+                else:
+                    log(f"[DEBUG] Unknown control command: {command}")
+
+                # Send response
+                if request_id is not None:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"success": success}
+                    }
+                    response_str = json.dumps(response)
+                    print(response_str, file=sys.stdout, flush=True)
+                    log(f"[DEBUG] Sent control response: success={success}")
+
+                # Send updated properties after control command
+                if success and self.last_metadata:
+                    self.send_metadata_update(self.last_metadata, include_position=True)
 
         except json.JSONDecodeError:
             log(f"[DEBUG] Invalid JSON: {line}")
@@ -398,9 +671,19 @@ class SnapcastControlScript:
         metadata_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
         metadata_thread.start()
 
+        # Start position updater in background thread
+        position_thread = threading.Thread(target=self.update_position, daemon=True)
+        position_thread.start()
+
         # Send Plugin.Stream.Ready notification to tell Snapcast we're ready
         self.send_notification("Plugin.Stream.Ready", {})
         log("[DEBUG] Sent Plugin.Stream.Ready notification")
+
+        # Wait a moment for shairport-sync to be available on D-Bus
+        time.sleep(2)
+
+        # Fetch and send initial metadata if available
+        self.fetch_and_send_initial_metadata()
 
         # Process commands from stdin (from Snapcast)
         log("[DEBUG] Listening for commands on stdin...")
