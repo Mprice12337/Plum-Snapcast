@@ -88,6 +88,7 @@ export class SnapcastService {
     private ws: WebSocket | null = null;
     private messageId = 1;
     private callbacks: Map<number, (response: any) => void> = new Map();
+    private notificationHandlers: Map<string, Array<(params: any) => void>> = new Map();
     private host: string;
     private port: number;
     private isConnected = false;
@@ -96,6 +97,30 @@ export class SnapcastService {
         this.host =
             this.host = window.location.hostname;
         this.port = 1780;
+    }
+
+    /**
+     * Subscribe to a specific notification type
+     * @param method The notification method to listen for
+     * @param handler Function to call when notification is received
+     * @returns Unsubscribe function
+     */
+    onNotification(method: string, handler: (params: any) => void): () => void {
+        if (!this.notificationHandlers.has(method)) {
+            this.notificationHandlers.set(method, []);
+        }
+        this.notificationHandlers.get(method)!.push(handler);
+
+        // Return unsubscribe function
+        return () => {
+            const handlers = this.notificationHandlers.get(method);
+            if (handlers) {
+                const index = handlers.indexOf(handler);
+                if (index > -1) {
+                    handlers.splice(index, 1);
+                }
+            }
+        };
     }
 
     connect(): Promise<void> {
@@ -151,6 +176,20 @@ export class SnapcastService {
     private handleNotification(message: SnapcastResponse) {
         // Handle real-time updates from the server
         console.log('Received notification:', message.method, message.params);
+
+        // Dispatch to registered handlers
+        if (message.method) {
+            const handlers = this.notificationHandlers.get(message.method);
+            if (handlers) {
+                handlers.forEach(handler => {
+                    try {
+                        handler(message.params);
+                    } catch (error) {
+                        console.error(`Error in notification handler for ${message.method}:`, error);
+                    }
+                });
+            }
+        }
     }
 
     private sendRequest(method: string, params: any = {}): Promise<any> {
@@ -449,6 +488,7 @@ export class SnapcastService {
             this.ws = null;
         }
         this.callbacks.clear();
+        this.notificationHandlers.clear();
         this.isConnected = false;
     }
 }

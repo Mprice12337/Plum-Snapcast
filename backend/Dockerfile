@@ -7,12 +7,13 @@ ARG BUILDPLATFORM
 LABEL maintainer="Plum-Snapcast"
 LABEL description="Snapcast server with AirPlay and Spotify support"
 
-# Install runtime dependencies (ADDED python3 and py3-dbus for metadata processor)
+# Install runtime dependencies (ADDED python3, py3-dbus, and dbus-tools for metadata processor)
 RUN apk add --no-cache \
     bash \
     avahi \
     avahi-tools \
     dbus \
+    dbus-x11 \
     supervisor \
     curl \
     openssl \
@@ -148,12 +149,13 @@ RUN mkdir -p \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
     && chmod 755 /usr/share/snapserver/snapweb
 
-# Copy configuration and scripts (UPDATED to include control script)
+# Copy configuration and scripts (UPDATED to include control script and debug script)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
 COPY scripts/setup.sh /app/scripts/
 COPY scripts/process-airplay-metadata-v2.py /app/scripts/
 COPY scripts/airplay-control-script.py /app/scripts/
+COPY scripts/debug-airplay-control.sh /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
     chown -R snapcast:snapcast /app
 

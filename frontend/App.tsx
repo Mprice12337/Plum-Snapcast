@@ -123,6 +123,48 @@ const App: React.FC = () => {
         return () => clearInterval(interval);
     }, [currentStream?.id, currentStream?.progress, currentStream?.isPlaying]);
 
+    // Subscribe to real-time stream property updates
+    useEffect(() => {
+        // Subscribe to stream property updates from control scripts
+        const unsubscribe = snapcastService.onNotification('Plugin.Stream.Player.Properties', (params) => {
+            console.log('Stream property update received:', params);
+
+            // Update stream state with new properties
+            setStreams(prevStreams => {
+                // Find which stream this update is for
+                // The control script sends properties without stream ID in params,
+                // so we need to refetch server status or rely on periodic sync
+                // For now, log and let periodic sync handle it
+                return prevStreams;
+            });
+        });
+
+        // Subscribe to server status updates (includes stream changes)
+        const unsubscribeServerUpdate = snapcastService.onNotification('Server.OnUpdate', async (params) => {
+            console.log('Server update notification received:', params);
+
+            // Refetch server status to get latest stream info
+            try {
+                const serverStatus = await snapcastService.getServerStatus();
+                const {server} = serverStatus;
+
+                if (server && server.streams) {
+                    // Update streams with latest data from server
+                    const {getSnapcastData} = await import('./services/snapcastDataService');
+                    const {initialStreams} = await getSnapcastData();
+                    setStreams(initialStreams);
+                }
+            } catch (error) {
+                console.error('Error handling server update:', error);
+            }
+        });
+
+        return () => {
+            unsubscribe();
+            unsubscribeServerUpdate();
+        };
+    }, []);
+
     useEffect(() => {
         let isCancelled = false;
 
