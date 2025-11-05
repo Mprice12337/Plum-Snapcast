@@ -121,32 +121,28 @@ const getSourceDevice = (snapStream: any): string => {
 const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> => {
     const metadata = extractMetadataFromStream(snapStream);
 
-    // For AirPlay streams, try to fetch artwork from the JSON endpoint
-    let albumArtUrl = metadata.artUrl || createDefaultTrack().albumArtUrl;
+    // Use metadata artUrl directly - it's already in stream.properties
+    let albumArtUrl = createDefaultTrack().albumArtUrl;
 
-    if (snapStream.uri?.query?.name === 'Airplay') {
-        try {
-            // Fetch artwork metadata from snapserver HTTP interface
-            const artworkUrl = `${snapcastService.getHttpUrl()}/airplay-artwork.json`;
-            const artworkResponse = await fetch(artworkUrl);
-            if (artworkResponse.ok) {
-                const artworkData = await artworkResponse.json();
-                if (artworkData.artUrl) {
-                    // Construct full URL for the artwork from snapserver
-                    albumArtUrl = `${snapcastService.getHttpUrl()}${artworkData.artUrl}`;
-                    console.log('Fetched AirPlay artwork:', albumArtUrl);
-                }
-            }
-        } catch (error) {
-            console.log('Could not fetch AirPlay artwork:', error);
-        }
-    } else if (metadata.artUrl) {
-        // For other streams, use metadata artUrl
+    if (metadata.artUrl) {
+        // Artwork URL from stream properties
         if (metadata.artUrl.startsWith('/')) {
             // Relative path - prepend Snapcast HTTP server URL
             albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            console.log('Using artwork from stream properties:', albumArtUrl);
         } else {
             albumArtUrl = metadata.artUrl;
+        }
+    }
+
+    // Also check top-level artUrl property
+    if (snapStream.properties?.artUrl) {
+        const artUrl = snapStream.properties.artUrl;
+        if (artUrl.startsWith('/')) {
+            albumArtUrl = `${snapcastService.getHttpUrl()}${artUrl}`;
+            console.log('Using artwork from properties.artUrl:', albumArtUrl);
+        } else {
+            albumArtUrl = artUrl;
         }
     }
 
