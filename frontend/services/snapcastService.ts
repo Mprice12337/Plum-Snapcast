@@ -94,9 +94,17 @@ export class SnapcastService {
     private isConnected = false;
 
     constructor() {
-        this.host =
-            this.host = window.location.hostname;
-        this.port = 1780;
+        this.host = window.location.hostname;
+
+        // Use WSS (secure) if page is HTTPS, otherwise WS
+        // Use port 1788 for HTTPS/WSS, 1780 for HTTP/WS
+        if (window.location.protocol === 'https:') {
+            this.port = 1788;  // HTTPS port
+            console.log('Using secure WebSocket (WSS) on port 1788');
+        } else {
+            this.port = 1780;  // HTTP port
+            console.log('Using unsecure WebSocket (WS) on port 1780');
+        }
     }
 
     /**
@@ -126,7 +134,10 @@ export class SnapcastService {
     connect(): Promise<void> {
         return new Promise((resolve, reject) => {
             try {
-                const wsUrl = `ws://${this.host}:${this.port}/jsonrpc`;
+                // Use wss:// for HTTPS, ws:// for HTTP
+                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                const wsUrl = `${protocol}://${this.host}:${this.port}/jsonrpc`;
+                console.log('Connecting to Snapcast WebSocket:', wsUrl);
                 this.ws = new WebSocket(wsUrl);
 
                 this.ws.onopen = () => {
@@ -479,7 +490,9 @@ export class SnapcastService {
      * Used for constructing cover art URLs
      */
     getHttpUrl(): string {
-        return `http://${this.host}:${this.port}`;
+        // Use https:// for HTTPS pages, http:// for HTTP pages
+        const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
+        return `${protocol}://${this.host}:${this.port}`;
     }
 
     disconnect() {
