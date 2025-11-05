@@ -99,12 +99,21 @@ const App: React.FC = () => {
                                   (metadata.artist || currentStream.currentTrack.artist);
                     const album = metadata.album || currentStream.currentTrack.album;
 
-                    // Extract artwork URL
+                    // Extract artwork URL - use proxy to avoid CORS issues
                     let albumArtUrl = currentStream.currentTrack.albumArtUrl;
                     if (metadata['mpris:artUrl']) {
-                        albumArtUrl = `${snapcastService.getHttpUrl()}${metadata['mpris:artUrl']}`;
+                        // Use proxy for artwork URLs
+                        if (metadata['mpris:artUrl'].startsWith('/')) {
+                            albumArtUrl = `/snapcast-api${metadata['mpris:artUrl']}`;
+                        } else {
+                            albumArtUrl = metadata['mpris:artUrl'];
+                        }
                     } else if (serverStream.properties?.artUrl) {
-                        albumArtUrl = `${snapcastService.getHttpUrl()}${serverStream.properties.artUrl}`;
+                        if (serverStream.properties.artUrl.startsWith('/')) {
+                            albumArtUrl = `/snapcast-api${serverStream.properties.artUrl}`;
+                        } else {
+                            albumArtUrl = serverStream.properties.artUrl;
+                        }
                     }
 
                     // Check playing status
@@ -164,17 +173,41 @@ const App: React.FC = () => {
     // Subscribe to real-time stream property updates
     useEffect(() => {
         // Subscribe to stream property updates from control scripts
-        const unsubscribe = snapcastService.onNotification('Plugin.Stream.Player.Properties', (params) => {
+        const unsubscribe = snapcastService.onNotification('Plugin.Stream.Player.Properties', async (params) => {
             console.log('Stream property update received:', params);
 
-            // Update stream state with new properties
-            setStreams(prevStreams => {
-                // Find which stream this update is for
-                // The control script sends properties without stream ID in params,
-                // so we need to refetch server status or rely on periodic sync
-                // For now, log and let periodic sync handle it
-                return prevStreams;
-            });
+            // Trigger a full sync to get the latest stream data with updated properties
+            try {
+                const serverStatus = await snapcastService.getServerStatus();
+                const {server} = serverStatus;
+
+                if (server && server.streams) {
+                    // Update all streams with latest data from server
+                    const {getSnapcastData} = await import('./services/snapcastDataService');
+                    const {initialStreams} = await getSnapcastData();
+
+                    setStreams(prevStreams => {
+                        // Only update if streams actually changed to avoid unnecessary re-renders
+                        const hasChanges = initialStreams.some((newStream, idx) => {
+                            const oldStream = prevStreams.find(s => s.id === newStream.id);
+                            if (!oldStream) return true;
+
+                            return (
+                                oldStream.currentTrack.title !== newStream.currentTrack.title ||
+                                oldStream.currentTrack.artist !== newStream.currentTrack.artist ||
+                                oldStream.currentTrack.albumArtUrl !== newStream.currentTrack.albumArtUrl ||
+                                oldStream.isPlaying !== newStream.isPlaying
+                            );
+                        });
+
+                        return hasChanges ? initialStreams : prevStreams;
+                    });
+
+                    console.log('Streams updated from notification');
+                }
+            } catch (error) {
+                console.error('Error handling stream property update:', error);
+            }
         });
 
         // Subscribe to server status updates (includes stream changes)
