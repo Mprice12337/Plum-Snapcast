@@ -11,7 +11,7 @@
 - Hardware audio output via integrated snapclient (Raspberry Pi 3.5mm jack)
 - Modern React-based web interface for controlling streams and managing clients
 - Real-time WebSocket communication using JSON-RPC 2.0
-- Multiple audio sources: AirPlay (1 and 2), Spotify Connect, FIFO pipes
+- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect, FIFO pipes
 - Real-time metadata display with album artwork
 - Individual and group volume control with mute functionality
 
@@ -51,6 +51,7 @@
 - **Audio Client**: Snapcast client (integrated in same container)
 - **Audio Sources**:
   - **Shairport-Sync**: AirPlay Classic/1 and AirPlay 2 support
+  - **BlueZ + bluez-alsa**: Bluetooth A2DP audio reception
   - **Librespot**: Spotify Connect client
   - **FIFO Pipes**: Direct audio input support
 - **Process Management**: Supervisord for managing multiple processes
@@ -79,6 +80,9 @@ Backend (via Docker):
 - `snapcast-server` - Multi-room audio synchronization server
 - `snapcast-client` - Audio output client (integrated, outputs to hw:Headphones)
 - `shairport-sync` - AirPlay audio receiver with metadata support
+- `bluez` - Linux Bluetooth stack for device pairing and control
+- `bluez-alsa` - Bluetooth audio (A2DP) via ALSA integration
+- `py3-dbus` - Python D-Bus bindings for Bluetooth metadata extraction
 - `librespot` - Spotify Connect client
 - `avahi` - Service discovery for network audio (mDNS/DNS-SD)
 - `dbus` - Inter-process communication (container uses host's D-Bus socket)
@@ -201,12 +205,12 @@ Frontend:
 The complete audio flow from source to speakers:
 
 ```
-iOS/Mac Device (AirPlay) or Spotify App
+iOS/Mac Device (AirPlay), Bluetooth Phone, or Spotify App
               ↓
-    shairport-sync / librespot
+    shairport-sync / bluealsa / librespot
     (receives audio stream)
               ↓
-       /tmp/snapfifo (FIFO pipe)
+       /tmp/snapfifo or /tmp/bluetooth-fifo (FIFO pipe)
     (audio transport layer)
               ↓
          snapserver
@@ -229,6 +233,7 @@ All services run in a single Docker container managed by supervisord for simplif
 - **Snapcast Server**: Core audio synchronization server managing streams, groups, and clients
 - **Snapcast Client**: Audio output client (integrated in same container, outputs to hardware)
 - **Shairport-Sync**: Receives AirPlay audio streams and outputs to Snapcast via FIFO
+- **BlueZ + bluez-alsa**: Bluetooth stack for A2DP audio reception and ALSA integration
 - **Librespot**: Spotify Connect endpoint that streams to Snapcast via FIFO
 - **Supervisord**: Manages all services within the container with auto-restart
 - **Avahi Daemon**: Broadcasts AirPlay/Spotify services on the network via mDNS
@@ -266,7 +271,7 @@ All services run in a single Docker container managed by supervisord for simplif
 User action → React component → snapcastService (WebSocket JSON-RPC) → Snapcast server → Audio output via snapclient → Speakers
 
 **Metadata Flow:**
-AirPlay/Spotify → Shairport-Sync/Librespot → Custom processing script → Snapcast stream properties → WebSocket → Frontend → UI display
+AirPlay/Bluetooth/Spotify → Shairport-Sync/BlueZ D-Bus/Librespot → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
 
 ---
 
@@ -398,6 +403,15 @@ shellcheck backend/scripts/*.sh
 - `SNAPCLIENT_HOST`: Snapserver address (default: `localhost`)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device name (default: `hw:Headphones`)
 - `SNAPCLIENT_LATENCY`: PCM device latency in ms (default: `0`)
+
+#### Bluetooth Configuration
+- `BLUETOOTH_ENABLED`: Enable Bluetooth A2DP source (default: `0`)
+- `BLUETOOTH_SOURCE_NAME`: Display name in Snapcast (default: `Bluetooth`)
+- `BLUETOOTH_DEVICE_NAME`: Speaker name for Bluetooth pairing (default: `Plum Audio`)
+- `BLUETOOTH_ADAPTER`: Bluetooth adapter to use (default: `hci0`)
+- `BLUETOOTH_DEVICE_PATH`: Custom Bluetooth device path (optional, e.g., `/dev/hci0` for USB adapter)
+- `BLUETOOTH_AUTO_PAIR`: Auto-accept pairing requests (default: `1`)
+- `BLUETOOTH_DISCOVERABLE`: Make device discoverable for pairing (default: `1`)
 
 #### Spotify Configuration
 - `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (default: `0`)
@@ -673,6 +687,8 @@ snapcastService.ws.addEventListener('message', (e) => console.log('WS:', e.data)
 **Common Issues:**
 - **No audio output**: Check audio device permissions with `docker exec plum-snapcast-server aplay -l`
 - **AirPlay not visible**: Verify Avahi is running and host Avahi is disabled
+- **Bluetooth not pairing**: Check `docker exec plum-snapcast-server bluetoothctl show` and verify `BLUETOOTH_DISCOVERABLE=1`
+- **Bluetooth no audio**: Verify bluealsa service is running with `docker exec plum-snapcast-server supervisorctl status bluealsa`
 - **D-Bus errors**: Ensure host D-Bus socket is mounted and accessible
 - **Audio group mismatch**: Verify container audio group is GID 29
 

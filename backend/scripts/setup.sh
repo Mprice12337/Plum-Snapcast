@@ -24,6 +24,12 @@ if [ ! -p /tmp/shairport-sync-metadata ]; then
     chmod 666 /tmp/shairport-sync-metadata
 fi
 
+if [ ! -p /tmp/bluetooth-fifo ]; then
+    echo "Creating Bluetooth FIFO pipe..."
+    mkfifo /tmp/bluetooth-fifo
+    chmod 666 /tmp/bluetooth-fifo
+fi
+
 # Create artwork cache directory for shairport-sync
 echo "Creating artwork cache directory..."
 mkdir -p /tmp/shairport-sync/.cache/coverart
@@ -62,6 +68,14 @@ SNAPCONF
         echo "Adding AirPlay source..."
         # Insert source after [stream] line with control script for metadata
         sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+    fi
+
+    # Add Bluetooth source to [stream] section
+    if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
+        echo "Adding Bluetooth source..."
+        # Insert source after [stream] line with control script for metadata
+        # Bluetooth audio is typically 44.1kHz/16-bit stereo
+        sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
     fi
 fi
 
