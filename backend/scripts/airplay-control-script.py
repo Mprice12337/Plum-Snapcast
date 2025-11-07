@@ -305,9 +305,23 @@ class MetadataParser:
                             current_title = self.current_metadata.get("title")
                             current_artist = self.current_metadata.get("artist")
 
-                            if (current_title == self.artwork_track_title and
-                                current_artist == self.artwork_track_artist):
+                            log(f"[DEBUG] Artwork validation check:")
+                            log(f"[DEBUG]   Recorded when PICT started: title='{self.artwork_track_title}', artist='{self.artwork_track_artist}'")
+                            log(f"[DEBUG]   Current metadata now: title='{current_title}', artist='{current_artist}'")
+
+                            # Check if artwork was recorded before metadata arrived (artwork_track is None)
+                            if self.artwork_track_title is None or self.artwork_track_artist is None:
+                                # Artwork arrived before metadata - use current track
+                                log(f"[DEBUG] Artwork arrived before metadata, using current track metadata")
+                                self._save_cover_art()
+                                self.pending_cover_data = []
+                                if self.current_metadata.get("artUrl"):
+                                    log(f"[DEBUG] Cover art complete, sending update")
+                                    return self.current_metadata.copy()
+                            elif (current_title == self.artwork_track_title and
+                                  current_artist == self.artwork_track_artist):
                                 # Track hasn't changed, save artwork
+                                log(f"[DEBUG] Metadata matches, saving artwork")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 # Cover art is complete - return it even if we already sent basic metadata
@@ -316,7 +330,9 @@ class MetadataParser:
                                     return self.current_metadata.copy()
                             else:
                                 # Track changed while we were collecting artwork - discard it
-                                log(f"[DEBUG] Track changed during artwork collection (was: {self.artwork_track_title} - {self.artwork_track_artist}, now: {current_title} - {current_artist}) - discarding stale artwork")
+                                log(f"[DEBUG] Track changed during artwork collection - discarding stale artwork")
+                                log(f"[DEBUG]   Was: '{self.artwork_track_title}' by '{self.artwork_track_artist}'")
+                                log(f"[DEBUG]   Now: '{current_title}' by '{current_artist}'")
                                 self.pending_cover_data = []
                                 self.artwork_track_title = None
                                 self.artwork_track_artist = None
