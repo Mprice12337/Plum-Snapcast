@@ -222,6 +222,9 @@ class MetadataParser:
             "artUrl": None
         }
         self.pending_cover_data = []
+        # Track which track the pending artwork belongs to
+        self.artwork_track_title = None
+        self.artwork_track_artist = None
 
     def parse_item(self, item_xml: str) -> Optional[Dict[str, str]]:
         """Parse a complete XML item and return updated metadata if complete"""
@@ -261,10 +264,18 @@ class MetadataParser:
             # Process based on type and code
             updated = False
             if item_type == "core" and code == "asar":  # Artist
+                # Check if this is a new track (artist changed)
+                if self.current_metadata.get("artist") and self.current_metadata["artist"] != decoded:
+                    log(f"[DEBUG] Artist changed from '{self.current_metadata['artist']}' to '{decoded}' - clearing artwork")
+                    self.current_metadata["artUrl"] = None  # Clear artwork for new track
                 self.current_metadata["artist"] = decoded
                 updated = True
                 log(f"[DEBUG] Artist: {decoded}")
             elif item_type == "core" and code == "minm":  # Title/Track name
+                # Check if this is a new track (title changed)
+                if self.current_metadata.get("title") and self.current_metadata["title"] != decoded:
+                    log(f"[DEBUG] Title changed from '{self.current_metadata['title']}' to '{decoded}' - clearing artwork")
+                    self.current_metadata["artUrl"] = None  # Clear artwork for new track
                 self.current_metadata["title"] = decoded
                 updated = True
                 log(f"[DEBUG] Title: {decoded}")
@@ -278,18 +289,37 @@ class MetadataParser:
                 if code == "PICT":
                     if encoding == "base64" and data_text:
                         # This is a PICT data chunk
+                        # On first chunk, record which track this artwork belongs to
+                        if len(self.pending_cover_data) == 0:
+                            self.artwork_track_title = self.current_metadata.get("title")
+                            self.artwork_track_artist = self.current_metadata.get("artist")
+                            log(f"[DEBUG] Starting artwork collection for track: {self.artwork_track_title} - {self.artwork_track_artist}")
                         self.pending_cover_data.append(data_text)
                         log(f"[DEBUG] Collected PICT chunk ({len(data_text)} chars), total chunks: {len(self.pending_cover_data)}")
                     else:
                         # This is the PICT end signal (no data)
                         if self.pending_cover_data:
                             log(f"[DEBUG] PICT end signal with {len(self.pending_cover_data)} chunks")
-                            self._save_cover_art()
-                            self.pending_cover_data = []
-                            # Cover art is complete - return it even if we already sent basic metadata
-                            if self.current_metadata.get("artUrl"):
-                                log(f"[DEBUG] Cover art complete, sending update")
-                                return self.current_metadata.copy()
+
+                            # Check if track has changed since we started collecting artwork
+                            current_title = self.current_metadata.get("title")
+                            current_artist = self.current_metadata.get("artist")
+
+                            if (current_title == self.artwork_track_title and
+                                current_artist == self.artwork_track_artist):
+                                # Track hasn't changed, save artwork
+                                self._save_cover_art()
+                                self.pending_cover_data = []
+                                # Cover art is complete - return it even if we already sent basic metadata
+                                if self.current_metadata.get("artUrl"):
+                                    log(f"[DEBUG] Cover art complete, sending update")
+                                    return self.current_metadata.copy()
+                            else:
+                                # Track changed while we were collecting artwork - discard it
+                                log(f"[DEBUG] Track changed during artwork collection (was: {self.artwork_track_title} - {self.artwork_track_artist}, now: {current_title} - {current_artist}) - discarding stale artwork")
+                                self.pending_cover_data = []
+                                self.artwork_track_title = None
+                                self.artwork_track_artist = None
                         else:
                             log(f"[DEBUG] PICT end signal but no chunks collected")
 
@@ -360,6 +390,8 @@ class MetadataParser:
             "artUrl": None
         }
         self.pending_cover_data = []
+        self.artwork_track_title = None
+        self.artwork_track_artist = None
 
 
 class SnapcastControlScript:
