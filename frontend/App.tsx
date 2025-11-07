@@ -99,8 +99,18 @@ const App: React.FC = () => {
                                   (metadata.artist || currentStream.currentTrack.artist);
                     const album = metadata.album || currentStream.currentTrack.album;
 
+                    // Check if this is a NEW track (title or artist changed)
+                    const isNewTrack =
+                        title !== currentStream.currentTrack.title ||
+                        artist !== currentStream.currentTrack.artist;
+
+                    // Default placeholder artwork (SVG)
+                    const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+
                     // Extract artwork URL - use proxy to avoid CORS issues
-                    let albumArtUrl = currentStream.currentTrack.albumArtUrl;
+                    // If it's a new track without artwork, use default placeholder
+                    let albumArtUrl = isNewTrack ? defaultArtwork : currentStream.currentTrack.albumArtUrl;
+
                     if (metadata['mpris:artUrl']) {
                         // Use proxy for artwork URLs
                         if (metadata['mpris:artUrl'].startsWith('/')) {
@@ -118,6 +128,9 @@ const App: React.FC = () => {
                             albumArtUrl = serverStream.properties.artUrl;
                             console.log('Set albumArtUrl from properties.artUrl (external):', albumArtUrl);
                         }
+                    } else if (isNewTrack) {
+                        // New track but no artwork yet - use placeholder
+                        console.log('New track without artwork, using placeholder');
                     }
 
                     // Check playing status from playbackStatus property (same as snapcastDataService)
