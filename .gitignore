@@ -5,5 +5,10 @@ node_modules/
 dist/
 build/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Development resources (not for version control)
 _resources/
