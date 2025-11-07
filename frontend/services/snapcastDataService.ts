@@ -160,9 +160,28 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
             const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
             if (artworkResponse.ok) {
                 const artworkData = await artworkResponse.json();
-                if (artworkData.artUrl) {
+
+                // Validate JSON file metadata matches current track
+                const jsonTitle = artworkData.title;
+                const jsonArtist = Array.isArray(artworkData.artist)
+                    ? artworkData.artist.join(', ')
+                    : artworkData.artist;
+                const jsonAlbum = artworkData.album;
+
+                const currentTitle = metadata.title || metadata.name;
+                const currentArtist = formatArtist(metadata.artist);
+                const currentAlbum = metadata.album;
+
+                const metadataMatches =
+                    jsonTitle === currentTitle &&
+                    jsonArtist === currentArtist &&
+                    jsonAlbum === currentAlbum;
+
+                if (artworkData.artUrl && metadataMatches) {
                     albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
-                    console.log('Using artwork from JSON file via proxy:', albumArtUrl);
+                    console.log('Using artwork from JSON file via proxy (metadata matches):', albumArtUrl);
+                } else if (!metadataMatches) {
+                    console.log('JSON file metadata does not match current track (stale), skipping artwork');
                 }
             }
         } catch (error) {

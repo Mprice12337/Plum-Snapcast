@@ -134,9 +134,26 @@ const App: React.FC = () => {
                             const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
                             if (artworkResponse.ok) {
                                 const artworkData = await artworkResponse.json();
-                                if (artworkData.artUrl) {
+
+                                // Validate JSON file metadata matches current track
+                                const jsonTitle = artworkData.title;
+                                const jsonArtist = Array.isArray(artworkData.artist)
+                                    ? artworkData.artist.join(', ')
+                                    : artworkData.artist;
+                                const jsonAlbum = artworkData.album;
+
+                                const metadataMatches =
+                                    jsonTitle === title &&
+                                    jsonArtist === artist &&
+                                    jsonAlbum === album;
+
+                                if (artworkData.artUrl && metadataMatches) {
                                     albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
-                                    console.log('✓ Set albumArtUrl from JSON file:', albumArtUrl);
+                                    console.log('✓ Set albumArtUrl from JSON file (metadata matches):', albumArtUrl);
+                                } else if (!metadataMatches) {
+                                    console.log('⚠ JSON file metadata does not match current track (stale artwork), skipping');
+                                    console.log('  JSON:', {title: jsonTitle, artist: jsonArtist, album: jsonAlbum});
+                                    console.log('  Current:', {title, artist, album});
                                 } else {
                                     console.log('⚠ JSON file exists but has no artUrl');
                                 }
