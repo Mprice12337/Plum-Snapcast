@@ -94,8 +94,10 @@ const App: React.FC = () => {
                 if (serverStream) {
                     // Extract metadata from stream properties
                     const metadata = serverStream.properties?.metadata || {};
-                    console.log('Stream properties:', serverStream.properties);
-                    console.log('Metadata:', metadata);
+                    console.log('=== FULL Stream Properties (JSON) ===');
+                    console.log(JSON.stringify(serverStream.properties, null, 2));
+                    console.log('=== Metadata Object (JSON) ===');
+                    console.log(JSON.stringify(metadata, null, 2));
 
                     const title = metadata.name || metadata.title || currentStream.currentTrack.title;
                     const artist = Array.isArray(metadata.artist) ? metadata.artist.join(', ') :
@@ -126,7 +128,24 @@ const App: React.FC = () => {
                             console.log('✓ Set albumArtUrl from properties.artUrl (external):', albumArtUrl);
                         }
                     } else {
-                        console.log('⚠ No artwork found in metadata or properties');
+                        // Snapcast filters out artUrl! Fetch from JSON file instead
+                        console.log('⚠ No artwork in properties (Snapcast filters it), fetching from JSON file...');
+                        try {
+                            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
+                            if (artworkResponse.ok) {
+                                const artworkData = await artworkResponse.json();
+                                if (artworkData.artUrl) {
+                                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                                    console.log('✓ Set albumArtUrl from JSON file:', albumArtUrl);
+                                } else {
+                                    console.log('⚠ JSON file exists but has no artUrl');
+                                }
+                            } else {
+                                console.log('⚠ Failed to fetch artwork JSON:', artworkResponse.status);
+                            }
+                        } catch (error) {
+                            console.log('⚠ Error fetching artwork JSON:', error);
+                        }
                     }
 
                     console.log('Final albumArtUrl:', albumArtUrl);

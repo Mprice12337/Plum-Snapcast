@@ -153,6 +153,23 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
             albumArtUrl = metadata.artUrl;
         }
     }
+    // Priority 4: Fetch from JSON file (Snapcast filters out artUrl properties)
+    else {
+        console.log('No artwork in stream properties, fetching from JSON file...');
+        try {
+            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
+            if (artworkResponse.ok) {
+                const artworkData = await artworkResponse.json();
+                if (artworkData.artUrl) {
+                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                    console.log('Using artwork from JSON file via proxy:', albumArtUrl);
+                }
+            }
+        } catch (error) {
+            console.log('Could not fetch artwork from JSON file:', error);
+            // Keep default artwork
+        }
+    }
 
     const track: Track = {
         id: snapStream.id || 'unknown',
