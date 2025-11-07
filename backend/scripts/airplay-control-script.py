@@ -394,8 +394,7 @@ class SnapcastControlScript:
                 "artUrl": metadata.get("artUrl"),
                 "title": metadata.get("title"),
                 "artist": metadata.get("artist"),
-                "album": metadata.get("album"),
-                "timestamp": time.time()
+                "album": metadata.get("album")
             }
             with open(artwork_file, 'w') as f:
                 json.dump(artwork_data, f)
