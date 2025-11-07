@@ -105,14 +105,18 @@ const App: React.FC = () => {
                         // Use proxy for artwork URLs
                         if (metadata['mpris:artUrl'].startsWith('/')) {
                             albumArtUrl = `/snapcast-api${metadata['mpris:artUrl']}`;
+                            console.log('Set albumArtUrl from mpris:artUrl:', albumArtUrl);
                         } else {
                             albumArtUrl = metadata['mpris:artUrl'];
+                            console.log('Set albumArtUrl from mpris:artUrl (external):', albumArtUrl);
                         }
                     } else if (serverStream.properties?.artUrl) {
                         if (serverStream.properties.artUrl.startsWith('/')) {
                             albumArtUrl = `/snapcast-api${serverStream.properties.artUrl}`;
+                            console.log('Set albumArtUrl from properties.artUrl:', albumArtUrl);
                         } else {
                             albumArtUrl = serverStream.properties.artUrl;
+                            console.log('Set albumArtUrl from properties.artUrl (external):', albumArtUrl);
                         }
                     }
 

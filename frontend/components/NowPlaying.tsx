@@ -10,11 +10,20 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream}) => {
     const {currentTrack, progress} = stream;
     const progressPercent = (progress / currentTrack.duration) * 100;
 
+    // Extract clean URL without any query parameters
+    const cleanArtUrl = currentTrack.albumArtUrl.split('?')[0];
+
+    // Debug: Log if albumArtUrl has query parameters
+    if (currentTrack.albumArtUrl !== cleanArtUrl) {
+        console.warn('Artwork URL had query parameters:', currentTrack.albumArtUrl, '→ cleaned to:', cleanArtUrl);
+    }
+
     return (
         <div className="flex flex-col md:flex-row items-center gap-6 p-4">
             <div className="flex-shrink-0">
                 <img
-                    src={currentTrack.albumArtUrl}
+                    key={cleanArtUrl}
+                    src={cleanArtUrl}
                     alt={`Album art for ${currentTrack.album}`}
                     className="w-48 h-48 md:w-56 md:h-56 rounded-lg shadow-lg object-cover transition-transform duration-300 hover:scale-105"
                 />
