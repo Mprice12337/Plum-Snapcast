@@ -495,8 +495,8 @@ class SnapcastControlScript:
 
         # Since Snapcast filters out artUrl, write it to a JSON file
         # that the frontend can fetch via HTTP
-        if metadata.get("artUrl"):
-            self._write_artwork_json(metadata)
+        # Always write, even if artUrl is None (cleared when track changes)
+        self._write_artwork_json(metadata)
 
     def fetch_and_send_initial_metadata(self):
         """Fetch current metadata from D-Bus and send to Snapcast"""
