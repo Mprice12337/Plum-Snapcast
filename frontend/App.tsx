@@ -94,6 +94,9 @@ const App: React.FC = () => {
                 if (serverStream) {
                     // Extract metadata from stream properties
                     const metadata = serverStream.properties?.metadata || {};
+                    console.log('Stream properties:', serverStream.properties);
+                    console.log('Metadata:', metadata);
+
                     const title = metadata.name || metadata.title || currentStream.currentTrack.title;
                     const artist = Array.isArray(metadata.artist) ? metadata.artist.join(', ') :
                                   (metadata.artist || currentStream.currentTrack.artist);
@@ -104,22 +107,29 @@ const App: React.FC = () => {
                     // Priority 2: properties.artUrl (top-level property)
                     // Backend clears artwork when track changes, so we can trust these values
                     let albumArtUrl = currentStream.currentTrack.albumArtUrl;
+                    console.log('Starting with current albumArtUrl:', albumArtUrl);
 
                     if (metadata['mpris:artUrl']) {
                         if (metadata['mpris:artUrl'].startsWith('/')) {
                             albumArtUrl = `/snapcast-api${metadata['mpris:artUrl']}`;
-                            console.log('Set albumArtUrl from mpris:artUrl:', albumArtUrl);
+                            console.log('✓ Set albumArtUrl from mpris:artUrl:', albumArtUrl);
                         } else {
                             albumArtUrl = metadata['mpris:artUrl'];
+                            console.log('✓ Set albumArtUrl from mpris:artUrl (external):', albumArtUrl);
                         }
                     } else if (serverStream.properties?.artUrl) {
                         if (serverStream.properties.artUrl.startsWith('/')) {
                             albumArtUrl = `/snapcast-api${serverStream.properties.artUrl}`;
-                            console.log('Set albumArtUrl from properties.artUrl:', albumArtUrl);
+                            console.log('✓ Set albumArtUrl from properties.artUrl:', albumArtUrl);
                         } else {
                             albumArtUrl = serverStream.properties.artUrl;
+                            console.log('✓ Set albumArtUrl from properties.artUrl (external):', albumArtUrl);
                         }
+                    } else {
+                        console.log('⚠ No artwork found in metadata or properties');
                     }
+
+                    console.log('Final albumArtUrl:', albumArtUrl);
 
                     // Check playing status from playbackStatus property (same as snapcastDataService)
                     let isPlaying = serverStream.status === 'playing';
@@ -144,7 +154,17 @@ const App: React.FC = () => {
                     const progressDiff = Math.abs(serverProgress - currentStream.progress);
                     const progressChanged = progressDiff > 2;
 
+                    console.log('Change detection:', {
+                        metadataChanged,
+                        statusChanged,
+                        progressChanged,
+                        artworkChanged: albumArtUrl !== currentStream.currentTrack.albumArtUrl,
+                        oldArtUrl: currentStream.currentTrack.albumArtUrl,
+                        newArtUrl: albumArtUrl
+                    });
+
                     if (metadataChanged || statusChanged || progressChanged) {
+                        console.log('⟳ Updating stream state with new albumArtUrl:', albumArtUrl);
                         setStreams(prevStreams =>
                             prevStreams.map(s =>
                                 s.id === currentStream.id
@@ -163,6 +183,8 @@ const App: React.FC = () => {
                                     : s
                             )
                         );
+                    } else {
+                        console.log('⊘ No changes detected, skipping state update');
                     }
                 }
             } catch (error) {
