@@ -652,12 +652,10 @@ class SnapcastControlScript:
 
                                 if is_new_track:
                                     log(f"[DEBUG] New track: {metadata.get('title')} - {metadata.get('artist')}")
-
-                                # Merge new metadata with existing, preserving artUrl if not in new data
-                                if self.last_metadata and not metadata.get("artUrl") and self.last_metadata.get("artUrl"):
-                                    # Preserve existing artUrl if new metadata doesn't have it
-                                    metadata["artUrl"] = self.last_metadata["artUrl"]
-                                    log(f"[DEBUG] Preserved existing artUrl: {metadata['artUrl']}")
+                                    # On new track, clear old artwork if new metadata doesn't have it yet
+                                    # Better to show no artwork briefly than wrong artwork
+                                    if not metadata.get("artUrl"):
+                                        log(f"[DEBUG] New track without artwork - will wait for artwork to arrive")
 
                                 # Check if metadata actually changed before sending update
                                 should_send = (
