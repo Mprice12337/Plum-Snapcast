@@ -307,15 +307,24 @@ class MetadataParser:
                             self.picture_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
                             log(f"[DEBUG] Picture rtptime: {self.picture_rtptime}")
                         except:
-                            pass
+                            self.picture_rtptime = None
+                    else:
+                        self.picture_rtptime = None
+
+                    # Only record title/artist if we don't have rtptime
+                    # If we have rtptime, we'll use ONLY that for validation
+                    if self.picture_rtptime is None:
+                        self.artwork_track_title = self.current_metadata.get("title")
+                        self.artwork_track_artist = self.current_metadata.get("artist")
+                        log(f"[DEBUG] Picture start (no rtptime) for track: {self.artwork_track_title} - {self.artwork_track_artist}")
+                    else:
+                        # We have rtptime - don't rely on title/artist (could be wrong if track changed)
+                        self.artwork_track_title = None
+                        self.artwork_track_artist = None
+                        log(f"[DEBUG] Picture start with rtptime: {self.picture_rtptime}")
                 elif code == "PICT":
                     if encoding == "base64" and data_text:
-                        # This is a PICT data chunk
-                        # On first chunk, record which track this artwork belongs to
-                        if len(self.pending_cover_data) == 0:
-                            self.artwork_track_title = self.current_metadata.get("title")
-                            self.artwork_track_artist = self.current_metadata.get("artist")
-                            log(f"[DEBUG] Starting artwork collection for track: {self.artwork_track_title} - {self.artwork_track_artist}")
+                        # This is a PICT data chunk - just collect it
                         self.pending_cover_data.append(data_text)
                         log(f"[DEBUG] Collected PICT chunk ({len(data_text)} chars), total chunks: {len(self.pending_cover_data)}")
                     else:
