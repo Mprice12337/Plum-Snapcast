@@ -296,8 +296,9 @@ class MetadataParser:
                         try:
                             rtptime_bytes = base64.b64decode(data_text)
                             # rtptime is 4 bytes, big-endian unsigned integer
+                            prev_rtptime = self.metadata_rtptime
                             self.metadata_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
-                            log(f"[DEBUG] Metadata rtptime: {self.metadata_rtptime}")
+                            log(f"[RTPTIME] Metadata rtptime: {prev_rtptime} → {self.metadata_rtptime}")
                         except:
                             pass
                 elif code == "pcst":  # Picture Start - contains rtptime for picture
@@ -305,7 +306,9 @@ class MetadataParser:
                         try:
                             rtptime_bytes = base64.b64decode(data_text)
                             self.picture_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
-                            log(f"[DEBUG] Picture rtptime: {self.picture_rtptime}")
+                            log(f"[RTPTIME] Picture rtptime: {self.picture_rtptime}")
+                            log(f"[RTPTIME]   Current metadata rtptime: {self.metadata_rtptime}")
+                            log(f"[RTPTIME]   Match: {self.picture_rtptime == self.metadata_rtptime}")
                         except:
                             self.picture_rtptime = None
                     else:
@@ -316,12 +319,15 @@ class MetadataParser:
                     if self.picture_rtptime is None:
                         self.artwork_track_title = self.current_metadata.get("title")
                         self.artwork_track_artist = self.current_metadata.get("artist")
-                        log(f"[DEBUG] Picture start (no rtptime) for track: {self.artwork_track_title} - {self.artwork_track_artist}")
+                        log(f"[PCST] Picture start (NO rtptime) for: '{self.artwork_track_title}' - '{self.artwork_track_artist}'")
                     else:
                         # We have rtptime - don't rely on title/artist (could be wrong if track changed)
                         self.artwork_track_title = None
                         self.artwork_track_artist = None
-                        log(f"[DEBUG] Picture start with rtptime: {self.picture_rtptime}")
+                        current_title = self.current_metadata.get("title")
+                        current_artist = self.current_metadata.get("artist")
+                        log(f"[PCST] Picture start WITH rtptime: {self.picture_rtptime}")
+                        log(f"[PCST]   Current track: '{current_title}' - '{current_artist}'")
                 elif code == "PICT":
                     if encoding == "base64" and data_text:
                         # This is a PICT data chunk - just collect it
@@ -336,10 +342,10 @@ class MetadataParser:
                             current_title = self.current_metadata.get("title")
                             current_artist = self.current_metadata.get("artist")
 
-                            log(f"[DEBUG] Artwork validation check:")
-                            log(f"[DEBUG]   Recorded when PICT started: title='{self.artwork_track_title}', artist='{self.artwork_track_artist}'")
-                            log(f"[DEBUG]   Current metadata now: title='{current_title}', artist='{current_artist}'")
-                            log(f"[DEBUG]   Metadata rtptime: {self.metadata_rtptime}, Picture rtptime: {self.picture_rtptime}")
+                            log(f"[VALIDATION] ========== ARTWORK VALIDATION CHECK ==========")
+                            log(f"[VALIDATION] Recorded when PICT started: title='{self.artwork_track_title}', artist='{self.artwork_track_artist}'")
+                            log(f"[VALIDATION] Current metadata now: title='{current_title}', artist='{current_artist}'")
+                            log(f"[VALIDATION] Metadata rtptime: {self.metadata_rtptime}, Picture rtptime: {self.picture_rtptime}")
 
                             # Use rtptime correlation (official method) if available
                             rtptime_matches = (
@@ -356,32 +362,35 @@ class MetadataParser:
 
                             if rtptime_matches:
                                 # Primary validation: rtptime matches (most reliable)
-                                log(f"[DEBUG] ✓ rtptime matches - saving artwork")
+                                log(f"[VALIDATION] ✓✓✓ PASS: rtptime matches ({self.metadata_rtptime}) - SAVING ARTWORK")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 if self.current_metadata.get("artUrl"):
-                                    log(f"[DEBUG] Cover art complete, sending update")
+                                    log(f"[VALIDATION] Cover art complete, sending metadata update")
                                     return self.current_metadata.copy()
                             elif self.metadata_rtptime is None and self.picture_rtptime is None and title_artist_matches:
                                 # Fallback validation: No rtptime available, use title/artist
-                                log(f"[DEBUG] ✓ No rtptime available, title/artist matches - saving artwork")
+                                log(f"[VALIDATION] ✓✓✓ PASS: No rtptime, title/artist matches - SAVING ARTWORK")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 if self.current_metadata.get("artUrl"):
-                                    log(f"[DEBUG] Cover art complete, sending update")
+                                    log(f"[VALIDATION] Cover art complete, sending metadata update")
                                     return self.current_metadata.copy()
                             else:
                                 # Validation failed - discard artwork
                                 if self.metadata_rtptime is not None and self.picture_rtptime is not None:
-                                    log(f"[DEBUG] ✗ rtptime mismatch - discarding stale artwork")
-                                    log(f"[DEBUG]   Metadata rtptime: {self.metadata_rtptime}, Picture rtptime: {self.picture_rtptime}")
+                                    log(f"[VALIDATION] ✗✗✗ FAIL: rtptime mismatch - DISCARDING STALE ARTWORK")
+                                    log(f"[VALIDATION]   Metadata rtptime: {self.metadata_rtptime}")
+                                    log(f"[VALIDATION]   Picture rtptime: {self.picture_rtptime}")
+                                    log(f"[VALIDATION]   Difference: {abs(self.metadata_rtptime - self.picture_rtptime)}")
                                 else:
-                                    log(f"[DEBUG] ✗ Track changed during artwork collection - discarding stale artwork")
-                                    log(f"[DEBUG]   Was: '{self.artwork_track_title}' by '{self.artwork_track_artist}'")
-                                    log(f"[DEBUG]   Now: '{current_title}' by '{current_artist}'")
+                                    log(f"[VALIDATION] ✗✗✗ FAIL: Track changed - DISCARDING STALE ARTWORK")
+                                    log(f"[VALIDATION]   Was: '{self.artwork_track_title}' by '{self.artwork_track_artist}'")
+                                    log(f"[VALIDATION]   Now: '{current_title}' by '{current_artist}'")
                                 self.pending_cover_data = []
                                 self.artwork_track_title = None
                                 self.artwork_track_artist = None
+                            log(f"[VALIDATION] ==============================================")
                         else:
                             log(f"[DEBUG] PICT end signal but no chunks collected")
 
@@ -480,6 +489,7 @@ class SnapcastControlScript:
         self.dbus = DBusInterface()
         self.last_position = 0
         self.position_update_interval = 2  # Update position every 2 seconds
+        self.artwork_sequence = 0  # Increments with each artwork write
         log(f"[DEBUG] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
@@ -497,18 +507,26 @@ class SnapcastControlScript:
     def _write_artwork_json(self, metadata: Dict):
         """Write current artwork URL to JSON file for frontend to fetch"""
         try:
+            self.artwork_sequence += 1
             artwork_file = Path(SNAPCAST_WEB_ROOT) / "airplay-artwork.json"
             artwork_data = {
                 "artUrl": metadata.get("artUrl"),
                 "title": metadata.get("title"),
                 "artist": metadata.get("artist"),
-                "album": metadata.get("album")
+                "album": metadata.get("album"),
+                "sequence": self.artwork_sequence,  # Frontend can detect new artwork
+                "timestamp": int(time.time() * 1000),  # Milliseconds since epoch
+                "metadata_rtptime": self.metadata_parser.metadata_rtptime,  # Debug info
+                "picture_rtptime": self.metadata_parser.picture_rtptime,  # Debug info
             }
             with open(artwork_file, 'w') as f:
-                json.dump(artwork_data, f)
-            log(f"[DEBUG] Wrote artwork JSON to {artwork_file}")
+                json.dump(artwork_data, f, indent=2)
+            log(f"[ARTWORK-WRITE] Sequence #{self.artwork_sequence}: '{metadata.get('title')}' by '{metadata.get('artist')}'")
+            log(f"[ARTWORK-WRITE]   artUrl: {metadata.get('artUrl')}")
+            log(f"[ARTWORK-WRITE]   metadata_rtptime: {self.metadata_parser.metadata_rtptime}, picture_rtptime: {self.metadata_parser.picture_rtptime}")
+            log(f"[ARTWORK-WRITE]   Wrote to: {artwork_file}")
         except Exception as e:
-            log(f"Error writing artwork JSON: {e}")
+            log(f"[ARTWORK-WRITE] ERROR writing artwork JSON: {e}")
 
     def send_metadata_update(self, metadata: Dict, include_position: bool = False):
         """Send Plugin.Stream.Player.Properties with metadata"""

@@ -34,6 +34,10 @@ const App: React.FC = () => {
         }
     });
 
+    // Track artwork state for debugging
+    const [displayedArtworkSequence, setDisplayedArtworkSequence] = useState<number | null>(null);
+    const [displayedArtworkUrl, setDisplayedArtworkUrl] = useState<string | null>(null);
+
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
 
@@ -129,11 +133,24 @@ const App: React.FC = () => {
                         }
                     } else {
                         // Snapcast filters out artUrl! Fetch from JSON file instead
-                        console.log('⚠ No artwork in properties (Snapcast filters it), fetching from JSON file...');
+                        console.log('[ARTWORK-FETCH] ========================================');
+                        console.log('[ARTWORK-FETCH] No artwork in WebSocket properties (Snapcast filters it)');
+                        console.log('[ARTWORK-FETCH] Current track from WebSocket:', {title, artist, album});
+                        console.log('[ARTWORK-FETCH] Fetching from JSON file...');
+
                         try {
-                            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
+                            const fetchStartTime = Date.now();
+                            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json?_=' + fetchStartTime);
+                            const fetchDuration = Date.now() - fetchStartTime;
+
                             if (artworkResponse.ok) {
                                 const artworkData = await artworkResponse.json();
+                                console.log('[ARTWORK-FETCH] JSON fetched in ' + fetchDuration + 'ms');
+                                console.log('[ARTWORK-FETCH] JSON data:', JSON.stringify(artworkData, null, 2));
+
+                                // Check sequence number - only update if it's new
+                                const jsonSequence = artworkData.sequence;
+                                console.log('[ARTWORK-FETCH] Sequence: JSON=' + jsonSequence + ', Displayed=' + displayedArtworkSequence);
 
                                 // Validate JSON file metadata matches current track
                                 const jsonTitle = artworkData.title;
@@ -142,27 +159,42 @@ const App: React.FC = () => {
                                     : artworkData.artist;
                                 const jsonAlbum = artworkData.album;
 
-                                const metadataMatches =
-                                    jsonTitle === title &&
-                                    jsonArtist === artist &&
-                                    jsonAlbum === album;
+                                const titleMatches = jsonTitle === title;
+                                const artistMatches = jsonArtist === artist;
+                                const albumMatches = jsonAlbum === album;
+                                const metadataMatches = titleMatches && artistMatches && albumMatches;
+
+                                console.log('[ARTWORK-FETCH] Validation:');
+                                console.log('[ARTWORK-FETCH]   Title match:', titleMatches, '(JSON: "' + jsonTitle + '" vs Current: "' + title + '")');
+                                console.log('[ARTWORK-FETCH]   Artist match:', artistMatches, '(JSON: "' + jsonArtist + '" vs Current: "' + artist + '")');
+                                console.log('[ARTWORK-FETCH]   Album match:', albumMatches, '(JSON: "' + jsonAlbum + '" vs Current: "' + album + '")');
+                                console.log('[ARTWORK-FETCH]   Overall match:', metadataMatches);
 
                                 if (artworkData.artUrl && metadataMatches) {
-                                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
-                                    console.log('✓ Set albumArtUrl from JSON file (metadata matches):', albumArtUrl);
+                                    // Check if this is actually new artwork
+                                    if (jsonSequence !== displayedArtworkSequence) {
+                                        albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
+                                        setDisplayedArtworkSequence(jsonSequence);
+                                        setDisplayedArtworkUrl(albumArtUrl);
+                                        console.log('[ARTWORK-FETCH] ✓✓✓ SUCCESS: New artwork accepted (sequence #' + jsonSequence + ')');
+                                        console.log('[ARTWORK-FETCH]   URL:', albumArtUrl);
+                                        console.log('[ARTWORK-FETCH]   rtptime: metadata=' + artworkData.metadata_rtptime + ', picture=' + artworkData.picture_rtptime);
+                                    } else {
+                                        console.log('[ARTWORK-FETCH] ⊘ SKIP: Same sequence #' + jsonSequence + ' (already displayed)');
+                                    }
                                 } else if (!metadataMatches) {
-                                    console.log('⚠ JSON file metadata does not match current track (stale artwork), skipping');
-                                    console.log('  JSON:', {title: jsonTitle, artist: jsonArtist, album: jsonAlbum});
-                                    console.log('  Current:', {title, artist, album});
-                                } else {
-                                    console.log('⚠ JSON file exists but has no artUrl');
+                                    console.log('[ARTWORK-FETCH] ✗✗✗ REJECTED: Metadata mismatch (stale artwork)');
+                                    console.log('[ARTWORK-FETCH]   This is the race condition! JSON was written for a different track.');
+                                } else if (!artworkData.artUrl) {
+                                    console.log('[ARTWORK-FETCH] ⚠ WARNING: JSON file exists but has no artUrl');
                                 }
                             } else {
-                                console.log('⚠ Failed to fetch artwork JSON:', artworkResponse.status);
+                                console.log('[ARTWORK-FETCH] ✗ ERROR: Failed to fetch (HTTP ' + artworkResponse.status + ')');
                             }
                         } catch (error) {
-                            console.log('⚠ Error fetching artwork JSON:', error);
+                            console.log('[ARTWORK-FETCH] ✗ ERROR: Exception:', error);
                         }
+                        console.log('[ARTWORK-FETCH] ========================================');
                     }
 
                     console.log('Final albumArtUrl:', albumArtUrl);
@@ -190,17 +222,25 @@ const App: React.FC = () => {
                     const progressDiff = Math.abs(serverProgress - currentStream.progress);
                     const progressChanged = progressDiff > 2;
 
+                    const artworkChanged = albumArtUrl !== currentStream.currentTrack.albumArtUrl;
+
                     console.log('Change detection:', {
                         metadataChanged,
                         statusChanged,
                         progressChanged,
-                        artworkChanged: albumArtUrl !== currentStream.currentTrack.albumArtUrl,
+                        artworkChanged,
                         oldArtUrl: currentStream.currentTrack.albumArtUrl,
                         newArtUrl: albumArtUrl
                     });
 
                     if (metadataChanged || statusChanged || progressChanged) {
-                        console.log('⟳ Updating stream state with new albumArtUrl:', albumArtUrl);
+                        if (artworkChanged) {
+                            console.log('[ARTWORK-UPDATE] ⟳ Artwork URL changing in state:');
+                            console.log('[ARTWORK-UPDATE]   Old:', currentStream.currentTrack.albumArtUrl);
+                            console.log('[ARTWORK-UPDATE]   New:', albumArtUrl);
+                            console.log('[ARTWORK-UPDATE]   Track:', title, 'by', artist);
+                        }
+                        console.log('⟳ Updating stream state with albumArtUrl:', albumArtUrl);
                         setStreams(prevStreams =>
                             prevStreams.map(s =>
                                 s.id === currentStream.id
