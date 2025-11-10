@@ -225,6 +225,9 @@ class MetadataParser:
         # Track which track the pending artwork belongs to
         self.artwork_track_title = None
         self.artwork_track_artist = None
+        # RTP timestamps for correlation (official shairport-sync method)
+        self.metadata_rtptime = None  # From mdst/mden
+        self.picture_rtptime = None   # From pcst/pcen
 
     def parse_item(self, item_xml: str) -> Optional[Dict[str, str]]:
         """Parse a complete XML item and return updated metadata if complete"""
@@ -286,7 +289,26 @@ class MetadataParser:
             elif item_type == "ssnc":  # Control messages and PICT data
                 # Check the code for what type of message
                 log(f"[DEBUG] Got ssnc message, code: '{code}', has_data: {len(data_text) > 0}")
-                if code == "PICT":
+
+                # Parse rtptime for metadata correlation (official shairport-sync method)
+                if code == "mdst":  # Metadata Start - contains rtptime for metadata
+                    if encoding == "base64" and data_text:
+                        try:
+                            rtptime_bytes = base64.b64decode(data_text)
+                            # rtptime is 4 bytes, big-endian unsigned integer
+                            self.metadata_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
+                            log(f"[DEBUG] Metadata rtptime: {self.metadata_rtptime}")
+                        except:
+                            pass
+                elif code == "pcst":  # Picture Start - contains rtptime for picture
+                    if encoding == "base64" and data_text:
+                        try:
+                            rtptime_bytes = base64.b64decode(data_text)
+                            self.picture_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
+                            log(f"[DEBUG] Picture rtptime: {self.picture_rtptime}")
+                        except:
+                            pass
+                elif code == "PICT":
                     if encoding == "base64" and data_text:
                         # This is a PICT data chunk
                         # On first chunk, record which track this artwork belongs to
@@ -308,31 +330,46 @@ class MetadataParser:
                             log(f"[DEBUG] Artwork validation check:")
                             log(f"[DEBUG]   Recorded when PICT started: title='{self.artwork_track_title}', artist='{self.artwork_track_artist}'")
                             log(f"[DEBUG]   Current metadata now: title='{current_title}', artist='{current_artist}'")
+                            log(f"[DEBUG]   Metadata rtptime: {self.metadata_rtptime}, Picture rtptime: {self.picture_rtptime}")
 
-                            # Check if artwork was recorded before metadata arrived (artwork_track is None)
-                            if self.artwork_track_title is None or self.artwork_track_artist is None:
-                                # Artwork arrived before metadata - use current track
-                                log(f"[DEBUG] Artwork arrived before metadata, using current track metadata")
+                            # Use rtptime correlation (official method) if available
+                            rtptime_matches = (
+                                self.metadata_rtptime is not None and
+                                self.picture_rtptime is not None and
+                                self.metadata_rtptime == self.picture_rtptime
+                            )
+
+                            # Fallback to title/artist matching if rtptime not available
+                            title_artist_matches = (
+                                (self.artwork_track_title is None or self.artwork_track_title == current_title) and
+                                (self.artwork_track_artist is None or self.artwork_track_artist == current_artist)
+                            )
+
+                            if rtptime_matches:
+                                # Primary validation: rtptime matches (most reliable)
+                                log(f"[DEBUG] ✓ rtptime matches - saving artwork")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 if self.current_metadata.get("artUrl"):
                                     log(f"[DEBUG] Cover art complete, sending update")
                                     return self.current_metadata.copy()
-                            elif (current_title == self.artwork_track_title and
-                                  current_artist == self.artwork_track_artist):
-                                # Track hasn't changed, save artwork
-                                log(f"[DEBUG] Metadata matches, saving artwork")
+                            elif self.metadata_rtptime is None and self.picture_rtptime is None and title_artist_matches:
+                                # Fallback validation: No rtptime available, use title/artist
+                                log(f"[DEBUG] ✓ No rtptime available, title/artist matches - saving artwork")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
-                                # Cover art is complete - return it even if we already sent basic metadata
                                 if self.current_metadata.get("artUrl"):
                                     log(f"[DEBUG] Cover art complete, sending update")
                                     return self.current_metadata.copy()
                             else:
-                                # Track changed while we were collecting artwork - discard it
-                                log(f"[DEBUG] Track changed during artwork collection - discarding stale artwork")
-                                log(f"[DEBUG]   Was: '{self.artwork_track_title}' by '{self.artwork_track_artist}'")
-                                log(f"[DEBUG]   Now: '{current_title}' by '{current_artist}'")
+                                # Validation failed - discard artwork
+                                if self.metadata_rtptime is not None and self.picture_rtptime is not None:
+                                    log(f"[DEBUG] ✗ rtptime mismatch - discarding stale artwork")
+                                    log(f"[DEBUG]   Metadata rtptime: {self.metadata_rtptime}, Picture rtptime: {self.picture_rtptime}")
+                                else:
+                                    log(f"[DEBUG] ✗ Track changed during artwork collection - discarding stale artwork")
+                                    log(f"[DEBUG]   Was: '{self.artwork_track_title}' by '{self.artwork_track_artist}'")
+                                    log(f"[DEBUG]   Now: '{current_title}' by '{current_artist}'")
                                 self.pending_cover_data = []
                                 self.artwork_track_title = None
                                 self.artwork_track_artist = None
@@ -359,10 +396,24 @@ class MetadataParser:
             cover_data_b64 = "".join(self.pending_cover_data)
             cover_data = base64.b64decode(cover_data_b64)
 
+            # Detect image format from magic bytes
+            # JPEG: FF D8 FF, PNG: 89 50 4E 47 0D 0A 1A 0A
+            if len(cover_data) >= 3 and cover_data[:3] == b'\xff\xd8\xff':
+                extension = ".jpg"
+                format_type = "JPEG"
+            elif len(cover_data) >= 8 and cover_data[:8] == b'\x89PNG\r\n\x1a\n':
+                extension = ".png"
+                format_type = "PNG"
+            else:
+                # Unknown format, default to jpg
+                extension = ".jpg"
+                format_type = "Unknown (defaulting to JPEG)"
+
             # Use a hash of the data as filename to avoid duplicates
             import hashlib
             cover_hash = hashlib.md5(cover_data).hexdigest()
-            filename = f"{cover_hash}.jpg"
+            filename = f"{cover_hash}{extension}"
+            log(f"[DEBUG] Detected image format: {format_type}")
 
             # Save to Snapcast web root so it's accessible via HTTP
             web_cover_dir = Path(SNAPCAST_WEB_ROOT) / "coverart"
