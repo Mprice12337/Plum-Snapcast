@@ -147,19 +147,21 @@ RUN mkdir -p \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
     && chmod 755 /usr/share/snapserver/snapweb
 
-# Copy configuration and scripts (UPDATED to include control script)
+# Copy configuration and scripts (UPDATED to include control script and debug server)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
 COPY scripts/setup.sh /app/scripts/
 COPY scripts/process-airplay-metadata-v2.py /app/scripts/
 COPY scripts/airplay-control-script.py /app/scripts/
+COPY scripts/metadata-debug-server.py /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
     chown -R snapcast:snapcast /app
 
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000
+# Metadata Debug Server: 8080 (HTTP)
+EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 
 # Set working directory
 WORKDIR /app
