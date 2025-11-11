@@ -67,6 +67,7 @@ class MetadataParser:
             "album": None
         }
         self.pending_cover_data = []
+        self.last_loaded_cache_file = None  # Track which cache file we last loaded
 
     def parse_item(self, item_xml: str):
         """Parse a complete XML item and update store"""
@@ -126,6 +127,9 @@ class MetadataParser:
                     self.current["title"] = decoded
                     self.store.update(title=decoded)
                     print(f"[Metadata] Title: {decoded}", flush=True)
+                    # When title changes, check for new artwork after a short delay
+                    # This handles cases where artwork comes before metadata
+                    self._schedule_artwork_check()
 
                 elif code == "asal":  # Album
                     self.current["album"] = decoded
@@ -212,7 +216,7 @@ class MetadataParser:
         finally:
             self.pending_cover_data = []
 
-    def _load_cover_art_from_cache(self):
+    def _load_cover_art_from_cache(self, force=False):
         """Load cover art from shairport-sync cache directory"""
         try:
             cache_dir = Path(COVER_ART_CACHE_DIR)
@@ -228,6 +232,12 @@ class MetadataParser:
 
             # Get the newest file
             newest_file = max(cover_files, key=lambda p: p.stat().st_mtime)
+
+            # Skip if we already loaded this file (unless forced)
+            if not force and self.last_loaded_cache_file == newest_file.name:
+                print(f"[Metadata] Artwork already loaded from {newest_file.name}, skipping", flush=True)
+                return
+
             print(f"[Metadata] Loading cover art from cache: {newest_file.name}", flush=True)
 
             # Read the image file
@@ -250,12 +260,27 @@ class MetadataParser:
                 cover_art_format=image_format
             )
 
+            # Remember which file we loaded
+            self.last_loaded_cache_file = newest_file.name
+
             print(f"[Metadata] ✓ Successfully loaded cover art from cache ({len(image_data)} bytes, format: {image_format})", flush=True)
 
         except Exception as e:
             print(f"[Error] Error loading cover art from cache: {e}", file=sys.stderr, flush=True)
             import traceback
             traceback.print_exc()
+
+    def _schedule_artwork_check(self):
+        """Schedule a delayed check for new artwork in cache"""
+        def delayed_check():
+            # Wait a bit for shairport-sync to cache the new artwork
+            time.sleep(0.5)
+            print(f"[Metadata] Checking for new artwork after title change...", flush=True)
+            self._load_cover_art_from_cache()
+
+        # Run in a background thread to not block metadata processing
+        thread = threading.Thread(target=delayed_check, daemon=True)
+        thread.start()
 
     def _reset(self):
         """Reset current metadata on playback end"""
@@ -265,6 +290,7 @@ class MetadataParser:
             "album": None
         }
         self.pending_cover_data = []
+        # Don't reset last_loaded_cache_file - we want to avoid reloading the same artwork
 
 class MetadataHTTPHandler(BaseHTTPRequestHandler):
     """HTTP handler for metadata endpoints"""
