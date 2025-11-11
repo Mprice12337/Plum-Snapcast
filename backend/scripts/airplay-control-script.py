@@ -360,6 +360,7 @@ class MetadataParser:
                             # Check if track has changed since we started collecting artwork
                             current_title = self.current_metadata.get("title")
                             current_artist = self.current_metadata.get("artist")
+                            current_album = self.current_metadata.get("album")
 
                             log(f"[VALIDATION] ========== ARTWORK VALIDATION CHECK ==========")
                             log(f"[VALIDATION] Recorded when PICT started: title='{self.artwork_track_title}', artist='{self.artwork_track_artist}'")
