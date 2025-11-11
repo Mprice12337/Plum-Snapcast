@@ -9,6 +9,7 @@ Endpoints:
 
 import base64
 import json
+import os
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -19,6 +20,7 @@ import sys
 
 # Configuration
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
+COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 HTTP_PORT = 8080
 HTTP_HOST = "0.0.0.0"  # Listen on all interfaces
 
@@ -143,7 +145,10 @@ class MetadataParser:
                     if self.pending_cover_data:
                         self._process_cover_art()
                     else:
-                        print(f"[Warning] Picture end received but no data collected", flush=True)
+                        print(f"[Info] Picture end received but no data in pipe (checking cache instead)", flush=True)
+                        # When cover art caching is enabled, shairport-sync doesn't send
+                        # the full image through the pipe - we need to read from cache
+                        self._load_cover_art_from_cache()
 
                 elif code == "pcst":  # Picture start marker
                     print(f"[Metadata] Picture start marker received", flush=True)
@@ -206,6 +211,51 @@ class MetadataParser:
             traceback.print_exc()
         finally:
             self.pending_cover_data = []
+
+    def _load_cover_art_from_cache(self):
+        """Load cover art from shairport-sync cache directory"""
+        try:
+            cache_dir = Path(COVER_ART_CACHE_DIR)
+            if not cache_dir.exists():
+                print(f"[Warning] Cache directory doesn't exist: {COVER_ART_CACHE_DIR}", flush=True)
+                return
+
+            # Find the most recent cover art file
+            cover_files = list(cache_dir.glob("cover-*.jpg")) + list(cache_dir.glob("cover-*.png"))
+            if not cover_files:
+                print(f"[Warning] No cover art files found in cache", flush=True)
+                return
+
+            # Get the newest file
+            newest_file = max(cover_files, key=lambda p: p.stat().st_mtime)
+            print(f"[Metadata] Loading cover art from cache: {newest_file.name}", flush=True)
+
+            # Read the image file
+            with open(newest_file, 'rb') as f:
+                image_data = f.read()
+
+            # Encode to base64 for storage
+            cover_data_b64 = base64.b64encode(image_data).decode('ascii')
+
+            # Detect format from extension or magic bytes
+            image_format = "jpeg"
+            if newest_file.suffix.lower() == ".png" or image_data[:4] == b'\x89PNG':
+                image_format = "png"
+            elif image_data[:3] == b'\xff\xd8\xff':
+                image_format = "jpeg"
+
+            # Store the artwork
+            self.store.update(
+                cover_art_data=cover_data_b64,
+                cover_art_format=image_format
+            )
+
+            print(f"[Metadata] ✓ Successfully loaded cover art from cache ({len(image_data)} bytes, format: {image_format})", flush=True)
+
+        except Exception as e:
+            print(f"[Error] Error loading cover art from cache: {e}", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc()
 
     def _reset(self):
         """Reset current metadata on playback end"""
