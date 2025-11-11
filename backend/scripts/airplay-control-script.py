@@ -529,6 +529,9 @@ class SnapcastControlScript:
         self.artwork_sequence = 0  # Increments with each artwork write
         log(f"[DEBUG] Initialized for stream: {stream_id}")
 
+        # Initialize artwork JSON file to prevent 404 errors in frontend
+        self._initialize_artwork_json()
+
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
         notification = {
@@ -591,6 +594,31 @@ class SnapcastControlScript:
             self.metadata_parser.validated_artwork_metadata = None
         except Exception as e:
             log(f"[ARTWORK-WRITE] ERROR writing artwork JSON: {e}")
+
+    def _initialize_artwork_json(self):
+        """Create initial empty artwork JSON file to prevent 404 errors"""
+        try:
+            artwork_file = Path(SNAPCAST_WEB_ROOT) / "airplay-artwork.json"
+
+            # Only create if it doesn't exist
+            if not artwork_file.exists():
+                initial_data = {
+                    "artUrl": None,
+                    "title": None,
+                    "artist": None,
+                    "album": None,
+                    "sequence": 0,
+                    "timestamp": int(time.time() * 1000),
+                    "metadata_rtptime": None,
+                    "picture_rtptime": None,
+                }
+                with open(artwork_file, 'w') as f:
+                    json.dump(initial_data, f, indent=2)
+                log(f"[INIT] Created initial artwork JSON file at {artwork_file}")
+            else:
+                log(f"[INIT] Artwork JSON file already exists at {artwork_file}")
+        except Exception as e:
+            log(f"[INIT] ERROR creating initial artwork JSON: {e}")
 
     def send_metadata_update(self, metadata: Dict, include_position: bool = False):
         """Send Plugin.Stream.Player.Properties with metadata"""
