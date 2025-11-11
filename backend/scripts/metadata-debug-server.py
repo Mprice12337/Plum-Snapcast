@@ -71,6 +71,14 @@ class MetadataParser:
         try:
             root = ET.fromstring(item_xml)
 
+            # Get the type (core or ssnc)
+            type_elem = root.find("type")
+            if type_elem is None:
+                return
+
+            type_hex = type_elem.text
+            item_type = bytes.fromhex(type_hex).decode('ascii', errors='ignore')
+
             # Get the code (metadata type)
             code_elem = root.find("code")
             if code_elem is None:
@@ -82,48 +90,70 @@ class MetadataParser:
             # Get the data
             data_elem = root.find("data")
             if data_elem is None:
-                return
-
-            encoding = data_elem.get("encoding", "")
-            data_text = (data_elem.text or "").strip()
-
-            # Decode based on encoding
-            if encoding == "base64" and data_text:
-                try:
-                    decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
-                except:
-                    decoded = data_text
+                # Some control messages have no data
+                data_text = ""
+                encoding = ""
+                decoded = ""
             else:
-                decoded = data_text
+                encoding = data_elem.get("encoding", "")
+                data_text = (data_elem.text or "").strip()
 
-            # Process based on code
-            if code == "asar":  # Artist
-                self.current["artist"] = decoded
-                self.store.update(artist=decoded)
-                print(f"[Metadata] Artist: {decoded}", flush=True)
+                # Decode based on encoding (but NOT for PICT - that's binary image data)
+                if encoding == "base64" and data_text and code != "PICT":
+                    try:
+                        decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
+                    except:
+                        decoded = data_text
+                else:
+                    decoded = data_text
 
-            elif code == "minm":  # Title/Track name
-                self.current["title"] = decoded
-                self.store.update(title=decoded)
-                print(f"[Metadata] Title: {decoded}", flush=True)
+            # Debug: Log all ssnc messages to help diagnose issues
+            if item_type == "ssnc":
+                data_preview = f"{len(data_text)} chars" if code == "PICT" else (decoded[:50] if decoded else "no data")
+                print(f"[Debug] ssnc message: code='{code}' data={data_preview}", flush=True)
 
-            elif code == "asal":  # Album
-                self.current["album"] = decoded
-                self.store.update(album=decoded)
-                print(f"[Metadata] Album: {decoded}", flush=True)
+            # Process based on type and code
+            # Core metadata (from iTunes/Music app)
+            if item_type == "core":
+                if code == "asar":  # Artist
+                    self.current["artist"] = decoded
+                    self.store.update(artist=decoded)
+                    print(f"[Metadata] Artist: {decoded}", flush=True)
 
-            elif code == "PICT":  # Cover art chunk
-                if encoding == "base64" and data_text:
-                    self.pending_cover_data.append(data_text)
-                    print(f"[Metadata] Collected cover art chunk ({len(data_text)} chars, total chunks: {len(self.pending_cover_data)})", flush=True)
+                elif code == "minm":  # Title/Track name
+                    self.current["title"] = decoded
+                    self.store.update(title=decoded)
+                    print(f"[Metadata] Title: {decoded}", flush=True)
 
-            elif code == "ssnc":
-                # Control messages - check for end of cover art
-                if decoded == "PICT" and self.pending_cover_data:
-                    self._process_cover_art()
-                elif decoded == "pbeg":
+                elif code == "asal":  # Album
+                    self.current["album"] = decoded
+                    self.store.update(album=decoded)
+                    print(f"[Metadata] Album: {decoded}", flush=True)
+
+            # Shairport-sync control messages
+            elif item_type == "ssnc":
+                if code == "PICT":  # Cover art data
+                    if encoding == "base64" and data_text:
+                        # Store the base64 data directly (don't decode yet)
+                        self.pending_cover_data.append(data_text)
+                        print(f"[Metadata] Received cover art data ({len(data_text)} chars, total chunks: {len(self.pending_cover_data)})", flush=True)
+
+                elif code == "pcen":  # Picture end marker
+                    print(f"[Metadata] Picture end marker received", flush=True)
+                    if self.pending_cover_data:
+                        self._process_cover_art()
+                    else:
+                        print(f"[Warning] Picture end received but no data collected", flush=True)
+
+                elif code == "pcst":  # Picture start marker
+                    print(f"[Metadata] Picture start marker received", flush=True)
+                    # Clear any pending data from previous transmission
+                    self.pending_cover_data = []
+
+                elif code == "pbeg":  # Playback begin
                     print("[Metadata] Playback started", flush=True)
-                elif decoded == "pend":
+
+                elif code == "pend":  # Playback end
                     print("[Metadata] Playback ended", flush=True)
                     self._reset()
 
@@ -135,18 +165,29 @@ class MetadataParser:
     def _process_cover_art(self):
         """Process collected cover art chunks"""
         try:
+            print(f"[Metadata] Processing {len(self.pending_cover_data)} cover art chunk(s)", flush=True)
+
             # Combine all chunks
             cover_data_b64 = "".join(self.pending_cover_data)
+            print(f"[Metadata] Total base64 length: {len(cover_data_b64)} chars", flush=True)
 
             # Decode to check format
             image_data = base64.b64decode(cover_data_b64)
+            print(f"[Metadata] Decoded image size: {len(image_data)} bytes", flush=True)
 
             # Detect image format from magic bytes
             image_format = "jpeg"  # Default
+            magic_bytes = image_data[:4] if len(image_data) >= 4 else b''
+            print(f"[Metadata] Magic bytes: {magic_bytes.hex()}", flush=True)
+
             if image_data[:4] == b'\x89PNG':
                 image_format = "png"
+                print(f"[Metadata] Detected PNG format", flush=True)
             elif image_data[:3] == b'\xff\xd8\xff':
                 image_format = "jpeg"
+                print(f"[Metadata] Detected JPEG format", flush=True)
+            else:
+                print(f"[Warning] Unknown image format, magic bytes: {magic_bytes.hex()}", flush=True)
 
             # Store the artwork
             self.store.update(
@@ -154,10 +195,15 @@ class MetadataParser:
                 cover_art_format=image_format
             )
 
-            print(f"[Metadata] Saved cover art ({len(image_data)} bytes, format: {image_format})", flush=True)
+            print(f"[Metadata] ✓ Successfully saved cover art ({len(image_data)} bytes, format: {image_format})", flush=True)
 
+        except base64.binascii.Error as e:
+            print(f"[Error] Base64 decode error: {e}", file=sys.stderr, flush=True)
+            print(f"[Error] First 100 chars of data: {self.pending_cover_data[0][:100] if self.pending_cover_data else 'empty'}", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[Error] Error processing cover art: {e}", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc()
         finally:
             self.pending_cover_data = []
 
