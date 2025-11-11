@@ -227,9 +227,9 @@ class MetadataParser:
         self.artwork_track_title = None
         self.artwork_track_artist = None
         self.artwork_track_album = None
-        # Store complete metadata snapshot when artwork is validated
-        # This prevents writing JSON with current_metadata that may have changed
-        self.validated_artwork_metadata = None
+        # Store complete metadata snapshot when rtptime arrives (not when validating!)
+        # This prevents using current_metadata that may have changed to next track
+        self.metadata_snapshot = None  # Captured when mdst arrives with rtptime
         # RTP timestamps for correlation (official shairport-sync method)
         self.metadata_rtptime = None  # From mdst/mden
         self.picture_rtptime = None   # From pcst/pcen
@@ -318,6 +318,15 @@ class MetadataParser:
                             prev_rtptime = self.metadata_rtptime
                             self.metadata_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
                             log(f"[RTPTIME] Metadata rtptime: {prev_rtptime} → {self.metadata_rtptime}")
+
+                            # CRITICAL: Capture metadata snapshot NOW, not later during validation
+                            # By validation time, current_metadata may have changed to next track
+                            self.metadata_snapshot = {
+                                "title": self.current_metadata.get("title"),
+                                "artist": self.current_metadata.get("artist"),
+                                "album": self.current_metadata.get("album")
+                            }
+                            log(f"[RTPTIME] Captured metadata snapshot: {self.metadata_snapshot}")
                         except:
                             pass
                 elif code == "pcst":  # Picture Start - contains rtptime for picture
@@ -383,14 +392,8 @@ class MetadataParser:
                             if rtptime_matches:
                                 # Primary validation: rtptime matches (most reliable)
                                 log(f"[VALIDATION] ✓✓✓ PASS: rtptime matches ({self.metadata_rtptime}) - SAVING ARTWORK")
-                                # CRITICAL: Capture metadata snapshot BEFORE saving artwork
-                                # This ensures JSON file has correct metadata even if current_metadata changes
-                                self.validated_artwork_metadata = {
-                                    "title": current_title,
-                                    "artist": current_artist,
-                                    "album": current_album
-                                }
-                                log(f"[VALIDATION] Captured metadata snapshot: {self.validated_artwork_metadata}")
+                                # Use metadata snapshot captured when mdst arrived (not current_metadata!)
+                                log(f"[VALIDATION] Using metadata snapshot from mdst: {self.metadata_snapshot}")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 if self.current_metadata.get("artUrl"):
@@ -399,13 +402,13 @@ class MetadataParser:
                             elif self.metadata_rtptime is None and self.picture_rtptime is None and title_artist_matches:
                                 # Fallback validation: No rtptime available, use title/artist
                                 log(f"[VALIDATION] ✓✓✓ PASS: No rtptime, title/artist matches - SAVING ARTWORK")
-                                # CRITICAL: Capture metadata snapshot BEFORE saving artwork
-                                self.validated_artwork_metadata = {
+                                # Capture snapshot now since we don't have rtptime
+                                self.metadata_snapshot = {
                                     "title": current_title,
                                     "artist": current_artist,
                                     "album": current_album
                                 }
-                                log(f"[VALIDATION] Captured metadata snapshot: {self.validated_artwork_metadata}")
+                                log(f"[VALIDATION] Captured metadata snapshot (fallback): {self.metadata_snapshot}")
                                 self._save_cover_art()
                                 self.pending_cover_data = []
                                 if self.current_metadata.get("artUrl"):
@@ -514,7 +517,7 @@ class MetadataParser:
         self.artwork_track_title = None
         self.artwork_track_artist = None
         self.artwork_track_album = None
-        self.validated_artwork_metadata = None
+        self.metadata_snapshot = None
 
 
 class SnapcastControlScript:
@@ -548,7 +551,7 @@ class SnapcastControlScript:
     def _write_artwork_json(self, metadata: Dict):
         """Write current artwork URL to JSON file for frontend to fetch
 
-        CRITICAL: Uses validated_artwork_metadata snapshot, NOT current_metadata!
+        CRITICAL: Uses metadata_snapshot captured when mdst arrived, NOT current_metadata!
         This prevents race condition where artwork for Track N is written with
         Track N+1's metadata if track changes between validation and JSON write.
         """
@@ -556,20 +559,20 @@ class SnapcastControlScript:
             self.artwork_sequence += 1
             artwork_file = Path(SNAPCAST_WEB_ROOT) / "airplay-artwork.json"
 
-            # Use validated snapshot if available, otherwise fall back to metadata param
-            if self.metadata_parser.validated_artwork_metadata:
-                validated_meta = self.metadata_parser.validated_artwork_metadata
+            # Use metadata snapshot if available, otherwise fall back to metadata param
+            if self.metadata_parser.metadata_snapshot:
+                snapshot_meta = self.metadata_parser.metadata_snapshot
                 artwork_data = {
                     "artUrl": metadata.get("artUrl"),  # artUrl comes from metadata param
-                    "title": validated_meta.get("title"),  # But title/artist/album from snapshot!
-                    "artist": validated_meta.get("artist"),
-                    "album": validated_meta.get("album"),
+                    "title": snapshot_meta.get("title"),  # But title/artist/album from snapshot!
+                    "artist": snapshot_meta.get("artist"),
+                    "album": snapshot_meta.get("album"),
                     "sequence": self.artwork_sequence,
                     "timestamp": int(time.time() * 1000),
                     "metadata_rtptime": self.metadata_parser.metadata_rtptime,
                     "picture_rtptime": self.metadata_parser.picture_rtptime,
                 }
-                log(f"[ARTWORK-WRITE] Using validated metadata snapshot (prevents race condition)")
+                log(f"[ARTWORK-WRITE] Using metadata snapshot from mdst (prevents race condition)")
             else:
                 # Fallback to metadata param if no snapshot (shouldn't happen)
                 artwork_data = {
@@ -582,7 +585,7 @@ class SnapcastControlScript:
                     "metadata_rtptime": self.metadata_parser.metadata_rtptime,
                     "picture_rtptime": self.metadata_parser.picture_rtptime,
                 }
-                log(f"[ARTWORK-WRITE] WARNING: No validated snapshot, using metadata param")
+                log(f"[ARTWORK-WRITE] WARNING: No metadata snapshot, using metadata param")
 
             with open(artwork_file, 'w') as f:
                 json.dump(artwork_data, f, indent=2)
@@ -591,8 +594,8 @@ class SnapcastControlScript:
             log(f"[ARTWORK-WRITE]   metadata_rtptime: {self.metadata_parser.metadata_rtptime}, picture_rtptime: {self.metadata_parser.picture_rtptime}")
             log(f"[ARTWORK-WRITE]   Wrote to: {artwork_file}")
 
-            # Clear the validated snapshot after writing
-            self.metadata_parser.validated_artwork_metadata = None
+            # Clear the snapshot after writing
+            self.metadata_parser.metadata_snapshot = None
         except Exception as e:
             log(f"[ARTWORK-WRITE] ERROR writing artwork JSON: {e}")
 
