@@ -140,7 +140,7 @@ const App: React.FC = () => {
 
                         try {
                             const fetchStartTime = Date.now();
-                            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json?_=' + fetchStartTime);
+                            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
                             const fetchDuration = Date.now() - fetchStartTime;
 
                             if (artworkResponse.ok) {
