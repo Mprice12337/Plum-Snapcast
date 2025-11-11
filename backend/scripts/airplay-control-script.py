@@ -227,9 +227,10 @@ class MetadataParser:
         self.artwork_track_title = None
         self.artwork_track_artist = None
         self.artwork_track_album = None
-        # Store complete metadata snapshot when rtptime arrives (not when validating!)
-        # This prevents using current_metadata that may have changed to next track
-        self.metadata_snapshot = None  # Captured when mdst arrives with rtptime
+        # Store complete metadata snapshot AFTER metadata fields arrive
+        # Not when mdst arrives (too early - metadata not parsed yet!)
+        self.metadata_snapshot = None  # Captured when title/artist received after mdst
+        self.snapshot_captured_for_rtptime = None  # Track which rtptime we've snapshotted
         # RTP timestamps for correlation (official shairport-sync method)
         self.metadata_rtptime = None  # From mdst/mden
         self.picture_rtptime = None   # From pcst/pcen
@@ -279,6 +280,8 @@ class MetadataParser:
                 self.current_metadata["artist"] = decoded
                 updated = True
                 log(f"[DEBUG] Artist: {decoded}")
+                # Capture snapshot after receiving metadata field (not at mdst!)
+                self._maybe_capture_snapshot()
             elif item_type == "core" and code == "minm":  # Title/Track name
                 # Check if this is a new track (title changed)
                 if self.current_metadata.get("title") and self.current_metadata["title"] != decoded:
@@ -287,10 +290,14 @@ class MetadataParser:
                 self.current_metadata["title"] = decoded
                 updated = True
                 log(f"[DEBUG] Title: {decoded}")
+                # Capture snapshot after receiving metadata field (not at mdst!)
+                self._maybe_capture_snapshot()
             elif item_type == "core" and code == "asal":  # Album
                 self.current_metadata["album"] = decoded
                 updated = True
                 log(f"[DEBUG] Album: {decoded}")
+                # Capture snapshot after receiving metadata field (not at mdst!)
+                self._maybe_capture_snapshot()
             elif item_type == "core" and code == "astm":  # Song Time (duration in milliseconds)
                 if encoding == "base64" and data_text:
                     try:
@@ -318,15 +325,8 @@ class MetadataParser:
                             prev_rtptime = self.metadata_rtptime
                             self.metadata_rtptime = int.from_bytes(rtptime_bytes[:4], 'big', signed=False)
                             log(f"[RTPTIME] Metadata rtptime: {prev_rtptime} → {self.metadata_rtptime}")
-
-                            # CRITICAL: Capture metadata snapshot NOW, not later during validation
-                            # By validation time, current_metadata may have changed to next track
-                            self.metadata_snapshot = {
-                                "title": self.current_metadata.get("title"),
-                                "artist": self.current_metadata.get("artist"),
-                                "album": self.current_metadata.get("album")
-                            }
-                            log(f"[RTPTIME] Captured metadata snapshot: {self.metadata_snapshot}")
+                            # DON'T capture snapshot here - metadata fields haven't arrived yet!
+                            # Snapshot will be captured when we receive title/artist/album
                         except:
                             pass
                 elif code == "pcst":  # Picture Start - contains rtptime for picture
@@ -442,6 +442,27 @@ class MetadataParser:
 
         return None
 
+    def _maybe_capture_snapshot(self):
+        """Capture metadata snapshot after receiving metadata field
+
+        Only capture if:
+        1. We have a metadata rtptime (from mdst)
+        2. We have at least title AND artist
+        3. We haven't already captured for this rtptime
+        """
+        if (self.metadata_rtptime is not None and
+            self.current_metadata.get("title") and
+            self.current_metadata.get("artist") and
+            self.snapshot_captured_for_rtptime != self.metadata_rtptime):
+
+            self.metadata_snapshot = {
+                "title": self.current_metadata.get("title"),
+                "artist": self.current_metadata.get("artist"),
+                "album": self.current_metadata.get("album")
+            }
+            self.snapshot_captured_for_rtptime = self.metadata_rtptime
+            log(f"[SNAPSHOT] Captured for rtptime {self.metadata_rtptime}: {self.metadata_snapshot}")
+
     def _save_cover_art(self):
         """Save cover art to file and store HTTP URL"""
         if not self.pending_cover_data:
@@ -518,6 +539,7 @@ class MetadataParser:
         self.artwork_track_artist = None
         self.artwork_track_album = None
         self.metadata_snapshot = None
+        self.snapshot_captured_for_rtptime = None
 
 
 class SnapcastControlScript:
