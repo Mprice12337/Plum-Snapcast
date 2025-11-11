@@ -219,7 +219,8 @@ class MetadataParser:
             "title": None,
             "artist": None,
             "album": None,
-            "artUrl": None
+            "artUrl": None,
+            "duration": None  # Track duration in milliseconds
         }
         self.pending_cover_data = []
         # Track which track the pending artwork belongs to
@@ -290,6 +291,20 @@ class MetadataParser:
                 self.current_metadata["album"] = decoded
                 updated = True
                 log(f"[DEBUG] Album: {decoded}")
+            elif item_type == "core" and code == "astm":  # Song Time (duration in milliseconds)
+                if encoding == "base64" and data_text:
+                    try:
+                        duration_bytes = base64.b64decode(data_text)
+                        # Duration is 4 bytes, big-endian unsigned integer (milliseconds)
+                        duration_ms = int.from_bytes(duration_bytes[:4], 'big', signed=False)
+                        self.current_metadata["duration"] = duration_ms
+                        duration_sec = duration_ms / 1000
+                        minutes = int(duration_sec // 60)
+                        seconds = int(duration_sec % 60)
+                        log(f"[DEBUG] Duration: {duration_ms}ms ({minutes}:{seconds:02d})")
+                        updated = True
+                    except Exception as e:
+                        log(f"[DEBUG] Failed to parse duration: {e}")
             elif item_type == "ssnc":  # Control messages and PICT data
                 # Check the code for what type of message
                 log(f"[DEBUG] Got ssnc message, code: '{code}', has_data: {len(data_text) > 0}")
@@ -491,7 +506,8 @@ class MetadataParser:
             "title": None,
             "artist": None,
             "album": None,
-            "artUrl": None
+            "artUrl": None,
+            "duration": None
         }
         self.pending_cover_data = []
         self.artwork_track_title = None
@@ -592,6 +608,10 @@ class SnapcastControlScript:
         if metadata.get("album"):
             meta_obj["album"] = metadata["album"]
 
+        if metadata.get("duration"):
+            # Duration in microseconds (Snapcast/MPRIS standard)
+            meta_obj["mpris:length"] = metadata["duration"] * 1000  # Convert ms to microseconds
+
         if metadata.get("artUrl"):
             # Use MPRIS standard field name for artwork
             meta_obj["mpris:artUrl"] = metadata["artUrl"]
@@ -654,8 +674,9 @@ class SnapcastControlScript:
             log("[DEBUG] No initial metadata available from D-Bus")
 
     def update_position(self):
-        """Periodically update playback position"""
+        """Periodically update playback position and verify metadata sync"""
         log("[DEBUG] Starting position updater thread")
+        metadata_check_counter = 0
         while True:
             try:
                 time.sleep(self.position_update_interval)
@@ -676,9 +697,51 @@ class SnapcastControlScript:
                             self.send_notification("Plugin.Stream.Player.Properties", properties)
                             self.last_position = position_ms
 
+                    # Every 5 cycles (10 seconds), verify metadata via D-Bus as safety net
+                    metadata_check_counter += 1
+                    if metadata_check_counter >= 5:
+                        metadata_check_counter = 0
+                        self._verify_metadata_sync()
+
             except Exception as e:
                 log(f"[DEBUG] Error in position updater: {e}")
                 time.sleep(5)  # Back off on error
+
+    def _verify_metadata_sync(self):
+        """Safety net: Verify metadata via D-Bus and clear stale artwork if mismatch"""
+        try:
+            dbus_metadata = self.dbus.get_current_metadata()
+            if not dbus_metadata:
+                return
+
+            dbus_title = dbus_metadata.get("title")
+            dbus_artist = dbus_metadata.get("artist")
+
+            current_title = self.last_metadata.get("title")
+            current_artist = self.last_metadata.get("artist")
+
+            # Check if D-Bus metadata matches what we think is playing
+            if dbus_title and dbus_artist:
+                if dbus_title != current_title or dbus_artist != current_artist:
+                    log(f"[SAFETY-NET] ✗ Metadata mismatch detected!")
+                    log(f"[SAFETY-NET]   D-Bus says: '{dbus_title}' by '{dbus_artist}'")
+                    log(f"[SAFETY-NET]   We display: '{current_title}' by '{current_artist}'")
+                    log(f"[SAFETY-NET]   Clearing artwork to prevent showing wrong track's artwork")
+
+                    # Clear artwork from our metadata
+                    if self.last_metadata.get("artUrl"):
+                        self.last_metadata["artUrl"] = None
+                        self.metadata_parser.current_metadata["artUrl"] = None
+                        self.metadata_parser.validated_artwork_metadata = None
+
+                        # Send update without artwork
+                        self.send_metadata_update(self.last_metadata)
+                        log(f"[SAFETY-NET] Cleared stale artwork, waiting for correct artwork to arrive")
+                else:
+                    log(f"[SAFETY-NET] ✓ Metadata in sync: '{dbus_title}' by '{dbus_artist}'")
+
+        except Exception as e:
+            log(f"[SAFETY-NET] Error verifying metadata: {e}")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -702,6 +765,9 @@ class SnapcastControlScript:
                         meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
                     if self.last_metadata.get("album"):
                         meta_obj["album"] = self.last_metadata["album"]
+                    if self.last_metadata.get("duration"):
+                        # Duration in microseconds (MPRIS standard)
+                        meta_obj["mpris:length"] = self.last_metadata["duration"] * 1000
                     if self.last_metadata.get("artUrl"):
                         # Use MPRIS standard field name for artwork
                         meta_obj["mpris:artUrl"] = self.last_metadata["artUrl"]
