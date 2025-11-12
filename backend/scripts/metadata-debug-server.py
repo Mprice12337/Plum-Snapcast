@@ -306,7 +306,7 @@ class MetadataParser:
         """Schedule a check to clear stale metadata fields after a timeout"""
         def delayed_check():
             # Wait for metadata to arrive
-            time.sleep(1.5)
+            time.sleep(2.0)
 
             current_time = time.time()
             title_update_time = self.metadata_update_times.get("title")
@@ -314,19 +314,20 @@ class MetadataParser:
             if title_update_time is None:
                 return
 
-            # Check if artist/album were updated recently (within 1.5s of title)
+            # Check if artist/album were updated recently (within 2s window around title change)
+            # Metadata can arrive before OR after the title
             artist_time = self.metadata_update_times.get("artist")
             album_time = self.metadata_update_times.get("album")
 
-            # If artist wasn't updated after the title change, clear it
-            if artist_time is None or artist_time < title_update_time:
-                print(f"[Metadata] Clearing stale artist data", flush=True)
+            # Only clear if the field is very stale (more than 3 seconds old)
+            # This allows metadata to arrive before or after the title
+            if artist_time is None or (current_time - artist_time) > 3.0:
+                print(f"[Metadata] Clearing stale artist data (not updated for {(current_time - artist_time) if artist_time else 'never'}s)", flush=True)
                 self.store.update(artist="Unknown Artist")
                 self.current["artist"] = None
 
-            # If album wasn't updated after the title change, clear it
-            if album_time is None or album_time < title_update_time:
-                print(f"[Metadata] Clearing stale album data", flush=True)
+            if album_time is None or (current_time - album_time) > 3.0:
+                print(f"[Metadata] Clearing stale album data (not updated for {(current_time - album_time) if album_time else 'never'}s)", flush=True)
                 self.store.update(album="Unknown Album")
                 self.current["album"] = None
 
