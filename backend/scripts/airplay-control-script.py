@@ -38,21 +38,21 @@ def log(message: str):
 
 
 class MetadataParser:
-    """Parse shairport-sync metadata using mper/mdst/mden approach"""
+    """Parse shairport-sync metadata using mdst/mden bundles"""
 
     def __init__(self):
-        # Current track state
+        # Current track state (what we've sent to Snapcast)
         self.current = {
             "title": None,
             "artist": None,
             "album": None,
-            "track_id": None,  # mper - persistent track ID
+            "track_id": None,
             "artwork_url": None
         }
 
-        # Metadata bundle state
+        # Bundle collection state
         self.in_metadata_bundle = False
-        self.bundle_track_id = None  # Track which track this bundle belongs to
+        self.pending_track_id = None  # Track ID from mper in current bundle
         self.pending_metadata = {
             "title": None,
             "artist": None,
@@ -104,54 +104,12 @@ class MetadataParser:
                     except:
                         decoded = ""
 
-            # === TRACK DETECTION via mper ===
-            if code == "mper":  # Persistent Track ID - DEFINITIVE track change indicator
-                if decoded and decoded.strip():
-                    track_id = decoded.strip()
-
-                    # Check if this is a NEW track
-                    if self.current["track_id"] and self.current["track_id"] != track_id:
-                        log(f"[Metadata] NEW TRACK DETECTED via mper")
-                        log(f"[Metadata] Previous ID: {self.current['track_id'][:5]}...")
-                        log(f"[Metadata] New ID: {track_id[:5]}...")
-
-                        # Clear ALL metadata for new track
-                        self.current = {
-                            "title": None,
-                            "artist": None,
-                            "album": None,
-                            "track_id": track_id,
-                            "artwork_url": None
-                        }
-                        # IMPORTANT: Clear pending metadata to prevent old track data from being applied
-                        self.pending_metadata = {
-                            "title": None,
-                            "artist": None,
-                            "album": None
-                        }
-                        # Exit any in-progress bundle (it's from the old track)
-                        self.in_metadata_bundle = False
-                        self.bundle_track_id = None
-
-                        # Don't send cleared metadata - wait for first bundle
-                        # The frontend will keep showing old metadata until new arrives
-                        log(f"[Metadata] State cleared, waiting for new metadata bundle...")
-                        return None
-                    elif not self.current["track_id"]:
-                        # First track
-                        self.current["track_id"] = track_id
-                        log(f"[Metadata] Initial track ID: {track_id[:5]}...")
-
-            # === METADATA BUNDLE HANDLING ===
-            if code == "mdst":  # Metadata bundle start
-                # Only start bundle if we have a track ID
-                if not self.current["track_id"]:
-                    log(f"[Metadata] Skipping bundle start - no track ID yet")
-                    return None
-
-                log(f"[Metadata] >>> Metadata bundle START (track: {self.current['track_id'][:5]}...)")
+            # === METADATA BUNDLE START ===
+            # mdst arrives FIRST - start collecting (no track ID yet!)
+            if code == "mdst":
+                log(f"[Metadata] >>> Metadata bundle START")
                 self.in_metadata_bundle = True
-                self.bundle_track_id = self.current["track_id"]  # Remember which track this bundle is for
+                self.pending_track_id = None
                 self.pending_metadata = {
                     "title": None,
                     "artist": None,
@@ -159,42 +117,61 @@ class MetadataParser:
                 }
                 return None
 
-            # Collect metadata during bundle (only if we have a track ID)
-            if self.in_metadata_bundle and self.current["track_id"]:
-                if code == "minm" and decoded:  # Title
-                    # Ignore empty titles
-                    if decoded.strip():
-                        self.pending_metadata["title"] = decoded
-                        log(f"[Metadata] Title (pending): {decoded}")
+            # === COLLECT METADATA DURING BUNDLE ===
+            if self.in_metadata_bundle:
+                # mper arrives INSIDE the bundle - this is the track ID
+                if code == "mper" and decoded and decoded.strip():
+                    new_track_id = decoded.strip()
+                    self.pending_track_id = new_track_id
 
-                elif code == "asar" and decoded:  # Artist
-                    if decoded.strip():
-                        self.pending_metadata["artist"] = decoded
-                        log(f"[Metadata] Artist (pending): {decoded}")
+                    # Detect track change
+                    if self.current["track_id"] and self.current["track_id"] != new_track_id:
+                        log(f"[Metadata] NEW TRACK detected in bundle")
+                        log(f"[Metadata] Previous: {self.current['track_id'][:5]}... → New: {new_track_id[:5]}...")
+                    elif not self.current["track_id"]:
+                        log(f"[Metadata] First track ID: {new_track_id[:5]}...")
 
-                elif code == "asal" and decoded:  # Album
-                    if decoded.strip():
-                        self.pending_metadata["album"] = decoded
-                        log(f"[Metadata] Album (pending): {decoded}")
+                # Collect metadata fields
+                elif code == "minm" and decoded and decoded.strip():
+                    self.pending_metadata["title"] = decoded
+                    log(f"[Metadata] Title (pending): {decoded}")
 
-            if code == "mden":  # Metadata bundle end
+                elif code == "asar" and decoded and decoded.strip():
+                    self.pending_metadata["artist"] = decoded
+                    log(f"[Metadata] Artist (pending): {decoded}")
+
+                elif code == "asal" and decoded and decoded.strip():
+                    self.pending_metadata["album"] = decoded
+                    log(f"[Metadata] Album (pending): {decoded}")
+
+            # === METADATA BUNDLE END ===
+            # mden arrives LAST - apply everything atomically
+            if code == "mden":
+                log(f"[Metadata] >>> Metadata bundle END")
                 self.in_metadata_bundle = False
 
-                # Check if this bundle belongs to the current track
-                if self.bundle_track_id != self.current["track_id"]:
-                    log(f"[Metadata] >>> Metadata bundle END - SKIPPING (bundle from old track)")
+                # Check if we got a track ID in this bundle
+                if not self.pending_track_id:
+                    log(f"[Metadata] WARNING: Bundle had no track ID (mper), skipping")
                     self.pending_metadata = {"title": None, "artist": None, "album": None}
-                    self.bundle_track_id = None
                     return None
 
-                log(f"[Metadata] >>> Metadata bundle END (track: {self.current['track_id'][:5]}...)")
+                # If track changed, clear current state
+                is_new_track = (self.current["track_id"] and
+                               self.current["track_id"] != self.pending_track_id)
 
-                # Only apply metadata if we have a track ID (prevents applying to unknown tracks)
-                if not self.current["track_id"]:
-                    log(f"[Metadata] Skipping bundle - no track ID yet")
-                    self.pending_metadata = {"title": None, "artist": None, "album": None}
-                    self.bundle_track_id = None
-                    return None
+                if is_new_track:
+                    log(f"[Metadata] Clearing state for new track")
+                    self.current = {
+                        "title": None,
+                        "artist": None,
+                        "album": None,
+                        "track_id": self.pending_track_id,
+                        "artwork_url": None
+                    }
+                else:
+                    # Update track ID
+                    self.current["track_id"] = self.pending_track_id
 
                 # Apply all pending metadata atomically
                 has_update = False
@@ -215,19 +192,16 @@ class MetadataParser:
                     has_update = True
 
                 # Clear pending state
-                self.pending_metadata = {
-                    "title": None,
-                    "artist": None,
-                    "album": None
-                }
-                self.bundle_track_id = None  # Bundle processed
+                self.pending_metadata = {"title": None, "artist": None, "album": None}
+                self.pending_track_id = None
 
-                # If we got title, schedule artwork check
+                # Schedule artwork check if we got a title
                 if self.current["title"] and has_update:
                     self._schedule_artwork_check()
 
-                # Return full metadata update if we have at least title
+                # Return complete metadata update
                 if has_update and self.current["title"]:
+                    log(f"[Metadata] Sending update: {self.current['title']} - {self.current['artist']}")
                     return {
                         'type': 'metadata',
                         'data': {
@@ -237,6 +211,8 @@ class MetadataParser:
                             "artwork_url": self.current["artwork_url"]
                         }
                     }
+                else:
+                    log(f"[Metadata] Bundle complete but no title, not sending update")
 
             # === COVER ART HANDLING ===
             if item_type == "ssnc":
