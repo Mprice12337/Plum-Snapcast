@@ -124,10 +124,14 @@ class MetadataParser:
             # Core metadata (from iTunes/Music app)
             if item_type == "core":
                 if code == "asar":  # Artist
-                    self.current["artist"] = decoded
-                    self.store.update(artist=decoded)
-                    self.metadata_received_for_current_track["artist"] = True
-                    print(f"[Metadata] Artist: {decoded} (flag set to True)", flush=True)
+                    # Only update if non-empty
+                    if decoded and decoded.strip():
+                        self.current["artist"] = decoded
+                        self.store.update(artist=decoded)
+                        self.metadata_received_for_current_track["artist"] = True
+                        print(f"[Metadata] Artist: {decoded} (flag set to True)", flush=True)
+                    else:
+                        print(f"[Metadata] Ignoring empty artist metadata", flush=True)
 
                 elif code == "minm":  # Title/Track name
                     # If title changed, this is a new track
@@ -140,17 +144,43 @@ class MetadataParser:
                         print(f"[Metadata] Current album flag: {self.metadata_received_for_current_track.get('album')}", flush=True)
                         print(f"[Metadata] Current artist value: '{self.current.get('artist')}'", flush=True)
                         print(f"[Metadata] Current album value: '{self.current.get('album')}'", flush=True)
+
+                        # Check if we have fresh metadata (arrived within last 2 seconds)
+                        # This handles metadata arriving BEFORE the title
+                        current_time = time.time()
+                        keep_artist = False
+                        keep_album = False
+
+                        if self.metadata_received_for_current_track.get('artist') and self.current_track_start_time:
+                            # If artist arrived recently, it's probably for the NEW track
+                            time_since_track_start = current_time - self.current_track_start_time
+                            if time_since_track_start < 2.0:
+                                keep_artist = True
+                                print(f"[Metadata] Keeping artist (arrived {time_since_track_start:.2f}s ago, probably for new track)", flush=True)
+
+                        if self.metadata_received_for_current_track.get('album') and self.current_track_start_time:
+                            time_since_track_start = current_time - self.current_track_start_time
+                            if time_since_track_start < 2.0:
+                                keep_album = True
+                                print(f"[Metadata] Keeping album (arrived {time_since_track_start:.2f}s ago, probably for new track)", flush=True)
+
                         print(f"[Metadata] ========================================", flush=True)
 
                         # Mark new track start time
                         self.current_track_start_time = time.time()
-                        # Reset flags - we haven't received metadata for this track yet
+
+                        # Reset flags for metadata we're NOT keeping
                         self.metadata_received_for_current_track = {
-                            "artist": False,
-                            "album": False
+                            "artist": keep_artist,
+                            "album": keep_album
                         }
-                        # Clear old metadata immediately to prevent showing stale data
-                        self.store.update(artist="", album="")
+
+                        # Clear old metadata only if we're not keeping it
+                        if not keep_artist:
+                            self.store.update(artist="")
+                        if not keep_album:
+                            self.store.update(album="")
+
                         # Schedule a check to set "Unknown" if metadata doesn't arrive
                         self._schedule_metadata_fallback()
 
@@ -162,10 +192,14 @@ class MetadataParser:
                     self._schedule_artwork_check()
 
                 elif code == "asal":  # Album
-                    self.current["album"] = decoded
-                    self.store.update(album=decoded)
-                    self.metadata_received_for_current_track["album"] = True
-                    print(f"[Metadata] Album: {decoded} (flag set to True)", flush=True)
+                    # Only update if non-empty
+                    if decoded and decoded.strip():
+                        self.current["album"] = decoded
+                        self.store.update(album=decoded)
+                        self.metadata_received_for_current_track["album"] = True
+                        print(f"[Metadata] Album: {decoded} (flag set to True)", flush=True)
+                    else:
+                        print(f"[Metadata] Ignoring empty album metadata", flush=True)
 
             # Shairport-sync control messages
             elif item_type == "ssnc":
