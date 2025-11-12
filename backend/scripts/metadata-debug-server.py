@@ -134,6 +134,12 @@ class MetadataParser:
                         print(f"[Metadata] Ignoring empty artist metadata", flush=True)
 
                 elif code == "minm":  # Title/Track name
+                    # Ignore empty titles - they're sent during metadata updates
+                    # but don't represent an actual track change
+                    if not decoded or not decoded.strip():
+                        print(f"[Metadata] Ignoring empty title metadata", flush=True)
+                        return
+
                     # If title changed, this is a new track
                     if self.current["title"] != decoded:
                         print(f"[Metadata] ========================================", flush=True)
