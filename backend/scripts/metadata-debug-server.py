@@ -127,12 +127,21 @@ class MetadataParser:
                     self.current["artist"] = decoded
                     self.store.update(artist=decoded)
                     self.metadata_received_for_current_track["artist"] = True
-                    print(f"[Metadata] Artist: {decoded}", flush=True)
+                    print(f"[Metadata] Artist: {decoded} (flag set to True)", flush=True)
 
                 elif code == "minm":  # Title/Track name
                     # If title changed, this is a new track
                     if self.current["title"] != decoded:
-                        print(f"[Metadata] New track detected (title changed)", flush=True)
+                        print(f"[Metadata] ========================================", flush=True)
+                        print(f"[Metadata] NEW TRACK DETECTED", flush=True)
+                        print(f"[Metadata] Previous title: '{self.current['title']}'", flush=True)
+                        print(f"[Metadata] New title: '{decoded}'", flush=True)
+                        print(f"[Metadata] Current artist flag: {self.metadata_received_for_current_track.get('artist')}", flush=True)
+                        print(f"[Metadata] Current album flag: {self.metadata_received_for_current_track.get('album')}", flush=True)
+                        print(f"[Metadata] Current artist value: '{self.current.get('artist')}'", flush=True)
+                        print(f"[Metadata] Current album value: '{self.current.get('album')}'", flush=True)
+                        print(f"[Metadata] ========================================", flush=True)
+
                         # Mark new track start time
                         self.current_track_start_time = time.time()
                         # Reset flags - we haven't received metadata for this track yet
@@ -156,7 +165,7 @@ class MetadataParser:
                     self.current["album"] = decoded
                     self.store.update(album=decoded)
                     self.metadata_received_for_current_track["album"] = True
-                    print(f"[Metadata] Album: {decoded}", flush=True)
+                    print(f"[Metadata] Album: {decoded} (flag set to True)", flush=True)
 
             # Shairport-sync control messages
             elif item_type == "ssnc":
@@ -318,12 +327,16 @@ class MetadataParser:
 
             # Check if we received artist/album for the current track
             if not self.metadata_received_for_current_track.get("artist"):
-                print(f"[Metadata] No artist received for current track, using fallback", flush=True)
+                print(f"[Metadata] >>> FALLBACK: No artist received for current track '{self.current.get('title')}', using fallback", flush=True)
                 self.store.update(artist="Unknown Artist")
+            else:
+                print(f"[Metadata] >>> CHECK: Artist flag is True, keeping: '{self.current.get('artist')}'", flush=True)
 
             if not self.metadata_received_for_current_track.get("album"):
-                print(f"[Metadata] No album received for current track, using fallback", flush=True)
+                print(f"[Metadata] >>> FALLBACK: No album received for current track '{self.current.get('title')}', using fallback", flush=True)
                 self.store.update(album="Unknown Album")
+            else:
+                print(f"[Metadata] >>> CHECK: Album flag is True, keeping: '{self.current.get('album')}'", flush=True)
 
         # Run in a background thread to not block metadata processing
         thread = threading.Thread(target=delayed_check, daemon=True)
