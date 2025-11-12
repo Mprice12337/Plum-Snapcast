@@ -143,10 +143,12 @@ class MetadataParser:
                     is_empty_title = not decoded or not decoded.strip()
 
                     if is_empty_title:
-                        print(f"[Metadata] Received empty title metadata (not triggering track change)", flush=True)
+                        print(f"[Metadata] Received empty title metadata (ignoring completely)", flush=True)
+                        # Don't process empty titles at all - they don't represent real data
+                        return
 
                     # Only trigger new track detection for non-empty, changed titles
-                    if not is_empty_title and self.current["title"] != decoded:
+                    if self.current["title"] != decoded:
                         print(f"[Metadata] ========================================", flush=True)
                         print(f"[Metadata] NEW TRACK DETECTED", flush=True)
                         print(f"[Metadata] Previous title: '{self.current['title']}'", flush=True)
