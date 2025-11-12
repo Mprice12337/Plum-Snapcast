@@ -129,11 +129,15 @@ class MetadataParser:
                 if code == "asar":  # Artist
                     # Only update if non-empty
                     if decoded and decoded.strip():
-                        self.current["artist"] = decoded
-                        self.store.update(artist=decoded)
-                        self.metadata_received_for_current_track["artist"] = True
-                        self.metadata_arrival_time["artist"] = time.time()
-                        print(f"[Metadata] Artist: {decoded} (flag set to True, time={self.metadata_arrival_time['artist']:.2f})", flush=True)
+                        # Only update timestamp if value actually changed
+                        if self.current["artist"] != decoded:
+                            self.current["artist"] = decoded
+                            self.store.update(artist=decoded)
+                            self.metadata_received_for_current_track["artist"] = True
+                            self.metadata_arrival_time["artist"] = time.time()
+                            print(f"[Metadata] Artist: {decoded} (VALUE CHANGED, flag set to True, time={self.metadata_arrival_time['artist']:.2f})", flush=True)
+                        else:
+                            print(f"[Metadata] Artist: {decoded} (same value, not updating timestamp)", flush=True)
                     else:
                         print(f"[Metadata] Ignoring empty artist metadata", flush=True)
 
@@ -215,11 +219,15 @@ class MetadataParser:
                 elif code == "asal":  # Album
                     # Only update if non-empty
                     if decoded and decoded.strip():
-                        self.current["album"] = decoded
-                        self.store.update(album=decoded)
-                        self.metadata_received_for_current_track["album"] = True
-                        self.metadata_arrival_time["album"] = time.time()
-                        print(f"[Metadata] Album: {decoded} (flag set to True, time={self.metadata_arrival_time['album']:.2f})", flush=True)
+                        # Only update timestamp if value actually changed
+                        if self.current["album"] != decoded:
+                            self.current["album"] = decoded
+                            self.store.update(album=decoded)
+                            self.metadata_received_for_current_track["album"] = True
+                            self.metadata_arrival_time["album"] = time.time()
+                            print(f"[Metadata] Album: {decoded} (VALUE CHANGED, flag set to True, time={self.metadata_arrival_time['album']:.2f})", flush=True)
+                        else:
+                            print(f"[Metadata] Album: {decoded} (same value, not updating timestamp)", flush=True)
                     else:
                         print(f"[Metadata] Ignoring empty album metadata", flush=True)
 
