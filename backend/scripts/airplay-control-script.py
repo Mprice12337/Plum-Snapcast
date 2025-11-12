@@ -133,16 +133,10 @@ class MetadataParser:
                         self.in_metadata_bundle = False
                         self.bundle_track_id = None
 
-                        # Return cleared metadata
-                        return {
-                            'type': 'metadata',
-                            'data': {
-                                "title": "",
-                                "artist": "",
-                                "album": "",
-                                "artwork_url": None
-                            }
-                        }
+                        # Don't send cleared metadata - wait for first bundle
+                        # The frontend will keep showing old metadata until new arrives
+                        log(f"[Metadata] State cleared, waiting for new metadata bundle...")
+                        return None
                     elif not self.current["track_id"]:
                         # First track
                         self.current["track_id"] = track_id
@@ -487,13 +481,15 @@ class SnapcastControlScript:
 
                                 elif result['type'] == 'artwork':
                                     # Just artwork update - merge with current metadata
-                                    if self.last_metadata:
+                                    if self.last_metadata and self.last_metadata.get('title'):
+                                        # We have previous metadata - send artwork with it
                                         updated_metadata = self.last_metadata.copy()
                                         updated_metadata['artwork_url'] = result['data']
                                         self.send_metadata_update(updated_metadata)
                                     else:
-                                        # No metadata yet, just store artwork
-                                        self.send_metadata_update({'artwork_url': result['data']})
+                                        # No complete metadata yet - don't send artwork-only
+                                        # Wait for metadata bundle to arrive first
+                                        log(f"[Cover Art] Artwork ready but waiting for metadata bundle...")
 
                         # Keep buffer from growing too large
                         # Need larger buffer to handle cover art data (can be 200KB+)
