@@ -64,15 +64,15 @@ class MetadataParser:
         self.current = {
             "title": None,
             "artist": None,
-            "album": None
+            "album": None,
+            "track_id": None  # mper - persistent track ID
         }
         self.pending_cover_data = []
-        self.last_loaded_cache_file = None  # Track which cache file we last loaded
-        self.metadata_received_for_current_track = {
-            "artist": False,
-            "album": False
-        }
-        self.metadata_arrival_time = {
+        self.last_loaded_cache_file = None
+        # Track if we're inside a metadata bundle (between mdst and mden)
+        self.in_metadata_bundle = False
+        self.pending_metadata = {
+            "title": None,
             "artist": None,
             "album": None
         }
@@ -126,79 +126,96 @@ class MetadataParser:
             # Process based on type and code
             # Core metadata (from iTunes/Music app)
             if item_type == "core":
-                if code == "asar":  # Artist
-                    # Only update if non-empty
+                if code == "mper":  # Persistent Track ID - DEFINITIVE track change indicator
                     if decoded and decoded.strip():
-                        # Only update timestamp if value actually changed
-                        if self.current["artist"] != decoded:
+                        track_id = decoded.strip()
+                        if self.current["track_id"] and self.current["track_id"] != track_id:
+                            print(f"[Metadata] ========================================", flush=True)
+                            print(f"[Metadata] NEW TRACK DETECTED via mper", flush=True)
+                            print(f"[Metadata] Previous track ID: {self.current['track_id']}", flush=True)
+                            print(f"[Metadata] New track ID: {track_id}", flush=True)
+                            print(f"[Metadata] Clearing all metadata", flush=True)
+                            print(f"[Metadata] ========================================", flush=True)
+                            # Clear everything for new track
+                            self.current = {
+                                "title": None,
+                                "artist": None,
+                                "album": None,
+                                "track_id": track_id
+                            }
+                            self.pending_metadata = {
+                                "title": None,
+                                "artist": None,
+                                "album": None
+                            }
+                            # Clear display immediately
+                            self.store.update(title="", artist="", album="")
+                        else:
+                            self.current["track_id"] = track_id
+                            print(f"[Metadata] Track ID set: {track_id}", flush=True)
+
+                elif code == "asar":  # Artist
+                    if decoded and decoded.strip():
+                        if self.in_metadata_bundle:
+                            self.pending_metadata["artist"] = decoded
+                            print(f"[Metadata] Artist (pending): {decoded}", flush=True)
+                        else:
                             self.current["artist"] = decoded
                             self.store.update(artist=decoded)
-                            self.metadata_received_for_current_track["artist"] = True
-                            self.metadata_arrival_time["artist"] = time.time()
-                            print(f"[Metadata] Artist: {decoded} (VALUE CHANGED, flag set to True, time={self.metadata_arrival_time['artist']:.2f})", flush=True)
+                            print(f"[Metadata] Artist (immediate): {decoded}", flush=True)
+
+                elif code == "minm":  # Title
+                    if decoded and decoded.strip():
+                        if self.in_metadata_bundle:
+                            self.pending_metadata["title"] = decoded
+                            print(f"[Metadata] Title (pending): {decoded}", flush=True)
                         else:
-                            print(f"[Metadata] Artist: {decoded} (same value, not updating timestamp)", flush=True)
-                    else:
-                        print(f"[Metadata] Ignoring empty artist metadata", flush=True)
-
-                elif code == "minm":  # Title/Track name
-                    # If title changed, this is a new track
-                    # BUT: Don't treat empty titles as real track changes
-                    is_empty_title = not decoded or not decoded.strip()
-
-                    if is_empty_title:
-                        print(f"[Metadata] Received empty title metadata (ignoring completely)", flush=True)
-                        # Don't process empty titles at all - they don't represent real data
-                        return
-
-                    # Only trigger new track detection for non-empty, changed titles
-                    if self.current["title"] != decoded:
-                        print(f"[Metadata] ========================================", flush=True)
-                        print(f"[Metadata] NEW TRACK DETECTED", flush=True)
-                        print(f"[Metadata] Previous title: '{self.current['title']}'", flush=True)
-                        print(f"[Metadata] New title: '{decoded}'", flush=True)
-                        print(f"[Metadata] Current artist: '{self.current.get('artist')}'", flush=True)
-                        print(f"[Metadata] Current album: '{self.current.get('album')}'", flush=True)
-                        print(f"[Metadata] Resetting flags - will wait for new metadata to arrive", flush=True)
-                        print(f"[Metadata] ========================================", flush=True)
-
-                        # Reset flags - we haven't received metadata for THIS track yet
-                        # But DON'T clear the displayed values - let them stay until:
-                        # 1. New metadata arrives (overwrites them), OR
-                        # 2. 2-second timeout (fallback clears them)
-                        self.metadata_received_for_current_track = {
-                            "artist": False,
-                            "album": False
-                        }
-
-                        # Schedule a check to set "Unknown" if metadata doesn't arrive
-                        self._schedule_metadata_fallback()
-
-                    self.current["title"] = decoded
-                    self.store.update(title=decoded)
-                    print(f"[Metadata] Title: {decoded}", flush=True)
-                    # When title changes, check for new artwork after a short delay
-                    # This handles cases where artwork comes before metadata
-                    self._schedule_artwork_check()
+                            self.current["title"] = decoded
+                            self.store.update(title=decoded)
+                            print(f"[Metadata] Title (immediate): {decoded}", flush=True)
+                            self._schedule_artwork_check()
 
                 elif code == "asal":  # Album
-                    # Only update if non-empty
                     if decoded and decoded.strip():
-                        # Only update timestamp if value actually changed
-                        if self.current["album"] != decoded:
+                        if self.in_metadata_bundle:
+                            self.pending_metadata["album"] = decoded
+                            print(f"[Metadata] Album (pending): {decoded}", flush=True)
+                        else:
                             self.current["album"] = decoded
                             self.store.update(album=decoded)
-                            self.metadata_received_for_current_track["album"] = True
-                            self.metadata_arrival_time["album"] = time.time()
-                            print(f"[Metadata] Album: {decoded} (VALUE CHANGED, flag set to True, time={self.metadata_arrival_time['album']:.2f})", flush=True)
-                        else:
-                            print(f"[Metadata] Album: {decoded} (same value, not updating timestamp)", flush=True)
-                    else:
-                        print(f"[Metadata] Ignoring empty album metadata", flush=True)
+                            print(f"[Metadata] Album (immediate): {decoded}", flush=True)
 
             # Shairport-sync control messages
             elif item_type == "ssnc":
-                if code == "PICT":  # Cover art data
+                if code == "mdst":  # Metadata bundle start
+                    print(f"[Metadata] >>> Metadata bundle START", flush=True)
+                    self.in_metadata_bundle = True
+                    # Clear pending metadata
+                    self.pending_metadata = {
+                        "title": None,
+                        "artist": None,
+                        "album": None
+                    }
+
+                elif code == "mden":  # Metadata bundle end
+                    print(f"[Metadata] >>> Metadata bundle END", flush=True)
+                    self.in_metadata_bundle = False
+                    # Apply all pending metadata at once
+                    if self.pending_metadata["title"]:
+                        self.current["title"] = self.pending_metadata["title"]
+                        self.store.update(title=self.pending_metadata["title"])
+                        print(f"[Metadata] Applied title: {self.pending_metadata['title']}", flush=True)
+                        self._schedule_artwork_check()
+                    if self.pending_metadata["artist"]:
+                        self.current["artist"] = self.pending_metadata["artist"]
+                        self.store.update(artist=self.pending_metadata["artist"])
+                        print(f"[Metadata] Applied artist: {self.pending_metadata['artist']}", flush=True)
+                    if self.pending_metadata["album"]:
+                        self.current["album"] = self.pending_metadata["album"]
+                        self.store.update(album=self.pending_metadata["album"])
+                        print(f"[Metadata] Applied album: {self.pending_metadata['album']}", flush=True)
+
+                elif code == "PICT":  # Cover art data
                     if encoding == "base64" and data_text:
                         # Store the base64 data directly (don't decode yet)
                         self.pending_cover_data.append(data_text)
@@ -349,27 +366,8 @@ class MetadataParser:
         thread.start()
 
     def _schedule_metadata_fallback(self):
-        """Schedule fallback to 'Unknown' for metadata that doesn't arrive"""
-        def delayed_check():
-            # Wait for metadata to arrive
-            time.sleep(2.0)
-
-            # Check if we received artist/album for the current track
-            if not self.metadata_received_for_current_track.get("artist"):
-                print(f"[Metadata] >>> FALLBACK: No artist received for current track '{self.current.get('title')}', using fallback", flush=True)
-                self.store.update(artist="Unknown Artist")
-            else:
-                print(f"[Metadata] >>> CHECK: Artist flag is True, keeping: '{self.current.get('artist')}'", flush=True)
-
-            if not self.metadata_received_for_current_track.get("album"):
-                print(f"[Metadata] >>> FALLBACK: No album received for current track '{self.current.get('title')}', using fallback", flush=True)
-                self.store.update(album="Unknown Album")
-            else:
-                print(f"[Metadata] >>> CHECK: Album flag is True, keeping: '{self.current.get('album')}'", flush=True)
-
-        # Run in a background thread to not block metadata processing
-        thread = threading.Thread(target=delayed_check, daemon=True)
-        thread.start()
+        """No longer needed - we use mdst/mden bundles instead"""
+        pass
 
     def _reset(self):
         """Reset current metadata on playback end"""
