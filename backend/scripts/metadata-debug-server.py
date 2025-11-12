@@ -157,54 +157,19 @@ class MetadataParser:
                         print(f"[Metadata] NEW TRACK DETECTED", flush=True)
                         print(f"[Metadata] Previous title: '{self.current['title']}'", flush=True)
                         print(f"[Metadata] New title: '{decoded}'", flush=True)
-                        print(f"[Metadata] Current artist flag: {self.metadata_received_for_current_track.get('artist')}", flush=True)
-                        print(f"[Metadata] Current album flag: {self.metadata_received_for_current_track.get('album')}", flush=True)
-                        print(f"[Metadata] Current artist value: '{self.current.get('artist')}'", flush=True)
-                        print(f"[Metadata] Current album value: '{self.current.get('album')}'", flush=True)
-
-                        # Check if we have fresh metadata (arrived within last 2 seconds from NOW)
-                        # This handles metadata arriving BEFORE the title
-                        current_time = time.time()
-                        keep_artist = False
-                        keep_album = False
-
-                        # Check if artist arrived in the last 2 seconds
-                        if self.metadata_received_for_current_track.get('artist'):
-                            artist_arrival = self.metadata_arrival_time.get('artist')
-                            if artist_arrival:
-                                time_since_arrival = current_time - artist_arrival
-                                if time_since_arrival < 2.0:
-                                    keep_artist = True
-                                    print(f"[Metadata] Keeping artist (arrived {time_since_arrival:.2f}s ago, fresh for new track)", flush=True)
-                                else:
-                                    print(f"[Metadata] Clearing artist (arrived {time_since_arrival:.2f}s ago, too old)", flush=True)
-
-                        # Check if album arrived in the last 2 seconds
-                        if self.metadata_received_for_current_track.get('album'):
-                            album_arrival = self.metadata_arrival_time.get('album')
-                            if album_arrival:
-                                time_since_arrival = current_time - album_arrival
-                                if time_since_arrival < 2.0:
-                                    keep_album = True
-                                    print(f"[Metadata] Keeping album (arrived {time_since_arrival:.2f}s ago, fresh for new track)", flush=True)
-                                else:
-                                    print(f"[Metadata] Clearing album (arrived {time_since_arrival:.2f}s ago, too old)", flush=True)
-
+                        print(f"[Metadata] Current artist: '{self.current.get('artist')}'", flush=True)
+                        print(f"[Metadata] Current album: '{self.current.get('album')}'", flush=True)
+                        print(f"[Metadata] Resetting flags - will wait for new metadata to arrive", flush=True)
                         print(f"[Metadata] ========================================", flush=True)
 
-                        # Reset flags for metadata we're NOT keeping
+                        # Reset flags - we haven't received metadata for THIS track yet
+                        # But DON'T clear the displayed values - let them stay until:
+                        # 1. New metadata arrives (overwrites them), OR
+                        # 2. 2-second timeout (fallback clears them)
                         self.metadata_received_for_current_track = {
-                            "artist": keep_artist,
-                            "album": keep_album
+                            "artist": False,
+                            "album": False
                         }
-
-                        # Clear old metadata only if we're not keeping it
-                        if not keep_artist:
-                            self.store.update(artist="")
-                            self.metadata_arrival_time["artist"] = None
-                        if not keep_album:
-                            self.store.update(album="")
-                            self.metadata_arrival_time["album"] = None
 
                         # Schedule a check to set "Unknown" if metadata doesn't arrive
                         self._schedule_metadata_fallback()
