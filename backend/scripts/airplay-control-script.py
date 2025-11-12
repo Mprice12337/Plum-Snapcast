@@ -59,6 +59,10 @@ class MetadataParser:
             "album": None
         }
 
+        # Artwork waiting state
+        self.waiting_for_artwork = False  # True after mden, waiting for pcen
+        self.artwork_timeout = None  # Timestamp when we'll give up waiting
+
         # Cover art state
         self.in_picture = False
         self.last_loaded_cache_file = None
@@ -195,24 +199,16 @@ class MetadataParser:
                 self.pending_metadata = {"title": None, "artist": None, "album": None}
                 self.pending_track_id = None
 
-                # Schedule artwork check if we got a title
-                if self.current["title"] and has_update:
-                    self._schedule_artwork_check()
-
-                # Return complete metadata update
+                # Don't send update yet - wait for artwork (pcen comes after mden)
                 if has_update and self.current["title"]:
-                    log(f"[Metadata] Sending update: {self.current['title']} - {self.current['artist']}")
-                    return {
-                        'type': 'metadata',
-                        'data': {
-                            "title": self.current["title"],
-                            "artist": self.current["artist"] or "",
-                            "album": self.current["album"] or "",
-                            "artwork_url": self.current["artwork_url"]
-                        }
-                    }
+                    log(f"[Metadata] Bundle complete: {self.current['title']} - {self.current['artist']}")
+                    log(f"[Metadata] Waiting for artwork (pcen) before sending...")
+                    self.waiting_for_artwork = True
+                    self.artwork_timeout = time.time() + 2.0  # 2 second timeout
+                    return None  # Don't send anything yet
                 else:
                     log(f"[Metadata] Bundle complete but no title, not sending update")
+                    return None
 
             # === COVER ART HANDLING ===
             if item_type == "ssnc":
@@ -225,9 +221,29 @@ class MetadataParser:
                     log(f"[Cover Art] Picture end marker received")
 
                     # Load from cache (shairport-sync writes to disk)
-                    artwork_result = self._load_cover_art_from_cache()
-                    if artwork_result:
-                        return artwork_result
+                    artwork_data = self._load_cover_art_from_cache_sync()
+                    if artwork_data:
+                        self.current["artwork_url"] = artwork_data
+                        log(f"[Cover Art] Loaded artwork ({len(artwork_data)} chars)")
+
+                    # If we're waiting for artwork, send complete update NOW
+                    if self.waiting_for_artwork:
+                        self.waiting_for_artwork = False
+                        self.artwork_timeout = None
+
+                        if self.current["title"]:
+                            log(f"[Metadata] Sending COMPLETE update: {self.current['title']} (with artwork)")
+                            return {
+                                'type': 'metadata',
+                                'data': {
+                                    "title": self.current["title"],
+                                    "artist": self.current["artist"] or "",
+                                    "album": self.current["album"] or "",
+                                    "artwork_url": self.current["artwork_url"]
+                                }
+                            }
+
+                    return None
 
         except ET.ParseError as e:
             # XML parse errors are common when buffer cuts items mid-stream
@@ -242,18 +258,10 @@ class MetadataParser:
 
         return None
 
-    def _schedule_artwork_check(self):
-        """Schedule a delayed check for cover art (gives cache time to update)"""
-        def delayed_check():
-            time.sleep(0.5)  # Wait 500ms for cache to write
-            self._load_cover_art_from_cache()
-
-        threading.Thread(target=delayed_check, daemon=True).start()
-
-    def _load_cover_art_from_cache(self, force=False) -> Optional[Dict]:
+    def _load_cover_art_from_cache_sync(self) -> Optional[str]:
         """
         Load cover art from shairport-sync cache directory.
-        Returns artwork update dict if new artwork loaded, None otherwise.
+        Returns artwork data URL string, or None if not available.
         """
         try:
             cache_dir = Path(COVER_ART_CACHE_DIR)
@@ -270,9 +278,10 @@ class MetadataParser:
             # Get the most recently modified file
             newest_file = max(cover_files, key=lambda p: p.stat().st_mtime)
 
-            # Skip if we already loaded this file (unless forced)
-            if not force and self.last_loaded_cache_file == newest_file.name:
-                return None
+            # Skip if we already loaded this file
+            if self.last_loaded_cache_file == newest_file.name:
+                # Return the already-loaded artwork
+                return self.current.get("artwork_url")
 
             # Read the file
             with open(newest_file, 'rb') as f:
@@ -285,16 +294,12 @@ class MetadataParser:
             data_url = f"data:{mime_type};base64,{cover_data_b64}"
 
             # Update state
-            self.current["artwork_url"] = data_url
             self.last_loaded_cache_file = newest_file.name
 
-            log(f"[Cover Art] Loaded from cache: {newest_file.name} ({len(image_data)} bytes)")
+            log(f"[Cover Art] Read from cache: {newest_file.name} ({len(image_data)} bytes)")
 
-            # Return artwork update
-            return {
-                'type': 'artwork',
-                'data': data_url
-            }
+            # Return the data URL
+            return data_url
 
         except Exception as e:
             log(f"[Error] Error loading cover art from cache: {e}")
@@ -450,22 +455,27 @@ class SnapcastControlScript:
                             result = self.metadata_parser.parse_item(item_xml)
 
                             # If we got an update, send to Snapcast
-                            if result:
-                                if result['type'] == 'metadata':
-                                    # Full metadata update
-                                    self.send_metadata_update(result['data'])
+                            # Only 'metadata' type is returned now (complete with artwork)
+                            if result and result['type'] == 'metadata':
+                                self.send_metadata_update(result['data'])
 
-                                elif result['type'] == 'artwork':
-                                    # Just artwork update - merge with current metadata
-                                    if self.last_metadata and self.last_metadata.get('title'):
-                                        # We have previous metadata - send artwork with it
-                                        updated_metadata = self.last_metadata.copy()
-                                        updated_metadata['artwork_url'] = result['data']
-                                        self.send_metadata_update(updated_metadata)
-                                    else:
-                                        # No complete metadata yet - don't send artwork-only
-                                        # Wait for metadata bundle to arrive first
-                                        log(f"[Cover Art] Artwork ready but waiting for metadata bundle...")
+                        # Check for artwork timeout - send metadata without artwork if timeout
+                        if (self.metadata_parser.waiting_for_artwork and
+                            self.metadata_parser.artwork_timeout and
+                            time.time() > self.metadata_parser.artwork_timeout):
+
+                            log(f"[Metadata] Artwork timeout - sending without artwork")
+                            self.metadata_parser.waiting_for_artwork = False
+                            self.metadata_parser.artwork_timeout = None
+
+                            if self.metadata_parser.current["title"]:
+                                metadata_update = {
+                                    "title": self.metadata_parser.current["title"],
+                                    "artist": self.metadata_parser.current["artist"] or "",
+                                    "album": self.metadata_parser.current["album"] or "",
+                                    "artwork_url": None
+                                }
+                                self.send_metadata_update(metadata_update)
 
                         # Keep buffer from growing too large
                         # Need larger buffer to handle cover art data (can be 200KB+)
