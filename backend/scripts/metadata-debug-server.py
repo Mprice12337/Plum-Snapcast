@@ -68,6 +68,11 @@ class MetadataParser:
         }
         self.pending_cover_data = []
         self.last_loaded_cache_file = None  # Track which cache file we last loaded
+        self.metadata_update_times = {
+            "title": None,
+            "artist": None,
+            "album": None
+        }
 
     def parse_item(self, item_xml: str):
         """Parse a complete XML item and update store"""
@@ -121,11 +126,19 @@ class MetadataParser:
                 if code == "asar":  # Artist
                     self.current["artist"] = decoded
                     self.store.update(artist=decoded)
+                    self.metadata_update_times["artist"] = time.time()
                     print(f"[Metadata] Artist: {decoded}", flush=True)
 
                 elif code == "minm":  # Title/Track name
+                    # If title changed, this is a new track
+                    if self.current["title"] != decoded:
+                        print(f"[Metadata] New track detected (title changed)", flush=True)
+                        # Schedule a check to clear stale metadata after a delay
+                        self._schedule_stale_metadata_check()
+
                     self.current["title"] = decoded
                     self.store.update(title=decoded)
+                    self.metadata_update_times["title"] = time.time()
                     print(f"[Metadata] Title: {decoded}", flush=True)
                     # When title changes, check for new artwork after a short delay
                     # This handles cases where artwork comes before metadata
@@ -134,6 +147,7 @@ class MetadataParser:
                 elif code == "asal":  # Album
                     self.current["album"] = decoded
                     self.store.update(album=decoded)
+                    self.metadata_update_times["album"] = time.time()
                     print(f"[Metadata] Album: {decoded}", flush=True)
 
             # Shairport-sync control messages
@@ -161,6 +175,12 @@ class MetadataParser:
 
                 elif code == "pbeg":  # Playback begin
                     print("[Metadata] Playback started", flush=True)
+                    # Reset metadata at playback start - new session
+                    self.store.update(
+                        title="Waiting for metadata...",
+                        artist="Connecting...",
+                        album="N/A"
+                    )
 
                 elif code == "pend":  # Playback end
                     print("[Metadata] Playback ended", flush=True)
@@ -277,6 +297,38 @@ class MetadataParser:
             time.sleep(0.5)
             print(f"[Metadata] Checking for new artwork after title change...", flush=True)
             self._load_cover_art_from_cache()
+
+        # Run in a background thread to not block metadata processing
+        thread = threading.Thread(target=delayed_check, daemon=True)
+        thread.start()
+
+    def _schedule_stale_metadata_check(self):
+        """Schedule a check to clear stale metadata fields after a timeout"""
+        def delayed_check():
+            # Wait for metadata to arrive
+            time.sleep(1.5)
+
+            current_time = time.time()
+            title_update_time = self.metadata_update_times.get("title")
+
+            if title_update_time is None:
+                return
+
+            # Check if artist/album were updated recently (within 1.5s of title)
+            artist_time = self.metadata_update_times.get("artist")
+            album_time = self.metadata_update_times.get("album")
+
+            # If artist wasn't updated after the title change, clear it
+            if artist_time is None or artist_time < title_update_time:
+                print(f"[Metadata] Clearing stale artist data", flush=True)
+                self.store.update(artist="Unknown Artist")
+                self.current["artist"] = None
+
+            # If album wasn't updated after the title change, clear it
+            if album_time is None or album_time < title_update_time:
+                print(f"[Metadata] Clearing stale album data", flush=True)
+                self.store.update(album="Unknown Album")
+                self.current["album"] = None
 
         # Run in a background thread to not block metadata processing
         thread = threading.Thread(target=delayed_check, daemon=True)
