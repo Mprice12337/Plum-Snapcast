@@ -68,10 +68,13 @@ class MetadataParser:
         }
         self.pending_cover_data = []
         self.last_loaded_cache_file = None  # Track which cache file we last loaded
-        self.current_track_start_time = None  # When did current track start
         self.metadata_received_for_current_track = {
             "artist": False,
             "album": False
+        }
+        self.metadata_arrival_time = {
+            "artist": None,
+            "album": None
         }
 
     def parse_item(self, item_xml: str):
@@ -129,7 +132,8 @@ class MetadataParser:
                         self.current["artist"] = decoded
                         self.store.update(artist=decoded)
                         self.metadata_received_for_current_track["artist"] = True
-                        print(f"[Metadata] Artist: {decoded} (flag set to True)", flush=True)
+                        self.metadata_arrival_time["artist"] = time.time()
+                        print(f"[Metadata] Artist: {decoded} (flag set to True, time={self.metadata_arrival_time['artist']:.2f})", flush=True)
                     else:
                         print(f"[Metadata] Ignoring empty artist metadata", flush=True)
 
@@ -152,29 +156,35 @@ class MetadataParser:
                         print(f"[Metadata] Current artist value: '{self.current.get('artist')}'", flush=True)
                         print(f"[Metadata] Current album value: '{self.current.get('album')}'", flush=True)
 
-                        # Check if we have fresh metadata (arrived within last 2 seconds)
+                        # Check if we have fresh metadata (arrived within last 2 seconds from NOW)
                         # This handles metadata arriving BEFORE the title
                         current_time = time.time()
                         keep_artist = False
                         keep_album = False
 
-                        if self.metadata_received_for_current_track.get('artist') and self.current_track_start_time:
-                            # If artist arrived recently, it's probably for the NEW track
-                            time_since_track_start = current_time - self.current_track_start_time
-                            if time_since_track_start < 2.0:
-                                keep_artist = True
-                                print(f"[Metadata] Keeping artist (arrived {time_since_track_start:.2f}s ago, probably for new track)", flush=True)
+                        # Check if artist arrived in the last 2 seconds
+                        if self.metadata_received_for_current_track.get('artist'):
+                            artist_arrival = self.metadata_arrival_time.get('artist')
+                            if artist_arrival:
+                                time_since_arrival = current_time - artist_arrival
+                                if time_since_arrival < 2.0:
+                                    keep_artist = True
+                                    print(f"[Metadata] Keeping artist (arrived {time_since_arrival:.2f}s ago, fresh for new track)", flush=True)
+                                else:
+                                    print(f"[Metadata] Clearing artist (arrived {time_since_arrival:.2f}s ago, too old)", flush=True)
 
-                        if self.metadata_received_for_current_track.get('album') and self.current_track_start_time:
-                            time_since_track_start = current_time - self.current_track_start_time
-                            if time_since_track_start < 2.0:
-                                keep_album = True
-                                print(f"[Metadata] Keeping album (arrived {time_since_track_start:.2f}s ago, probably for new track)", flush=True)
+                        # Check if album arrived in the last 2 seconds
+                        if self.metadata_received_for_current_track.get('album'):
+                            album_arrival = self.metadata_arrival_time.get('album')
+                            if album_arrival:
+                                time_since_arrival = current_time - album_arrival
+                                if time_since_arrival < 2.0:
+                                    keep_album = True
+                                    print(f"[Metadata] Keeping album (arrived {time_since_arrival:.2f}s ago, fresh for new track)", flush=True)
+                                else:
+                                    print(f"[Metadata] Clearing album (arrived {time_since_arrival:.2f}s ago, too old)", flush=True)
 
                         print(f"[Metadata] ========================================", flush=True)
-
-                        # Mark new track start time
-                        self.current_track_start_time = time.time()
 
                         # Reset flags for metadata we're NOT keeping
                         self.metadata_received_for_current_track = {
@@ -185,8 +195,10 @@ class MetadataParser:
                         # Clear old metadata only if we're not keeping it
                         if not keep_artist:
                             self.store.update(artist="")
+                            self.metadata_arrival_time["artist"] = None
                         if not keep_album:
                             self.store.update(album="")
+                            self.metadata_arrival_time["album"] = None
 
                         # Schedule a check to set "Unknown" if metadata doesn't arrive
                         self._schedule_metadata_fallback()
@@ -204,7 +216,8 @@ class MetadataParser:
                         self.current["album"] = decoded
                         self.store.update(album=decoded)
                         self.metadata_received_for_current_track["album"] = True
-                        print(f"[Metadata] Album: {decoded} (flag set to True)", flush=True)
+                        self.metadata_arrival_time["album"] = time.time()
+                        print(f"[Metadata] Album: {decoded} (flag set to True, time={self.metadata_arrival_time['album']:.2f})", flush=True)
                     else:
                         print(f"[Metadata] Ignoring empty album metadata", flush=True)
 
