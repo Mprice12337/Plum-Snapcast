@@ -111,8 +111,8 @@ class MetadataParser:
                     # Check if this is a NEW track
                     if self.current["track_id"] and self.current["track_id"] != track_id:
                         log(f"[Metadata] NEW TRACK DETECTED via mper")
-                        log(f"[Metadata] Previous ID: {self.current['track_id'][:16]}...")
-                        log(f"[Metadata] New ID: {track_id[:16]}...")
+                        log(f"[Metadata] Previous ID: {self.current['track_id'][:5]}...")
+                        log(f"[Metadata] New ID: {track_id[:5]}...")
 
                         # Clear ALL metadata for new track
                         self.current = {
@@ -122,11 +122,13 @@ class MetadataParser:
                             "track_id": track_id,
                             "artwork_url": None
                         }
+                        # IMPORTANT: Clear pending metadata to prevent old track data from being applied
                         self.pending_metadata = {
                             "title": None,
                             "artist": None,
                             "album": None
                         }
+                        # Exit any in-progress bundle (it's from the old track)
                         self.in_metadata_bundle = False
 
                         # Return cleared metadata
@@ -142,7 +144,7 @@ class MetadataParser:
                     elif not self.current["track_id"]:
                         # First track
                         self.current["track_id"] = track_id
-                        log(f"[Metadata] Initial track ID: {track_id[:16]}...")
+                        log(f"[Metadata] Initial track ID: {track_id[:5]}...")
 
             # === METADATA BUNDLE HANDLING ===
             if code == "mdst":  # Metadata bundle start
@@ -155,8 +157,8 @@ class MetadataParser:
                 }
                 return None
 
-            # Collect metadata during bundle
-            if self.in_metadata_bundle:
+            # Collect metadata during bundle (only if we have a track ID)
+            if self.in_metadata_bundle and self.current["track_id"]:
                 if code == "minm" and decoded:  # Title
                     # Ignore empty titles
                     if decoded.strip():
@@ -176,6 +178,12 @@ class MetadataParser:
             if code == "mden":  # Metadata bundle end
                 log(f"[Metadata] >>> Metadata bundle END")
                 self.in_metadata_bundle = False
+
+                # Only apply metadata if we have a track ID (prevents applying to unknown tracks)
+                if not self.current["track_id"]:
+                    log(f"[Metadata] Skipping bundle - no track ID yet")
+                    self.pending_metadata = {"title": None, "artist": None, "album": None}
+                    return None
 
                 # Apply all pending metadata atomically
                 has_update = False
@@ -234,7 +242,11 @@ class MetadataParser:
                         return artwork_result
 
         except ET.ParseError as e:
-            log(f"[Error] XML Parse error: {e}")
+            # XML parse errors are common when buffer cuts items mid-stream
+            # Only log occasionally to avoid spam
+            import random
+            if random.random() < 0.1:  # Log 10% of parse errors
+                log(f"[XML] Parse error (suppressing most): {e}")
         except Exception as e:
             log(f"[Error] Error parsing metadata: {e}")
             import traceback
@@ -466,13 +478,18 @@ class SnapcastControlScript:
                                         self.send_metadata_update({'artwork_url': result['data']})
 
                         # Keep buffer from growing too large
-                        if len(buffer) > 100000:
+                        # Need larger buffer to handle cover art data (can be 200KB+)
+                        if len(buffer) > 500000:  # 500KB limit
+                            # Find the last complete </item> tag
                             last_item_end = buffer.rfind("</item>")
                             if last_item_end != -1:
+                                # Keep everything after the last complete item
                                 buffer = buffer[last_item_end + len("</item>"):]
+                                log(f"[Buffer] Trimmed buffer to {len(buffer)} bytes")
                             else:
-                                buffer = buffer[-50000:]
-                                log("[Warning] Buffer overflow, kept last 50KB")
+                                # No complete items found - keep last 250KB to avoid cutting data
+                                buffer = buffer[-250000:]
+                                log("[Warning] Buffer overflow without complete items, kept last 250KB")
 
                     except Exception as e:
                         log(f"[Error] Error processing chunk: {e}")
