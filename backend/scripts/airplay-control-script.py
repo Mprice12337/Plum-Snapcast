@@ -3,16 +3,18 @@
 Snapcast Control Script for AirPlay Metadata
 Reads metadata from shairport-sync pipe and provides it to Snapcast via JSON-RPC
 
-Based on proven pattern from shairport-metadatareader-python:
-- Private/public state separation
-- Atomic updates only at bundle markers (mden/pcen)
-- Independent metadata and artwork state machines
+Based on proven pattern from metadata-debug-server.py:
+- Thread-safe metadata storage with atomic updates
+- mdst/mden bundle pattern with pending state
+- Independent artwork handling
+- Only send complete, consistent updates to Snapcast
 """
 
 import argparse
 import base64
 import json
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -36,37 +38,93 @@ def log(message: str):
         pass
 
 
-class MetadataParser:
+class MetadataStore:
     """
-    Parse shairport-sync metadata using atomic bundle pattern.
-
-    Pattern (from shairport-metadatareader-python):
-    - Accumulate in PRIVATE state (_tmp_metadata, _tmp_artwork)
-    - Publish ATOMICALLY to PUBLIC state (metadata, artwork)
-    - Only publish at bundle boundaries (mden, pcen)
+    Thread-safe storage for current metadata.
+    This ensures atomic reads/writes and consistency.
     """
 
     def __init__(self):
-        # === PRIVATE STATE (accumulating during bundle) ===
-        self._tmp_metadata = {}  # Accumulates between mdst...mden
-        self._tmp_artwork_data = []  # Accumulates PICT chunks between pcst...pcen
+        self.lock = threading.Lock()
+        self.data = {
+            "title": None,
+            "artist": None,
+            "album": None,
+            "track_id": None,
+            "artwork_url": None,
+            "last_updated": None
+        }
 
-        # === PUBLIC STATE (published atomically) ===
-        self.metadata = {}  # Published at mden
-        self.artwork = None  # Published at pcen (data URL or None)
+    def update(self, **kwargs):
+        """Update metadata fields atomically"""
+        with self.lock:
+            self.data.update(kwargs)
+            self.data["last_updated"] = time.time()
+            log(f"[Store] Updated: {list(kwargs.keys())}")
 
-        # === STATE FLAGS ===
-        self._in_metadata_bundle = False  # Between mdst and mden
-        self._in_artwork_bundle = False  # Between pcst and pcen
-        self._last_artwork_filename = None  # Track which cache file we loaded
+    def get_all(self) -> Dict:
+        """Get all metadata (returns a copy)"""
+        with self.lock:
+            return self.data.copy()
 
-        # === TRACKING ===
-        self._current_track_id = None  # mper value for track change detection
+    def get_metadata_for_snapcast(self) -> Optional[Dict]:
+        """Get metadata formatted for Snapcast, only if complete"""
+        with self.lock:
+            # Only return if we have at least a title
+            if self.data.get("title"):
+                meta = {}
+                if self.data.get("title"):
+                    meta["title"] = self.data["title"]
+                if self.data.get("artist"):
+                    meta["artist"] = self.data["artist"]
+                if self.data.get("album"):
+                    meta["album"] = self.data["album"]
+                if self.data.get("artwork_url"):
+                    meta["artUrl"] = self.data["artwork_url"]
+                return meta
+            return None
 
-    def parse_item(self, item_xml: str) -> Optional[Dict]:
+
+class MetadataParser:
+    """
+    Parse shairport-sync metadata using the proven pattern from debug server.
+
+    Pattern:
+    - Accumulate in pending_metadata during mdst...mden bundle
+    - Apply atomically to store at mden
+    - Handle artwork independently
+    """
+
+    def __init__(self, store: MetadataStore):
+        self.store = store
+
+        # Current state (what's been applied)
+        self.current = {
+            "title": None,
+            "artist": None,
+            "album": None,
+            "track_id": None
+        }
+
+        # Pending state (accumulating during bundle)
+        self.pending_metadata = {
+            "title": None,
+            "artist": None,
+            "album": None
+        }
+
+        # Artwork handling
+        self.pending_cover_data = []
+        self.last_loaded_cache_file = None
+
+        # Bundle state flags
+        self.in_metadata_bundle = False
+        self.in_artwork_bundle = False
+
+    def parse_item(self, item_xml: str) -> bool:
         """
-        Parse one XML item and update internal state.
-        Returns update dict when bundle completes, None otherwise.
+        Parse one XML item and update store.
+        Returns True if store was updated (signals Snapcast notification needed).
         """
         try:
             root = ET.fromstring(item_xml)
@@ -75,7 +133,7 @@ class MetadataParser:
             type_elem = root.find("type")
             code_elem = root.find("code")
             if code_elem is None:
-                return None
+                return False
 
             item_type = bytes.fromhex(type_elem.text).decode('ascii', errors='ignore') if type_elem is not None else ""
             code = bytes.fromhex(code_elem.text).decode('ascii', errors='ignore')
@@ -86,115 +144,143 @@ class MetadataParser:
             data_text = (data_elem.text or "").strip() if data_elem is not None else ""
 
             decoded = ""
-            if encoding == "base64" and data_text:
+            if encoding == "base64" and data_text and code != "PICT":
                 try:
                     decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
                 except:
                     decoded = ""
 
-            # ===== METADATA BUNDLE MARKERS =====
-            if code == "mdst":
-                # Metadata bundle start - prepare to accumulate
-                self._in_metadata_bundle = True
-                # DON'T clear _tmp_metadata! Let it accumulate
-                log(f"[Bundle] Metadata START")
-                return None
-
-            elif code == "mden":
-                # Metadata bundle end - ATOMIC PUBLISH
-                self._in_metadata_bundle = False
-
-                if self._tmp_metadata:
-                    # ATOMIC: swap entire dict at once
-                    self.metadata = self._tmp_metadata.copy()
-
-                    # Log what we published
-                    title = self.metadata.get('title', 'Unknown')
-                    artist = self.metadata.get('artist', 'Unknown')
-                    album = self.metadata.get('album', 'Unknown')
-                    track_id = self.metadata.get('track_id', 'Unknown')
-                    log(f"[Bundle] Metadata END - Published: {title} - {artist}")
-                    log(f"[Bundle]   Album: {album}, Track ID: {track_id[:5]}...")
-
-                    # Clear tmp storage
-                    self._tmp_metadata = {}
-
-                    # Return complete metadata update
-                    return {
-                        'type': 'metadata',
-                        'data': {
-                            'title': self.metadata.get('title', ''),
-                            'artist': self.metadata.get('artist', ''),
-                            'album': self.metadata.get('album', ''),
-                            'artwork_url': self.artwork  # Current artwork (may be from previous track)
-                        }
-                    }
-                else:
-                    log(f"[Bundle] Metadata END - No data accumulated")
-                    self._tmp_metadata = {}
-                return None
-
-            # ===== METADATA FIELDS (accumulate during bundle) =====
-            if self._in_metadata_bundle:
-                if code == "mper" and decoded:  # Track ID (persistent ID)
-                    track_id = decoded.strip()
-                    if track_id:
-                        self._tmp_metadata['track_id'] = track_id
-
-                        # Detect track change
-                        if self._current_track_id and self._current_track_id != track_id:
-                            log(f"[Track] CHANGE detected: {self._current_track_id[:5]}... → {track_id[:5]}...")
-                            # Clear artwork on track change
-                            self.artwork = None
-                        elif not self._current_track_id:
-                            log(f"[Track] First track: {track_id[:5]}...")
-
-                        self._current_track_id = track_id
-
-                elif code == "minm" and decoded.strip():  # Title
-                    self._tmp_metadata['title'] = decoded.strip()
-                    log(f"[Field] Title: {decoded.strip()}")
-
-                elif code == "asar" and decoded.strip():  # Artist
-                    self._tmp_metadata['artist'] = decoded.strip()
-                    log(f"[Field] Artist: {decoded.strip()}")
-
-                elif code == "asal" and decoded.strip():  # Album
-                    self._tmp_metadata['album'] = decoded.strip()
-                    log(f"[Field] Album: {decoded.strip()}")
-
-            # ===== ARTWORK BUNDLE MARKERS =====
+            # ===== METADATA BUNDLE MARKERS (ssnc) =====
             if item_type == "ssnc":
-                if code == "pcst":
-                    # Artwork bundle start
-                    self._in_artwork_bundle = True
-                    self._tmp_artwork_data = []
-                    log(f"[Artwork] START marker")
-                    return None
+                if code == "mdst":
+                    # Metadata bundle START
+                    log(f"[Bundle] Metadata START")
+                    self.in_metadata_bundle = True
+                    # Clear pending metadata for new bundle
+                    self.pending_metadata = {
+                        "title": None,
+                        "artist": None,
+                        "album": None
+                    }
+                    return False
+
+                elif code == "mden":
+                    # Metadata bundle END - ATOMIC APPLICATION
+                    log(f"[Bundle] Metadata END")
+                    self.in_metadata_bundle = False
+
+                    updated = False
+
+                    # Apply all pending metadata at once to both current and store
+                    if self.pending_metadata["title"]:
+                        self.current["title"] = self.pending_metadata["title"]
+                        self.store.update(title=self.pending_metadata["title"])
+                        log(f"[Bundle] Applied title: {self.pending_metadata['title']}")
+                        updated = True
+
+                    if self.pending_metadata["artist"]:
+                        self.current["artist"] = self.pending_metadata["artist"]
+                        self.store.update(artist=self.pending_metadata["artist"])
+                        log(f"[Bundle] Applied artist: {self.pending_metadata['artist']}")
+                        updated = True
+
+                    if self.pending_metadata["album"]:
+                        self.current["album"] = self.pending_metadata["album"]
+                        self.store.update(album=self.pending_metadata["album"])
+                        log(f"[Bundle] Applied album: {self.pending_metadata['album']}")
+                        updated = True
+
+                    # Signal update if we changed anything
+                    return updated
+
+                elif code == "pcst":
+                    # Artwork bundle START
+                    log(f"[Artwork] START")
+                    self.in_artwork_bundle = True
+                    self.pending_cover_data = []
+                    return False
 
                 elif code == "pcen":
-                    # Artwork bundle end - ATOMIC PUBLISH
-                    self._in_artwork_bundle = False
-                    log(f"[Artwork] END marker")
+                    # Artwork bundle END
+                    log(f"[Artwork] END")
+                    self.in_artwork_bundle = False
 
                     # Load from cache (shairport-sync writes to disk)
                     artwork_url = self._load_artwork_from_cache()
                     if artwork_url:
-                        self.artwork = artwork_url
-                        log(f"[Artwork] Published ({len(artwork_url)} chars)")
+                        self.store.update(artwork_url=artwork_url)
+                        log(f"[Artwork] Applied to store ({len(artwork_url)} chars)")
+                        return True  # Signal update
 
-                        # Send updated metadata with new artwork
-                        if self.metadata.get('title'):
-                            return {
-                                'type': 'metadata',
-                                'data': {
-                                    'title': self.metadata.get('title', ''),
-                                    'artist': self.metadata.get('artist', ''),
-                                    'album': self.metadata.get('album', ''),
-                                    'artwork_url': self.artwork
-                                }
+                    return False
+
+                elif code == "PICT":
+                    # Artwork data (not used when caching is enabled)
+                    if encoding == "base64" and data_text:
+                        self.pending_cover_data.append(data_text)
+                        log(f"[Artwork] Received PICT chunk ({len(data_text)} chars)")
+                    return False
+
+            # ===== METADATA FIELDS (core) =====
+            if item_type == "core":
+                if code == "mper" and decoded:  # Track ID (persistent ID)
+                    track_id = decoded.strip()
+                    if track_id:
+                        # Detect track change
+                        if self.current["track_id"] and self.current["track_id"] != track_id:
+                            log(f"[Track] CHANGE: {self.current['track_id'][:8]}... → {track_id[:8]}...")
+                            # Clear everything for new track
+                            self.current = {
+                                "title": None,
+                                "artist": None,
+                                "album": None,
+                                "track_id": track_id
                             }
-                    return None
+                            self.store.update(
+                                title=None,
+                                artist=None,
+                                album=None,
+                                track_id=track_id,
+                                artwork_url=None
+                            )
+                            return True  # Signal update to clear Snapcast
+                        else:
+                            self.current["track_id"] = track_id
+                            self.store.update(track_id=track_id)
+                            log(f"[Track] ID: {track_id[:8]}...")
+
+                elif code == "minm" and decoded.strip():  # Title
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["title"] = decoded.strip()
+                        log(f"[Field] Title (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["title"] = decoded.strip()
+                        self.store.update(title=decoded.strip())
+                        log(f"[Field] Title (immediate): {decoded.strip()}")
+                        return True
+
+                elif code == "asar" and decoded.strip():  # Artist
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["artist"] = decoded.strip()
+                        log(f"[Field] Artist (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["artist"] = decoded.strip()
+                        self.store.update(artist=decoded.strip())
+                        log(f"[Field] Artist (immediate): {decoded.strip()}")
+                        return True
+
+                elif code == "asal" and decoded.strip():  # Album
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["album"] = decoded.strip()
+                        log(f"[Field] Album (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["album"] = decoded.strip()
+                        self.store.update(album=decoded.strip())
+                        log(f"[Field] Album (immediate): {decoded.strip()}")
+                        return True
 
         except ET.ParseError:
             # Expected when buffer cuts mid-XML
@@ -202,7 +288,7 @@ class MetadataParser:
         except Exception as e:
             log(f"[Error] Parse exception: {e}")
 
-        return None
+        return False
 
     def _load_artwork_from_cache(self) -> Optional[str]:
         """
@@ -223,8 +309,8 @@ class MetadataParser:
             newest_file = max(cover_files, key=lambda p: p.stat().st_mtime)
 
             # Skip if already loaded
-            if self._last_artwork_filename == newest_file.name:
-                return self.artwork  # Return existing
+            if self.last_loaded_cache_file == newest_file.name:
+                return None  # No change
 
             # Read and encode
             with open(newest_file, 'rb') as f:
@@ -234,7 +320,7 @@ class MetadataParser:
             mime_type = mimetypes.guess_type(str(newest_file))[0] or 'image/jpeg'
             data_url = f"data:{mime_type};base64,{base64.b64encode(image_data).decode('ascii')}"
 
-            self._last_artwork_filename = newest_file.name
+            self.last_loaded_cache_file = newest_file.name
             log(f"[Artwork] Loaded from cache: {newest_file.name} ({len(image_data)} bytes)")
 
             return data_url
@@ -249,8 +335,8 @@ class SnapcastControlScript:
 
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
-        self.metadata_parser = MetadataParser()
-        self.last_metadata = {}
+        self.store = MetadataStore()
+        self.metadata_parser = MetadataParser(self.store)
         log(f"[Init] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
@@ -261,20 +347,11 @@ class SnapcastControlScript:
             "params": params
         }
         print(json.dumps(notification), file=sys.stdout, flush=True)
-        log(f"[Snapcast] Sent: {method}")
+        log(f"[Snapcast] → {method}")
 
-    def send_metadata_update(self, metadata: Dict):
-        """Send Plugin.Stream.Player.Properties with metadata"""
-        meta_obj = {}
-
-        if metadata.get("title"):
-            meta_obj["title"] = metadata["title"]
-        if metadata.get("artist"):
-            meta_obj["artist"] = metadata["artist"]
-        if metadata.get("album"):
-            meta_obj["album"] = metadata["album"]
-        if metadata.get("artwork_url"):
-            meta_obj["artUrl"] = metadata["artwork_url"]
+    def send_metadata_update(self):
+        """Send Plugin.Stream.Player.Properties with current metadata from store"""
+        meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
             properties = {
@@ -284,10 +361,9 @@ class SnapcastControlScript:
             self.send_notification("Plugin.Stream.Player.Properties", properties)
 
             # Log what we sent
-            log(f"[Snapcast] Metadata update: {list(meta_obj.keys())}")
-            log(f"[Snapcast]   → {metadata.get('title', 'N/A')} - {metadata.get('artist', 'N/A')}")
-
-            self.last_metadata = metadata.copy()
+            log(f"[Snapcast] Metadata → {meta_obj.get('title', 'N/A')} - {meta_obj.get('artist', 'N/A')}")
+            if "artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -297,17 +373,8 @@ class SnapcastControlScript:
             request_id = request.get("id")
 
             if method == "Plugin.Stream.Player.GetProperties":
-                # Return current metadata
-                meta_obj = {}
-                if self.last_metadata:
-                    if self.last_metadata.get("title"):
-                        meta_obj["title"] = self.last_metadata["title"]
-                    if self.last_metadata.get("artist"):
-                        meta_obj["artist"] = self.last_metadata["artist"]
-                    if self.last_metadata.get("album"):
-                        meta_obj["album"] = self.last_metadata["album"]
-                    if self.last_metadata.get("artwork_url"):
-                        meta_obj["artUrl"] = self.last_metadata["artwork_url"]
+                # Return current metadata from store
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
 
                 response = {
                     "jsonrpc": "2.0",
@@ -315,6 +382,7 @@ class SnapcastControlScript:
                     "result": {"metadata": meta_obj}
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Snapcast] GetProperties → {list(meta_obj.keys())}")
 
         except Exception as e:
             log(f"[Error] Command handler: {e}")
@@ -330,7 +398,7 @@ class SnapcastControlScript:
 
         log(f"[Init] Pipe found: {METADATA_PIPE}")
 
-        # LINE-BY-LINE reading (like Python library)
+        # LINE-BY-LINE reading
         tmp = ""
         try:
             while True:
@@ -341,10 +409,11 @@ class SnapcastControlScript:
                         if strip_line.endswith("</item>"):
                             # Complete item
                             item_xml = tmp + strip_line
-                            result = self.metadata_parser.parse_item(item_xml)
+                            updated = self.metadata_parser.parse_item(item_xml)
 
-                            if result and result['type'] == 'metadata':
-                                self.send_metadata_update(result['data'])
+                            # Send update to Snapcast if store was modified
+                            if updated:
+                                self.send_metadata_update()
 
                             tmp = ""
 
@@ -353,9 +422,9 @@ class SnapcastControlScript:
                             if tmp:
                                 # Previous item incomplete - try to close it
                                 item_xml = tmp + "</item>"
-                                result = self.metadata_parser.parse_item(item_xml)
-                                if result and result['type'] == 'metadata':
-                                    self.send_metadata_update(result['data'])
+                                updated = self.metadata_parser.parse_item(item_xml)
+                                if updated:
+                                    self.send_metadata_update()
 
                             tmp = strip_line
 
@@ -373,7 +442,6 @@ class SnapcastControlScript:
         log("[Init] AirPlay Control Script starting...")
 
         # Start metadata monitor in background
-        import threading
         monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
         monitor_thread.start()
 
