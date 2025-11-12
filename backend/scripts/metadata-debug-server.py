@@ -68,10 +68,10 @@ class MetadataParser:
         }
         self.pending_cover_data = []
         self.last_loaded_cache_file = None  # Track which cache file we last loaded
-        self.metadata_update_times = {
-            "title": None,
-            "artist": None,
-            "album": None
+        self.current_track_start_time = None  # When did current track start
+        self.metadata_received_for_current_track = {
+            "artist": False,
+            "album": False
         }
 
     def parse_item(self, item_xml: str):
@@ -126,19 +126,27 @@ class MetadataParser:
                 if code == "asar":  # Artist
                     self.current["artist"] = decoded
                     self.store.update(artist=decoded)
-                    self.metadata_update_times["artist"] = time.time()
+                    self.metadata_received_for_current_track["artist"] = True
                     print(f"[Metadata] Artist: {decoded}", flush=True)
 
                 elif code == "minm":  # Title/Track name
                     # If title changed, this is a new track
                     if self.current["title"] != decoded:
                         print(f"[Metadata] New track detected (title changed)", flush=True)
-                        # Schedule a check to clear stale metadata after a delay
-                        self._schedule_stale_metadata_check()
+                        # Mark new track start time
+                        self.current_track_start_time = time.time()
+                        # Reset flags - we haven't received metadata for this track yet
+                        self.metadata_received_for_current_track = {
+                            "artist": False,
+                            "album": False
+                        }
+                        # Clear old metadata immediately to prevent showing stale data
+                        self.store.update(artist="", album="")
+                        # Schedule a check to set "Unknown" if metadata doesn't arrive
+                        self._schedule_metadata_fallback()
 
                     self.current["title"] = decoded
                     self.store.update(title=decoded)
-                    self.metadata_update_times["title"] = time.time()
                     print(f"[Metadata] Title: {decoded}", flush=True)
                     # When title changes, check for new artwork after a short delay
                     # This handles cases where artwork comes before metadata
@@ -147,7 +155,7 @@ class MetadataParser:
                 elif code == "asal":  # Album
                     self.current["album"] = decoded
                     self.store.update(album=decoded)
-                    self.metadata_update_times["album"] = time.time()
+                    self.metadata_received_for_current_track["album"] = True
                     print(f"[Metadata] Album: {decoded}", flush=True)
 
             # Shairport-sync control messages
@@ -302,34 +310,20 @@ class MetadataParser:
         thread = threading.Thread(target=delayed_check, daemon=True)
         thread.start()
 
-    def _schedule_stale_metadata_check(self):
-        """Schedule a check to clear stale metadata fields after a timeout"""
+    def _schedule_metadata_fallback(self):
+        """Schedule fallback to 'Unknown' for metadata that doesn't arrive"""
         def delayed_check():
             # Wait for metadata to arrive
             time.sleep(2.0)
 
-            current_time = time.time()
-            title_update_time = self.metadata_update_times.get("title")
-
-            if title_update_time is None:
-                return
-
-            # Check if artist/album were updated recently (within 2s window around title change)
-            # Metadata can arrive before OR after the title
-            artist_time = self.metadata_update_times.get("artist")
-            album_time = self.metadata_update_times.get("album")
-
-            # Only clear if the field is very stale (more than 3 seconds old)
-            # This allows metadata to arrive before or after the title
-            if artist_time is None or (current_time - artist_time) > 3.0:
-                print(f"[Metadata] Clearing stale artist data (not updated for {(current_time - artist_time) if artist_time else 'never'}s)", flush=True)
+            # Check if we received artist/album for the current track
+            if not self.metadata_received_for_current_track.get("artist"):
+                print(f"[Metadata] No artist received for current track, using fallback", flush=True)
                 self.store.update(artist="Unknown Artist")
-                self.current["artist"] = None
 
-            if album_time is None or (current_time - album_time) > 3.0:
-                print(f"[Metadata] Clearing stale album data (not updated for {(current_time - album_time) if album_time else 'never'}s)", flush=True)
+            if not self.metadata_received_for_current_track.get("album"):
+                print(f"[Metadata] No album received for current track, using fallback", flush=True)
                 self.store.update(album="Unknown Album")
-                self.current["album"] = None
 
         # Run in a background thread to not block metadata processing
         thread = threading.Thread(target=delayed_check, daemon=True)
