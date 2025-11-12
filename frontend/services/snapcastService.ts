@@ -91,11 +91,21 @@ export class SnapcastService {
     private host: string;
     private port: number;
     private isConnected = false;
+    private metadataUpdateListeners: Set<(streamId: string, metadata: any) => void> = new Set();
 
     constructor() {
         this.host =
             this.host = window.location.hostname;
         this.port = 1780;
+    }
+
+    // Subscribe to metadata updates
+    onMetadataUpdate(listener: (streamId: string, metadata: any) => void): () => void {
+        this.metadataUpdateListeners.add(listener);
+        // Return unsubscribe function
+        return () => {
+            this.metadataUpdateListeners.delete(listener);
+        };
     }
 
     connect(): Promise<void> {
@@ -151,6 +161,22 @@ export class SnapcastService {
     private handleNotification(message: SnapcastResponse) {
         // Handle real-time updates from the server
         console.log('Received notification:', message.method, message.params);
+
+        // Handle stream property updates (including metadata)
+        if (message.method === 'Plugin.Stream.Player.Properties' || message.method === 'Stream.OnProperties') {
+            const params = message.params;
+            // The params should contain stream metadata
+            // Notify all listeners
+            if (params && params.metadata) {
+                console.log('Metadata update received:', params.metadata);
+                // We need to figure out which stream this is for
+                // The control script should send stream ID in params, but if not, we'll need to infer it
+                const streamId = params.id || params.stream_id || 'unknown';
+                this.metadataUpdateListeners.forEach(listener => {
+                    listener(streamId, params.metadata);
+                });
+            }
+        }
     }
 
     private sendRequest(method: string, params: any = {}): Promise<any> {

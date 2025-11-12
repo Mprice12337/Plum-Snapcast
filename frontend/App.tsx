@@ -81,6 +81,39 @@ const App: React.FC = () => {
 
     useAudioSync(currentStream, updateStreamProgress);
 
+    // Listen for real-time metadata updates from Snapcast
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
+            console.log('Metadata update for stream:', streamId, metadata);
+
+            // Update the stream with new metadata
+            setStreams(prevStreams =>
+                prevStreams.map(stream => {
+                    if (stream.id === streamId) {
+                        // Update track metadata
+                        const updatedTrack = {
+                            ...stream.currentTrack,
+                            title: metadata.title || stream.currentTrack.title,
+                            artist: metadata.artist || stream.currentTrack.artist,
+                            album: metadata.album || stream.currentTrack.album,
+                            albumArtUrl: metadata.artUrl || stream.currentTrack.albumArtUrl,
+                        };
+
+                        return {
+                            ...stream,
+                            currentTrack: updatedTrack
+                        };
+                    }
+                    return stream;
+                })
+            );
+        });
+
+        return () => unsubscribe();
+    }, []);
+
     // Periodically sync stream status with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
