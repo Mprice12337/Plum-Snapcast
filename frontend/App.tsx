@@ -118,7 +118,35 @@ const App: React.FC = () => {
     useEffect(() => {
         if (!snapcastService) return;
 
-        const unsubscribe = snapcastService.onPlaybackStateUpdate((streamId, playbackStatus, properties) => {
+        const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
+            // Handle refresh signal - fetch latest state for all streams
+            if (playbackStatus === 'REFRESH') {
+                console.log('[PlaybackState] Server update detected, refreshing all stream states');
+
+                // Fetch latest state for all streams
+                const serverStatus = await snapcastService.getServerStatus();
+                if (serverStatus && serverStatus.server && serverStatus.server.streams) {
+                    setStreams(prevStreams =>
+                        prevStreams.map(stream => {
+                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === stream.id);
+                            if (serverStream) {
+                                const isPlaying = snapcastService.isStreamPlaying(serverStream);
+                                if (stream.isPlaying !== isPlaying) {
+                                    console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                }
+                                return {
+                                    ...stream,
+                                    isPlaying: isPlaying
+                                };
+                            }
+                            return stream;
+                        })
+                    );
+                }
+                return;
+            }
+
+            // Handle direct playback status update
             const isPlaying = playbackStatus.toLowerCase() === 'playing';
             console.log(`[PlaybackState] Stream ${streamId}: ${playbackStatus} → isPlaying=${isPlaying}`);
 

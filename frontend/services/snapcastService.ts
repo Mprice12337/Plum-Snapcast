@@ -193,6 +193,17 @@ export class SnapcastService {
                 });
             }
         }
+
+        // Handle Server.OnUpdate notification (Snapcast broadcasts this when anything changes)
+        // Use this to trigger fetching latest stream properties including playback state
+        if (message.method === 'Server.OnUpdate') {
+            console.log('Server update notification received, triggering property refresh');
+            // Notify playback state listeners with a special signal to refetch
+            // We'll pass undefined as the status to signal "fetch latest"
+            this.playbackStateListeners.forEach(listener => {
+                listener('*', 'REFRESH', {});
+            });
+        }
     }
 
     private sendRequest(method: string, params: any = {}): Promise<any> {
