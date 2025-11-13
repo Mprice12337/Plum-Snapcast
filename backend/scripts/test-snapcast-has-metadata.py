@@ -7,6 +7,9 @@ import socket
 import json
 
 def query_snapcast():
+    response = None
+    sock = None
+
     try:
         # Connect to Snapcast
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -40,7 +43,9 @@ def query_snapcast():
                     break
                 continue
 
-        sock.close()
+        if not response:
+            print("ERROR: No valid JSON response received")
+            return False
 
         # Extract streams
         streams = response.get('result', {}).get('server', {}).get('streams', [])
@@ -97,6 +102,12 @@ def query_snapcast():
         import traceback
         traceback.print_exc()
         return False
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except:
+                pass
 
 if __name__ == '__main__':
     query_snapcast()
