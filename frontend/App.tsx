@@ -81,7 +81,40 @@ const App: React.FC = () => {
 
     useAudioSync(currentStream, updateStreamProgress);
 
-    // Periodically sync stream status with server
+    // Listen for real-time metadata updates from Snapcast
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
+            console.log('Metadata update for stream:', streamId, metadata);
+
+            // Update the stream with new metadata
+            setStreams(prevStreams =>
+                prevStreams.map(stream => {
+                    if (stream.id === streamId) {
+                        // Update track metadata
+                        const updatedTrack = {
+                            ...stream.currentTrack,
+                            title: metadata.title || stream.currentTrack.title,
+                            artist: metadata.artist || stream.currentTrack.artist,
+                            album: metadata.album || stream.currentTrack.album,
+                            albumArtUrl: metadata.artUrl || stream.currentTrack.albumArtUrl,
+                        };
+
+                        return {
+                            ...stream,
+                            currentTrack: updatedTrack
+                        };
+                    }
+                    return stream;
+                })
+            );
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    // Periodically sync stream status and metadata with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
@@ -91,14 +124,43 @@ const App: React.FC = () => {
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Only update if the status has changed
-                    if (isPlaying !== currentStream.isPlaying) {
-                        setStreams(prevStreams =>
-                            prevStreams.map(s =>
-                                s.id === currentStream.id ? {...s, isPlaying} : s
-                            )
-                        );
+                    // Extract metadata from stream properties (simple field names)
+                    let updatedMetadata = null;
+                    if (serverStream.properties?.metadata) {
+                        const meta = serverStream.properties.metadata;
+                        updatedMetadata = {
+                            title: meta.title || meta.name,
+                            artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
+                            album: meta.album,
+                            albumArtUrl: meta.artUrl
+                        };
                     }
+
+                    // Update stream with latest playing status and metadata
+                    setStreams(prevStreams =>
+                        prevStreams.map(s => {
+                            if (s.id === currentStream.id) {
+                                const updatedStream = {
+                                    ...s,
+                                    isPlaying: isPlaying
+                                };
+
+                                // Update metadata if we got new data
+                                if (updatedMetadata) {
+                                    updatedStream.currentTrack = {
+                                        ...s.currentTrack,
+                                        title: updatedMetadata.title || s.currentTrack.title,
+                                        artist: updatedMetadata.artist || s.currentTrack.artist,
+                                        album: updatedMetadata.album || s.currentTrack.album,
+                                        albumArtUrl: updatedMetadata.albumArtUrl || s.currentTrack.albumArtUrl
+                                    };
+                                }
+
+                                return updatedStream;
+                            }
+                            return s;
+                        })
+                    );
                 }
             } catch (error) {
                 // Silently handle errors to avoid spam

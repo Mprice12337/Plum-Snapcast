@@ -2,6 +2,12 @@
 """
 Snapcast Control Script for AirPlay Metadata
 Reads metadata from shairport-sync pipe and provides it to Snapcast via JSON-RPC
+
+Based on proven pattern from metadata-debug-server.py:
+- Thread-safe metadata storage with atomic updates
+- mdst/mden bundle pattern with pending state
+- Independent artwork handling
+- Only send complete, consistent updates to Snapcast
 """
 
 import argparse
@@ -16,8 +22,7 @@ from typing import Dict, Optional
 
 # Configuration
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
-COVER_ART_DIR = "/tmp/shairport-sync/.cache/coverart"
-SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
+COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 LOG_FILE = "/tmp/airplay-control-script.log"
 
 # Set up logging to file
@@ -32,155 +37,312 @@ def log(message: str):
     except:
         pass
 
-class MetadataParser:
-    """Parse shairport-sync metadata format"""
+
+class MetadataStore:
+    """
+    Thread-safe storage for current metadata.
+    This ensures atomic reads/writes and consistency.
+    """
 
     def __init__(self):
-        self.current_metadata = {
+        self.lock = threading.Lock()
+        self.data = {
             "title": None,
             "artist": None,
             "album": None,
-            "artUrl": None
+            "track_id": None,
+            "artwork_url": None,
+            "last_updated": None
         }
-        self.pending_cover_data = []
 
-    def parse_item(self, item_xml: str) -> Optional[Dict[str, str]]:
-        """Parse a complete XML item and return updated metadata if complete"""
+    def update(self, **kwargs):
+        """Update metadata fields atomically"""
+        with self.lock:
+            self.data.update(kwargs)
+            self.data["last_updated"] = time.time()
+            log(f"[Store] Updated: {list(kwargs.keys())}")
+
+    def get_all(self) -> Dict:
+        """Get all metadata (returns a copy)"""
+        with self.lock:
+            return self.data.copy()
+
+    def get_metadata_for_snapcast(self) -> Optional[Dict]:
+        """
+        Get metadata formatted for Snapcast.
+
+        Snapcast expects simple field names (NOT MPRIS format):
+        - title (string)
+        - artist (array of strings)
+        - album (string)
+        - artUrl (string)
+        """
+        with self.lock:
+            # Only return if we have at least a title
+            if self.data.get("title"):
+                meta = {}
+
+                # Snapcast metadata fields (simple names, not MPRIS)
+                if self.data.get("title"):
+                    meta["title"] = self.data["title"]
+
+                if self.data.get("artist"):
+                    # Snapcast expects artist as an array
+                    meta["artist"] = [self.data["artist"]]
+
+                if self.data.get("album"):
+                    meta["album"] = self.data["album"]
+
+                if self.data.get("artwork_url"):
+                    meta["artUrl"] = self.data["artwork_url"]
+
+                return meta
+            return None
+
+
+class MetadataParser:
+    """
+    Parse shairport-sync metadata using the proven pattern from debug server.
+
+    Pattern:
+    - Accumulate in pending_metadata during mdst...mden bundle
+    - Apply atomically to store at mden
+    - Handle artwork independently
+    """
+
+    def __init__(self, store: MetadataStore):
+        self.store = store
+
+        # Current state (what's been applied)
+        self.current = {
+            "title": None,
+            "artist": None,
+            "album": None,
+            "track_id": None
+        }
+
+        # Pending state (accumulating during bundle)
+        self.pending_metadata = {
+            "title": None,
+            "artist": None,
+            "album": None
+        }
+
+        # Artwork handling
+        self.pending_cover_data = []
+        self.last_loaded_cache_file = None
+
+        # Bundle state flags
+        self.in_metadata_bundle = False
+        self.in_artwork_bundle = False
+
+    def parse_item(self, item_xml: str) -> bool:
+        """
+        Parse one XML item and update store.
+        Returns True if store was updated (signals Snapcast notification needed).
+        """
         try:
             root = ET.fromstring(item_xml)
 
-            # Get the type and code
+            # Extract type and code
             type_elem = root.find("type")
             code_elem = root.find("code")
-
             if code_elem is None:
-                return None
+                return False
 
-            # Decode type and code from hex
             item_type = bytes.fromhex(type_elem.text).decode('ascii', errors='ignore') if type_elem is not None else ""
             code = bytes.fromhex(code_elem.text).decode('ascii', errors='ignore')
 
-            # Get the data
+            # Extract data
             data_elem = root.find("data")
-            encoding = ""
-            data_text = ""
+            encoding = data_elem.get("encoding", "") if data_elem is not None else ""
+            data_text = (data_elem.text or "").strip() if data_elem is not None else ""
+
             decoded = ""
+            if encoding == "base64" and data_text and code != "PICT":
+                try:
+                    decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
+                except:
+                    decoded = ""
 
-            if data_elem is not None:
-                encoding = data_elem.get("encoding", "")
-                data_text = (data_elem.text or "").strip()
+            # ===== METADATA BUNDLE MARKERS (ssnc) =====
+            if item_type == "ssnc":
+                if code == "mdst":
+                    # Metadata bundle START
+                    log(f"[Bundle] Metadata START")
+                    self.in_metadata_bundle = True
+                    # Clear pending metadata for new bundle
+                    self.pending_metadata = {
+                        "title": None,
+                        "artist": None,
+                        "album": None
+                    }
+                    return False
 
-                # Decode based on encoding
-                if encoding == "base64" and data_text:
-                    try:
-                        decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
-                    except:
-                        decoded = data_text
-                else:
-                    decoded = data_text
+                elif code == "mden":
+                    # Metadata bundle END - ATOMIC APPLICATION
+                    log(f"[Bundle] Metadata END")
+                    self.in_metadata_bundle = False
 
-            # Process based on type and code
-            updated = False
-            if item_type == "core" and code == "asar":  # Artist
-                self.current_metadata["artist"] = decoded
-                updated = True
-                log(f"[DEBUG] Artist: {decoded}")
-            elif item_type == "core" and code == "minm":  # Title/Track name
-                self.current_metadata["title"] = decoded
-                updated = True
-                log(f"[DEBUG] Title: {decoded}")
-            elif item_type == "core" and code == "asal":  # Album
-                self.current_metadata["album"] = decoded
-                updated = True
-                log(f"[DEBUG] Album: {decoded}")
-            elif item_type == "ssnc":  # Control messages and PICT data
-                # Check the code for what type of message
-                log(f"[DEBUG] Got ssnc message, code: '{code}', has_data: {len(data_text) > 0}")
-                if code == "PICT":
+                    updated = False
+
+                    # Apply all pending metadata at once to both current and store
+                    if self.pending_metadata["title"]:
+                        self.current["title"] = self.pending_metadata["title"]
+                        self.store.update(title=self.pending_metadata["title"])
+                        log(f"[Bundle] Applied title: {self.pending_metadata['title']}")
+                        updated = True
+
+                    if self.pending_metadata["artist"]:
+                        self.current["artist"] = self.pending_metadata["artist"]
+                        self.store.update(artist=self.pending_metadata["artist"])
+                        log(f"[Bundle] Applied artist: {self.pending_metadata['artist']}")
+                        updated = True
+
+                    if self.pending_metadata["album"]:
+                        self.current["album"] = self.pending_metadata["album"]
+                        self.store.update(album=self.pending_metadata["album"])
+                        log(f"[Bundle] Applied album: {self.pending_metadata['album']}")
+                        updated = True
+
+                    # Signal update if we changed anything
+                    return updated
+
+                elif code == "pcst":
+                    # Artwork bundle START
+                    log(f"[Artwork] START")
+                    self.in_artwork_bundle = True
+                    self.pending_cover_data = []
+                    return False
+
+                elif code == "pcen":
+                    # Artwork bundle END
+                    log(f"[Artwork] END")
+                    self.in_artwork_bundle = False
+
+                    # Load from cache (shairport-sync writes to disk)
+                    artwork_url = self._load_artwork_from_cache()
+                    if artwork_url:
+                        self.store.update(artwork_url=artwork_url)
+                        log(f"[Artwork] Applied to store ({len(artwork_url)} chars)")
+                        return True  # Signal update
+
+                    return False
+
+                elif code == "PICT":
+                    # Artwork data (not used when caching is enabled)
                     if encoding == "base64" and data_text:
-                        # This is a PICT data chunk
                         self.pending_cover_data.append(data_text)
-                        log(f"[DEBUG] Collected PICT chunk ({len(data_text)} chars), total chunks: {len(self.pending_cover_data)}")
-                    else:
-                        # This is the PICT end signal (no data)
-                        if self.pending_cover_data:
-                            log(f"[DEBUG] PICT end signal with {len(self.pending_cover_data)} chunks")
-                            self._save_cover_art()
-                            self.pending_cover_data = []
-                            # Cover art is complete - return it even if we already sent basic metadata
-                            if self.current_metadata.get("artUrl"):
-                                log(f"[DEBUG] Cover art complete, sending update")
-                                return self.current_metadata.copy()
+                        log(f"[Artwork] Received PICT chunk ({len(data_text)} chars)")
+                    return False
+
+            # ===== METADATA FIELDS (core) =====
+            if item_type == "core":
+                if code == "mper" and decoded:  # Track ID (persistent ID)
+                    track_id = decoded.strip()
+                    if track_id:
+                        # Detect track change
+                        if self.current["track_id"] and self.current["track_id"] != track_id:
+                            log(f"[Track] CHANGE: {self.current['track_id'][:8]}... → {track_id[:8]}...")
+                            # Clear everything for new track
+                            self.current = {
+                                "title": None,
+                                "artist": None,
+                                "album": None,
+                                "track_id": track_id
+                            }
+                            self.store.update(
+                                title=None,
+                                artist=None,
+                                album=None,
+                                track_id=track_id,
+                                artwork_url=None
+                            )
+                            return True  # Signal update to clear Snapcast
                         else:
-                            log(f"[DEBUG] PICT end signal but no chunks collected")
+                            self.current["track_id"] = track_id
+                            self.store.update(track_id=track_id)
+                            log(f"[Track] ID: {track_id[:8]}...")
 
-            if updated and self._is_complete():
-                return self.current_metadata.copy()
+                elif code == "minm" and decoded.strip():  # Title
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["title"] = decoded.strip()
+                        log(f"[Field] Title (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["title"] = decoded.strip()
+                        self.store.update(title=decoded.strip())
+                        log(f"[Field] Title (immediate): {decoded.strip()}")
+                        return True
 
-        except ET.ParseError as e:
-            log(f"XML Parse error: {e}")
+                elif code == "asar" and decoded.strip():  # Artist
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["artist"] = decoded.strip()
+                        log(f"[Field] Artist (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["artist"] = decoded.strip()
+                        self.store.update(artist=decoded.strip())
+                        log(f"[Field] Artist (immediate): {decoded.strip()}")
+                        return True
+
+                elif code == "asal" and decoded.strip():  # Album
+                    if self.in_metadata_bundle:
+                        self.pending_metadata["album"] = decoded.strip()
+                        log(f"[Field] Album (pending): {decoded.strip()}")
+                    else:
+                        # Immediate update (outside bundle)
+                        self.current["album"] = decoded.strip()
+                        self.store.update(album=decoded.strip())
+                        log(f"[Field] Album (immediate): {decoded.strip()}")
+                        return True
+
+        except ET.ParseError:
+            # Expected when buffer cuts mid-XML
+            pass
         except Exception as e:
-            log(f"Error parsing metadata: {e}")
+            log(f"[Error] Parse exception: {e}")
 
-        return None
+        return False
 
-    def _save_cover_art(self):
-        """Save cover art to file and store HTTP URL"""
-        if not self.pending_cover_data:
-            return
-
+    def _load_artwork_from_cache(self) -> Optional[str]:
+        """
+        Load artwork from shairport-sync cache.
+        Returns data URL or None.
+        """
         try:
-            # Combine all chunks and decode
-            cover_data_b64 = "".join(self.pending_cover_data)
-            cover_data = base64.b64decode(cover_data_b64)
+            cache_dir = Path(COVER_ART_CACHE_DIR)
+            if not cache_dir.exists():
+                return None
 
-            # Use a hash of the data as filename to avoid duplicates
-            import hashlib
-            cover_hash = hashlib.md5(cover_data).hexdigest()
-            filename = f"{cover_hash}.jpg"
+            # Find all cover files
+            cover_files = list(cache_dir.glob("cover-*.jpg")) + list(cache_dir.glob("cover-*.png"))
+            if not cover_files:
+                return None
 
-            # Save to Snapcast web root so it's accessible via HTTP
-            web_cover_dir = Path(SNAPCAST_WEB_ROOT) / "coverart"
-            web_cover_dir.mkdir(parents=True, exist_ok=True)
-            web_cover_path = web_cover_dir / filename
+            # Get newest file
+            newest_file = max(cover_files, key=lambda p: p.stat().st_mtime)
 
-            with open(web_cover_path, "wb") as f:
-                f.write(cover_data)
+            # Skip if already loaded
+            if self.last_loaded_cache_file == newest_file.name:
+                return None  # No change
 
-            # Make sure the file is readable by the web server
-            import os
-            os.chmod(web_cover_path, 0o644)
+            # Read and encode
+            with open(newest_file, 'rb') as f:
+                image_data = f.read()
 
-            # Also save to cache directory for backup
-            cover_dir = Path(COVER_ART_DIR)
-            cover_dir.mkdir(parents=True, exist_ok=True)
-            cache_path = cover_dir / filename
-            with open(cache_path, "wb") as f:
-                f.write(cover_data)
+            import mimetypes
+            mime_type = mimetypes.guess_type(str(newest_file))[0] or 'image/jpeg'
+            data_url = f"data:{mime_type};base64,{base64.b64encode(image_data).decode('ascii')}"
 
-            # Store HTTP URL that's accessible from browser
-            # Using relative path so it works regardless of hostname
-            self.current_metadata["artUrl"] = f"/coverart/{filename}"
-            log(f"[DEBUG] Cover art saved to {web_cover_path} ({len(cover_data)} bytes)")
-            log(f"[DEBUG] Cover art URL: /coverart/{filename}")
+            self.last_loaded_cache_file = newest_file.name
+            log(f"[Artwork] Loaded from cache: {newest_file.name} ({len(image_data)} bytes)")
+
+            return data_url
 
         except Exception as e:
-            log(f"Error processing cover art: {e}")
-
-    def _is_complete(self) -> bool:
-        """Check if we have enough metadata to update"""
-        return (self.current_metadata["title"] is not None and
-                self.current_metadata["artist"] is not None)
-
-    def reset(self):
-        """Reset current metadata"""
-        self.current_metadata = {
-            "title": None,
-            "artist": None,
-            "album": None,
-            "artUrl": None
-        }
-        self.pending_cover_data = []
+            log(f"[Error] Artwork load failed: {e}")
+            return None
 
 
 class SnapcastControlScript:
@@ -188,9 +350,9 @@ class SnapcastControlScript:
 
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
-        self.metadata_parser = MetadataParser()
-        self.last_metadata = {}
-        log(f"[DEBUG] Initialized for stream: {stream_id}")
+        self.store = MetadataStore()
+        self.metadata_parser = MetadataParser(self.store)
+        log(f"[Init] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -199,67 +361,46 @@ class SnapcastControlScript:
             "method": method,
             "params": params
         }
-        notification_str = json.dumps(notification)
-        # Write to stdout for Snapcast to read
-        print(notification_str, file=sys.stdout, flush=True)
-        log(f"[DEBUG] Sent notification: {notification_str[:300]}")
+        print(json.dumps(notification), file=sys.stdout, flush=True)
+        log(f"[Snapcast] → {method}")
 
-    def _write_artwork_json(self, metadata: Dict):
-        """Write current artwork URL to JSON file for frontend to fetch"""
-        try:
-            artwork_file = Path(SNAPCAST_WEB_ROOT) / "airplay-artwork.json"
-            artwork_data = {
-                "artUrl": metadata.get("artUrl"),
-                "title": metadata.get("title"),
-                "artist": metadata.get("artist"),
-                "album": metadata.get("album"),
-                "timestamp": time.time()
-            }
-            with open(artwork_file, 'w') as f:
-                json.dump(artwork_data, f)
-            log(f"[DEBUG] Wrote artwork JSON to {artwork_file}")
-        except Exception as e:
-            log(f"Error writing artwork JSON: {e}")
-
-    def send_metadata_update(self, metadata: Dict):
-        """Send Plugin.Stream.Player.Properties with metadata"""
-        # Build metadata dict (nested under "metadata" key as per Snapcast spec)
-        meta_obj = {}
-
-        if metadata.get("title"):
-            meta_obj["name"] = metadata["title"]  # Use "name" for title per Snapcast docs
-
-        if metadata.get("artist"):
-            # Artist should be an array
-            artist = metadata["artist"]
-            meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-
-        if metadata.get("album"):
-            meta_obj["album"] = metadata["album"]
-
-        if metadata.get("artUrl"):
-            # Use MPRIS standard field name for artwork
-            meta_obj["mpris:artUrl"] = metadata["artUrl"]
+    def send_metadata_update(self):
+        """Send Plugin.Stream.Player.Properties with current metadata from store"""
+        meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
-            # Build the properties object
-            properties = {"metadata": meta_obj}
+            # Notification params: all properties FLAT (no "id" - stream is implicit)
+            # Snapcast knows which stream this is for based on the control script attachment
+            params = {
+                # Playback state (same fields as GetProperties)
+                "playbackStatus": "playing",
+                "loopStatus": "none",
+                "shuffle": False,
+                "volume": 100,
+                "mute": False,
+                "rate": 1.0,
+                "position": 0,
 
-            # Also add artUrl as a top-level property (not just in metadata)
-            # since Snapcast might filter metadata fields but preserve top-level properties
-            if metadata.get("artUrl"):
-                properties["artUrl"] = metadata["artUrl"]
+                # Control capabilities (same fields as GetProperties)
+                "canGoNext": False,
+                "canGoPrevious": False,
+                "canPlay": False,
+                "canPause": False,
+                "canSeek": False,
+                "canControl": False,
 
-            # Send Plugin.Stream.Player.Properties
-            self.send_notification("Plugin.Stream.Player.Properties", properties)
-            log(f"[DEBUG] Sent metadata update: {list(meta_obj.keys())}")
-            if metadata.get("artUrl"):
-                log(f"[DEBUG] Also sent top-level artUrl: {metadata['artUrl']}")
+                # Metadata (simple field names)
+                "metadata": meta_obj
+            }
+            self.send_notification("Plugin.Stream.Player.Properties", params)
 
-        # Since Snapcast filters out artUrl, write it to a JSON file
-        # that the frontend can fetch via HTTP
-        if metadata.get("artUrl"):
-            self._write_artwork_json(metadata)
+            # Log what we sent (check simple format keys)
+            title = meta_obj.get('title', 'N/A')
+            artist = meta_obj.get('artist', ['N/A'])
+            artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
+            log(f"[Snapcast] Metadata → {title} - {artist_str}")
+            if "artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -268,156 +409,121 @@ class SnapcastControlScript:
             method = request.get("method", "")
             request_id = request.get("id")
 
-            log(f"[DEBUG] Received command: {method}")
-
-            # Respond to getProperties with current metadata
             if method == "Plugin.Stream.Player.GetProperties":
-                # Build metadata object (same format as notifications)
-                meta_obj = {}
-                if self.last_metadata:
-                    if self.last_metadata.get("title"):
-                        meta_obj["name"] = self.last_metadata["title"]
-                    if self.last_metadata.get("artist"):
-                        artist = self.last_metadata["artist"]
-                        meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-                    if self.last_metadata.get("album"):
-                        meta_obj["album"] = self.last_metadata["album"]
-                    if self.last_metadata.get("artUrl"):
-                        # Use MPRIS standard field name for artwork
-                        meta_obj["mpris:artUrl"] = self.last_metadata["artUrl"]
+                # Return COMPLETE properties object (not just metadata)
+                # Snapcast requires all fields: playback state, control capabilities, AND metadata
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
 
-                # Build result with metadata and top-level artUrl
-                result = {"metadata": meta_obj}
-                if self.last_metadata and self.last_metadata.get("artUrl"):
-                    result["artUrl"] = self.last_metadata["artUrl"]
+                # Build complete properties response per Snapcast Stream Plugin API
+                properties = {
+                    # Playback state (AirPlay streams are always "playing" when connected)
+                    "playbackStatus": "playing",
+                    "loopStatus": "none",
+                    "shuffle": False,
+                    "volume": 100,
+                    "mute": False,
+                    "rate": 1.0,
+                    "position": 0,
+
+                    # Control capabilities (AirPlay can't be controlled by Snapcast)
+                    "canGoNext": False,
+                    "canGoPrevious": False,
+                    "canPlay": False,
+                    "canPause": False,
+                    "canSeek": False,
+                    "canControl": False,
+
+                    # Metadata (MPRIS format)
+                    "metadata": meta_obj
+                }
 
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": result
+                    "result": properties
                 }
-                response_str = json.dumps(response)
-                print(response_str, file=sys.stdout, flush=True)
-                log(f"[DEBUG] Sent GetProperties response: {response_str[:300]}")
+                print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Snapcast] GetProperties → metadata keys: {list(meta_obj.keys())}")
 
-        except json.JSONDecodeError:
-            log(f"[DEBUG] Invalid JSON: {line}")
         except Exception as e:
-            log(f"[DEBUG] Error handling command: {e}")
+            log(f"[Error] Command handler: {e}")
 
     def monitor_metadata_pipe(self):
-        """Monitor shairport-sync metadata pipe in background thread"""
-        log("[DEBUG] Starting metadata pipe monitor")
+        """Monitor shairport-sync metadata pipe"""
+        log("[Init] Starting metadata pipe monitor")
 
-        # Wait for pipe to exist
+        # Wait for pipe
         while not Path(METADATA_PIPE).exists():
-            log(f"[DEBUG] Waiting for metadata pipe: {METADATA_PIPE}")
+            log(f"[Init] Waiting for pipe: {METADATA_PIPE}")
             time.sleep(1)
 
-        log(f"[DEBUG] Metadata pipe found: {METADATA_PIPE}")
+        log(f"[Init] Pipe found: {METADATA_PIPE}")
 
-        buffer = ""
+        # LINE-BY-LINE reading
+        tmp = ""
         try:
-            with open(METADATA_PIPE, 'rb') as pipe:
-                while True:
-                    try:
-                        # Read available data
-                        chunk = pipe.read(4096)
-                        if not chunk:
-                            time.sleep(0.1)
-                            continue
+            while True:
+                with open(METADATA_PIPE, 'r') as pipe:
+                    for line in pipe:
+                        strip_line = line.strip()
 
-                        # Decode and add to buffer
-                        try:
-                            buffer += chunk.decode('utf-8', errors='ignore')
-                        except:
-                            continue
+                        if strip_line.endswith("</item>"):
+                            # Complete item
+                            item_xml = tmp + strip_line
+                            updated = self.metadata_parser.parse_item(item_xml)
 
-                        # Process all complete items in buffer
-                        while "<item>" in buffer and "</item>" in buffer:
-                            start_idx = buffer.find("<item>")
-                            end_idx = buffer.find("</item>", start_idx)
+                            # Send update to Snapcast if store was modified
+                            if updated:
+                                self.send_metadata_update()
 
-                            if end_idx == -1:
-                                break
+                            tmp = ""
 
-                            end_idx += len("</item>")
-                            item_xml = buffer[start_idx:end_idx]
-                            buffer = buffer[end_idx:]
+                        elif strip_line.startswith("<item>"):
+                            # New item starting
+                            if tmp:
+                                # Previous item incomplete - try to close it
+                                item_xml = tmp + "</item>"
+                                updated = self.metadata_parser.parse_item(item_xml)
+                                if updated:
+                                    self.send_metadata_update()
 
-                            # Parse the item
-                            metadata = self.metadata_parser.parse_item(item_xml)
+                            tmp = strip_line
 
-                            # If we got complete metadata, send update
-                            if metadata:
-                                # Check if this is a new track (title or artist changed)
-                                is_new_track = (
-                                    not self.last_metadata or
-                                    self.last_metadata.get("title") != metadata.get("title") or
-                                    self.last_metadata.get("artist") != metadata.get("artist")
-                                )
-
-                                if is_new_track:
-                                    log(f"[DEBUG] New track: {metadata.get('title')} - {metadata.get('artist')}")
-
-                                self.last_metadata = metadata
-                                self.send_metadata_update(metadata)
-
-                                # Only reset parser after we've processed cover art
-                                # Don't reset on new track - cover art for previous track may still be arriving
-                                if metadata.get("artUrl"):
-                                    log(f"[DEBUG] Track complete with cover art, resetting parser")
-                                    self.metadata_parser.reset()
-                                else:
-                                    # Don't reset - keep collecting (cover art may still be coming)
-                                    log(f"[DEBUG] Keeping parser state to collect cover art")
-
-                        # Keep buffer from growing too large (but allow for large cover art ~200KB)
-                        # Look for the last complete item boundary and discard everything before it
-                        if len(buffer) > 500000:  # Increased from 100KB to 500KB for cover art
-                            last_item_end = buffer.rfind("</item>")
-                            if last_item_end != -1:
-                                buffer = buffer[last_item_end + len("</item>"):]
-                                log(f"[DEBUG] Buffer trimmed to {len(buffer)} chars")
-                            else:
-                                # No complete items, just keep enough for cover art
-                                buffer = buffer[-250000:]
-                                log("[DEBUG] Buffer overflow, kept last 250KB")
-
-                    except Exception as e:
-                        log(f"[DEBUG] Error processing chunk: {e}")
+                        else:
+                            # Middle of item
+                            tmp += strip_line
 
         except Exception as e:
-            log(f"[DEBUG] Fatal error in metadata monitor: {e}")
+            log(f"[Error] Pipe monitor crashed: {e}")
+            import traceback
+            log(f"[Error] {traceback.format_exc()}")
 
     def run(self):
         """Main event loop"""
-        log("[DEBUG] AirPlay Control Script starting...")
+        log("[Init] AirPlay Control Script starting...")
 
-        # Start metadata pipe monitor in background thread
-        metadata_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
-        metadata_thread.start()
+        # Start metadata monitor in background
+        monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
+        monitor_thread.start()
 
-        # Send Plugin.Stream.Ready notification to tell Snapcast we're ready
+        # Send ready notification
         self.send_notification("Plugin.Stream.Ready", {})
-        log("[DEBUG] Sent Plugin.Stream.Ready notification")
+        log("[Init] Sent Plugin.Stream.Ready")
 
-        # Process commands from stdin (from Snapcast)
-        log("[DEBUG] Listening for commands on stdin...")
+        # Process stdin commands
+        log("[Init] Listening for commands on stdin...")
         try:
             for line in sys.stdin:
                 line = line.strip()
-                log(f"[DEBUG] Received from stdin: {line[:200] if line else '(empty)'}")
                 if line:
                     self.handle_command(line)
         except KeyboardInterrupt:
-            log("[DEBUG] Shutting down...")
+            log("[Init] Shutting down...")
         except Exception as e:
-            log(f"[DEBUG] Fatal error: {e}")
+            log(f"[Error] Fatal error: {e}")
 
 
 if __name__ == "__main__":
-    # Parse command line arguments passed by Snapcast
     parser = argparse.ArgumentParser(description='AirPlay metadata control script for Snapcast')
     parser.add_argument('--stream', required=False, default='Airplay', help='Stream ID')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
@@ -425,7 +531,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    log(f"[DEBUG] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
+    log(f"[Init] Starting with args: stream={args.stream}")
 
     script = SnapcastControlScript(stream_id=args.stream)
     script.run()

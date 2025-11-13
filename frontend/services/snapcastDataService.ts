@@ -29,13 +29,14 @@ const extractMetadataFromStream = (snapStream: any): {
 
         // Look for metadata in properties
         if (snapStream.properties.metadata) {
-            // Snapcast control script metadata format
+            // Snapcast control script metadata format (simple field names)
             const meta = snapStream.properties.metadata;
             metadata = {
-                title: meta.name || meta.title,  // Snapcast uses 'name' for track title
+                // Simple field names (title, artist, album, artUrl)
+                title: meta.title || meta.name,
                 artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
                 album: meta.album,
-                artUrl: meta['mpris:artUrl'] || meta.artUrl,  // Check MPRIS field first
+                artUrl: meta.artUrl,
                 duration: meta.duration
             };
         } else if (snapStream.properties.meta) {
@@ -121,31 +122,23 @@ const getSourceDevice = (snapStream: any): string => {
 const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> => {
     const metadata = extractMetadataFromStream(snapStream);
 
-    // For AirPlay streams, try to fetch artwork from the JSON endpoint
-    let albumArtUrl = metadata.artUrl || createDefaultTrack().albumArtUrl;
+    // Handle artwork URL from metadata
+    let albumArtUrl = createDefaultTrack().albumArtUrl;
 
-    if (snapStream.uri?.query?.name === 'Airplay') {
-        try {
-            // Use proxied endpoint to avoid CORS issues
-            const artworkResponse = await fetch('/snapcast-api/airplay-artwork.json');
-            if (artworkResponse.ok) {
-                const artworkData = await artworkResponse.json();
-                if (artworkData.artUrl) {
-                    // Construct full URL for the artwork (also proxied)
-                    albumArtUrl = `/snapcast-api${artworkData.artUrl}`;
-                    console.log('Fetched AirPlay artwork:', albumArtUrl);
-                }
-            }
-        } catch (error) {
-            console.log('Could not fetch AirPlay artwork:', error);
-        }
-    } else if (metadata.artUrl) {
-        // For other streams, use metadata artUrl
-        if (metadata.artUrl.startsWith('/')) {
+    if (metadata.artUrl) {
+        // Check if it's a data URL (embedded image)
+        if (metadata.artUrl.startsWith('data:')) {
+            // Data URL - use directly
+            albumArtUrl = metadata.artUrl;
+            console.log('Using embedded artwork (data URL)');
+        } else if (metadata.artUrl.startsWith('/')) {
             // Relative path - prepend Snapcast HTTP server URL
             albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            console.log('Using relative artwork URL:', albumArtUrl);
         } else {
+            // Absolute URL - use directly
             albumArtUrl = metadata.artUrl;
+            console.log('Using absolute artwork URL:', albumArtUrl);
         }
     }
 
