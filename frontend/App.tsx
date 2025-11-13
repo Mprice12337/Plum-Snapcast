@@ -114,7 +114,7 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    // Periodically sync stream status with server
+    // Periodically sync stream status and metadata with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
@@ -124,14 +124,45 @@ const App: React.FC = () => {
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Only update if the status has changed
-                    if (isPlaying !== currentStream.isPlaying) {
-                        setStreams(prevStreams =>
-                            prevStreams.map(s =>
-                                s.id === currentStream.id ? {...s, isPlaying} : s
-                            )
-                        );
+                    // Extract metadata from stream properties (MPRIS format)
+                    let updatedMetadata = null;
+                    if (serverStream.properties?.metadata) {
+                        const meta = serverStream.properties.metadata;
+                        updatedMetadata = {
+                            title: meta['xesam:title'] || meta.title || meta.name,
+                            artist: meta['xesam:artist'] ?
+                                (Array.isArray(meta['xesam:artist']) ? meta['xesam:artist'].join(', ') : meta['xesam:artist']) :
+                                (Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist),
+                            album: meta['xesam:album'] || meta.album,
+                            albumArtUrl: meta['mpris:artUrl'] || meta.artUrl
+                        };
                     }
+
+                    // Update stream with latest playing status and metadata
+                    setStreams(prevStreams =>
+                        prevStreams.map(s => {
+                            if (s.id === currentStream.id) {
+                                const updatedStream = {
+                                    ...s,
+                                    isPlaying: isPlaying
+                                };
+
+                                // Update metadata if we got new data
+                                if (updatedMetadata) {
+                                    updatedStream.currentTrack = {
+                                        ...s.currentTrack,
+                                        title: updatedMetadata.title || s.currentTrack.title,
+                                        artist: updatedMetadata.artist || s.currentTrack.artist,
+                                        album: updatedMetadata.album || s.currentTrack.album,
+                                        albumArtUrl: updatedMetadata.albumArtUrl || s.currentTrack.albumArtUrl
+                                    };
+                                }
+
+                                return updatedStream;
+                            }
+                            return s;
+                        })
+                    );
                 }
             } catch (error) {
                 // Silently handle errors to avoid spam
