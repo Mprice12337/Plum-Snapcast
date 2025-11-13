@@ -369,16 +369,22 @@ class SnapcastControlScript:
         meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
+            # Send complete properties structure (Snapcast Stream Plugin API requirement)
             properties = {
                 "id": self.stream_id,
+                "playbackStatus": "playing",
+                "canControl": False,
                 "metadata": meta_obj
             }
             self.send_notification("Plugin.Stream.Player.Properties", properties)
 
-            # Log what we sent
-            log(f"[Snapcast] Metadata → {meta_obj.get('title', 'N/A')} - {meta_obj.get('artist', 'N/A')}")
-            if "artUrl" in meta_obj:
-                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
+            # Log what we sent (check MPRIS format keys)
+            title = meta_obj.get('xesam:title', 'N/A')
+            artist = meta_obj.get('xesam:artist', ['N/A'])
+            artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
+            log(f"[Snapcast] Metadata → {title} - {artist_str}")
+            if "mpris:artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {len(meta_obj['mpris:artUrl'])} chars")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -388,16 +394,40 @@ class SnapcastControlScript:
             request_id = request.get("id")
 
             if method == "Plugin.Stream.Player.GetProperties":
-                # Return current metadata from store
+                # Return COMPLETE properties object (not just metadata)
+                # Snapcast requires all fields: playback state, control capabilities, AND metadata
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
+
+                # Build complete properties response per Snapcast Stream Plugin API
+                properties = {
+                    # Playback state (AirPlay streams are always "playing" when connected)
+                    "playbackStatus": "playing",
+                    "loopStatus": "none",
+                    "shuffle": False,
+                    "volume": 100,
+                    "mute": False,
+                    "rate": 1.0,
+                    "position": 0,
+
+                    # Control capabilities (AirPlay can't be controlled by Snapcast)
+                    "canGoNext": False,
+                    "canGoPrevious": False,
+                    "canPlay": False,
+                    "canPause": False,
+                    "canSeek": False,
+                    "canControl": False,
+
+                    # Metadata (MPRIS format)
+                    "metadata": meta_obj
+                }
 
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {"metadata": meta_obj}
+                    "result": properties
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → metadata keys: {list(meta_obj.keys())}")
 
         except Exception as e:
             log(f"[Error] Command handler: {e}")
