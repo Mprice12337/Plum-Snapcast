@@ -369,10 +369,10 @@ class SnapcastControlScript:
         meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
-            # Send complete properties structure (must match GetProperties format exactly)
-            # Snapcast requires ALL fields, not just metadata
-            properties = {
-                # Playback state (same as GetProperties)
+            # Notification params: all properties FLAT (no "id" - stream is implicit)
+            # Snapcast knows which stream this is for based on the control script attachment
+            params = {
+                # Playback state (same fields as GetProperties)
                 "playbackStatus": "playing",
                 "loopStatus": "none",
                 "shuffle": False,
@@ -381,7 +381,7 @@ class SnapcastControlScript:
                 "rate": 1.0,
                 "position": 0,
 
-                # Control capabilities (same as GetProperties)
+                # Control capabilities (same fields as GetProperties)
                 "canGoNext": False,
                 "canGoPrevious": False,
                 "canPlay": False,
@@ -391,12 +391,6 @@ class SnapcastControlScript:
 
                 # Metadata (simple field names)
                 "metadata": meta_obj
-            }
-
-            # Notification params include stream ID + properties
-            params = {
-                "id": self.stream_id,
-                "properties": properties
             }
             self.send_notification("Plugin.Stream.Player.Properties", params)
 
