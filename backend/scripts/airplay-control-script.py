@@ -68,19 +68,34 @@ class MetadataStore:
             return self.data.copy()
 
     def get_metadata_for_snapcast(self) -> Optional[Dict]:
-        """Get metadata formatted for Snapcast, only if complete"""
+        """
+        Get metadata formatted for Snapcast using MPRIS standard.
+
+        MPRIS (Media Player Remote Interfacing Specification) format:
+        - xesam:title (string)
+        - xesam:artist (array of strings)
+        - xesam:album (string)
+        - mpris:artUrl (string)
+        """
         with self.lock:
             # Only return if we have at least a title
             if self.data.get("title"):
                 meta = {}
+
+                # MPRIS format fields
                 if self.data.get("title"):
-                    meta["title"] = self.data["title"]
+                    meta["xesam:title"] = self.data["title"]
+
                 if self.data.get("artist"):
-                    meta["artist"] = self.data["artist"]
+                    # MPRIS requires artist as an array
+                    meta["xesam:artist"] = [self.data["artist"]]
+
                 if self.data.get("album"):
-                    meta["album"] = self.data["album"]
+                    meta["xesam:album"] = self.data["album"]
+
                 if self.data.get("artwork_url"):
-                    meta["artUrl"] = self.data["artwork_url"]
+                    meta["mpris:artUrl"] = self.data["artwork_url"]
+
                 return meta
             return None
 
