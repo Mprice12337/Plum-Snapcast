@@ -620,7 +620,7 @@ class SnapcastControlScript:
                 print(json.dumps(response), file=sys.stdout, flush=True)
                 log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
 
-            elif method == "Plugin.Stream.Control":
+            elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
                 command = params.get("command", "")
                 log(f"[Control] Received control command: {command} (params={params})")
@@ -638,17 +638,32 @@ class SnapcastControlScript:
                     print(json.dumps(error_response), file=sys.stdout, flush=True)
                     return
 
-                # Execute command via D-Bus
+                # Execute command via D-Bus and update state
                 if command == "play":
                     self.dbus_monitor.play()
+                    self.store.update(playback_status="Playing")
+                    self.send_playback_state_update()
                 elif command == "pause":
                     self.dbus_monitor.pause()
+                    self.store.update(playback_status="Paused")
+                    self.send_playback_state_update()
                 elif command == "playPause":
                     self.dbus_monitor.play_pause()
+                    # Toggle state
+                    current_state = self.store.get_all().get("playback_status", "Paused")
+                    new_state = "Paused" if current_state == "Playing" else "Playing"
+                    self.store.update(playback_status=new_state)
+                    self.send_playback_state_update()
                 elif command == "next":
                     self.dbus_monitor.next_track()
+                    # State remains Playing after skip
+                    self.store.update(playback_status="Playing")
+                    self.send_playback_state_update()
                 elif command == "previous" or command == "prev":
                     self.dbus_monitor.previous_track()
+                    # State remains Playing after skip
+                    self.store.update(playback_status="Playing")
+                    self.send_playback_state_update()
                 else:
                     log(f"[Snapcast] Unknown control command: {command}")
 
