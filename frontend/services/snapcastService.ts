@@ -197,20 +197,37 @@ export class SnapcastService {
         // Handle Stream.OnUpdate notification - Snapcast broadcasts this when stream changes
         if (message.method === 'Stream.OnUpdate') {
             console.log('Stream.OnUpdate notification received:', message.params);
-            const stream = message.params;
+            const params = message.params;
 
-            // Extract stream ID and playback status
-            if (stream && stream.id) {
-                const streamId = stream.id;
+            // The notification structure is: {id: 'streamId', stream: {...}}
+            const streamId = params.id;
+            const stream = params.stream;
 
-                // Check if stream has properties with playback status
+            if (stream && streamId) {
+                // Check stream status and properties for playback state
+                // Stream status can be: "playing", "idle", "unknown"
+                // Properties.playbackStatus can be: "Playing", "Paused", "Stopped"
+
+                let playbackStatus = null;
+
+                // Prefer properties.playbackStatus if available (from control script)
                 if (stream.properties && stream.properties.playbackStatus) {
-                    const playbackStatus = stream.properties.playbackStatus;
-                    console.log(`Stream ${streamId} updated: playbackStatus=${playbackStatus}`);
+                    playbackStatus = stream.properties.playbackStatus;
+                    console.log(`Stream ${streamId} properties.playbackStatus: ${playbackStatus}`);
+                }
+                // Fall back to stream.status
+                else if (stream.status) {
+                    // Map stream status to playback status
+                    // "playing" -> "Playing", "idle" -> "Paused"
+                    playbackStatus = stream.status === 'playing' ? 'Playing' :
+                                    stream.status === 'idle' ? 'Paused' : 'Stopped';
+                    console.log(`Stream ${streamId} status: ${stream.status} -> ${playbackStatus}`);
+                }
 
-                    // Notify playback state listeners
+                // Notify playback state listeners if we have a status
+                if (playbackStatus) {
                     this.playbackStateListeners.forEach(listener => {
-                        listener(streamId, playbackStatus, stream.properties);
+                        listener(streamId, playbackStatus, stream.properties || {});
                     });
                 }
 
