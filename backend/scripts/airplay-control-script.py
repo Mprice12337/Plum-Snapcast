@@ -372,8 +372,6 @@ class SnapcastControlScript:
             # Send complete properties structure (must match GetProperties format exactly)
             # Snapcast requires ALL fields, not just metadata
             properties = {
-                "id": self.stream_id,
-
                 # Playback state (same as GetProperties)
                 "playbackStatus": "playing",
                 "loopStatus": "none",
@@ -391,10 +389,16 @@ class SnapcastControlScript:
                 "canSeek": False,
                 "canControl": False,
 
-                # Metadata (MPRIS format)
+                # Metadata (simple field names)
                 "metadata": meta_obj
             }
-            self.send_notification("Plugin.Stream.Player.Properties", properties)
+
+            # Notification params include stream ID + properties
+            params = {
+                "id": self.stream_id,
+                "properties": properties
+            }
+            self.send_notification("Plugin.Stream.Player.Properties", params)
 
             # Log what we sent (check simple format keys)
             title = meta_obj.get('title', 'N/A')
