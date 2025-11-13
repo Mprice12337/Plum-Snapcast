@@ -520,6 +520,7 @@ class SnapcastControlScript:
         can_control = self.dbus_monitor.is_available()
 
         params = {
+            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
             "playbackStatus": playback_status,
             "canGoNext": can_control,
             "canGoPrevious": can_control,
@@ -528,7 +529,7 @@ class SnapcastControlScript:
             "canControl": can_control,
         }
         self.send_notification("Plugin.Stream.Player.Properties", params)
-        log(f"[Snapcast] Playback state → {playback_status}")
+        log(f"[Snapcast] Playback state → {playback_status} (stream={self.stream_id})")
 
     def send_metadata_update(self):
         """Send Plugin.Stream.Player.Properties with current metadata from store"""
@@ -539,9 +540,10 @@ class SnapcastControlScript:
             playback_status = self.store.get_all().get("playback_status", "Stopped")
             can_control = self.dbus_monitor.is_available()
 
-            # Notification params: all properties FLAT (no "id" - stream is implicit)
-            # Snapcast knows which stream this is for based on the control script attachment
+            # Notification params: include stream ID and all properties
             params = {
+                "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
+
                 # Playback state (same fields as GetProperties)
                 "playbackStatus": playback_status,
                 "loopStatus": "none",
@@ -568,7 +570,7 @@ class SnapcastControlScript:
             title = meta_obj.get('title', 'N/A')
             artist = meta_obj.get('artist', ['N/A'])
             artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}]")
+            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
             if "artUrl" in meta_obj:
                 log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 

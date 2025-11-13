@@ -119,13 +119,14 @@ const App: React.FC = () => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onPlaybackStateUpdate((streamId, playbackStatus, properties) => {
-            console.log('Playback state update for stream:', streamId, 'status:', playbackStatus);
+            const isPlaying = playbackStatus.toLowerCase() === 'playing';
+            console.log(`[PlaybackState] Stream ${streamId}: ${playbackStatus} → isPlaying=${isPlaying}`);
 
             // Update the stream's playing state
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
                     if (stream.id === streamId) {
-                        const isPlaying = playbackStatus.toLowerCase() === 'playing';
+                        console.log(`[PlaybackState] Updating stream ${streamId} from isPlaying=${stream.isPlaying} to ${isPlaying}`);
                         return {
                             ...stream,
                             isPlaying: isPlaying
@@ -139,16 +140,14 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    // Periodically sync stream status and metadata with server
+    // Periodically sync metadata with server (playback state handled by real-time notifications)
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
-        const syncStreamStatus = async () => {
+        const syncStreamMetadata = async () => {
             try {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
-                    const isPlaying = snapcastService.isStreamPlaying(serverStream);
-
                     // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
                     if (serverStream.properties?.metadata) {
@@ -161,14 +160,12 @@ const App: React.FC = () => {
                         };
                     }
 
-                    // Update stream with latest playing status and metadata
+                    // Update stream with latest metadata (but NOT playback state - that's handled by real-time notifications)
                     setStreams(prevStreams =>
                         prevStreams.map(s => {
                             if (s.id === currentStream.id) {
-                                const updatedStream = {
-                                    ...s,
-                                    isPlaying: isPlaying
-                                };
+                                // Only update metadata, preserve current playback state
+                                const updatedStream = { ...s };
 
                                 // Update metadata if we got new data
                                 if (updatedMetadata) {
@@ -193,8 +190,8 @@ const App: React.FC = () => {
         };
 
         // Sync immediately and then every 5 seconds
-        syncStreamStatus();
-        const interval = setInterval(syncStreamStatus, 5000);
+        syncStreamMetadata();
+        const interval = setInterval(syncStreamMetadata, 5000);
 
         return () => clearInterval(interval);
     }, [currentStream?.id]);
