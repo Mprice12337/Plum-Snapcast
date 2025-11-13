@@ -194,12 +194,41 @@ export class SnapcastService {
             }
         }
 
+        // Handle Stream.OnUpdate notification - Snapcast broadcasts this when stream changes
+        if (message.method === 'Stream.OnUpdate') {
+            console.log('Stream.OnUpdate notification received:', message.params);
+            const stream = message.params;
+
+            // Extract stream ID and playback status
+            if (stream && stream.id) {
+                const streamId = stream.id;
+
+                // Check if stream has properties with playback status
+                if (stream.properties && stream.properties.playbackStatus) {
+                    const playbackStatus = stream.properties.playbackStatus;
+                    console.log(`Stream ${streamId} updated: playbackStatus=${playbackStatus}`);
+
+                    // Notify playback state listeners
+                    this.playbackStateListeners.forEach(listener => {
+                        listener(streamId, playbackStatus, stream.properties);
+                    });
+                }
+
+                // Also check for metadata updates
+                if (stream.properties && stream.properties.metadata) {
+                    console.log(`Stream ${streamId} metadata updated`);
+                    this.metadataUpdateListeners.forEach(listener => {
+                        listener(streamId, stream.properties.metadata);
+                    });
+                }
+            }
+        }
+
         // Handle Server.OnUpdate notification (Snapcast broadcasts this when anything changes)
-        // Use this to trigger fetching latest stream properties including playback state
+        // Use this as a fallback to trigger fetching latest stream properties
         if (message.method === 'Server.OnUpdate') {
-            console.log('Server update notification received, triggering property refresh');
+            console.log('Server.OnUpdate notification received, triggering property refresh');
             // Notify playback state listeners with a special signal to refetch
-            // We'll pass undefined as the status to signal "fetch latest"
             this.playbackStateListeners.forEach(listener => {
                 listener('*', 'REFRESH', {});
             });
