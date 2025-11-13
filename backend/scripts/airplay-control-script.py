@@ -217,6 +217,14 @@ class MetadataParser:
                         log(f"[Bundle] Applied album: {self.pending_metadata['album']}")
                         updated = True
 
+                    # When we receive metadata, the stream is playing
+                    # Update playback state to "Playing"
+                    current_state = self.store.get_all().get("playback_status", "Stopped")
+                    if current_state != "Playing":
+                        self.store.update(playback_status="Playing")
+                        log(f"[State] Playback state → Playing (metadata received)")
+                        updated = True
+
                     # Signal update if we changed anything
                     return updated
 
@@ -398,23 +406,18 @@ class DBusMonitor:
                 self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
                 self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
 
-                # Subscribe to property changes
-                self.dbus_properties.connect_to_signal('PropertiesChanged', self.on_properties_changed)
-
+                # Note: ShairportSync doesn't expose playback state via D-Bus
+                # We'll track state based on metadata events instead
                 log("[DBus] ✓ Connected to ShairportSync D-Bus interface")
+                log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous)")
+                log("[DBus] Note: Playback state tracked via metadata events")
 
-                # Get initial playback state
-                try:
-                    playing = self.dbus_properties.Get('org.gnome.ShairportSync.RemoteControl', 'IsPlaying')
-                    initial_state = "Playing" if playing else "Paused"
-                    self.store.update(playback_status=initial_state)
-                    log(f"[DBus] ✓ Initial playback state: {initial_state}")
+                # Set initial state to Paused (will update when metadata arrives)
+                self.store.update(playback_status="Paused")
 
-                    # Notify parent that we're ready
-                    if self.on_state_change:
-                        self.on_state_change()
-                except Exception as e:
-                    log(f"[DBus] Could not get initial state: {e}")
+                # Notify parent that we're ready
+                if self.on_state_change:
+                    self.on_state_change()
 
                 return  # Success!
 
@@ -433,18 +436,13 @@ class DBusMonitor:
                 break
 
     def on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
-        """Handle D-Bus property changes"""
-        try:
-            if 'IsPlaying' in changed_properties:
-                is_playing = bool(changed_properties['IsPlaying'])
-                new_status = "Playing" if is_playing else "Paused"
-                log(f"[DBus] Playback state changed: {new_status}")
-                self.store.update(playback_status=new_status)
-                # Notify parent to send update to Snapcast
-                if self.on_state_change:
-                    self.on_state_change()
-        except Exception as e:
-            log(f"[DBus] Error handling property change: {e}")
+        """
+        Handle D-Bus property changes.
+        Note: ShairportSync doesn't emit playback state changes via D-Bus.
+        We track state based on metadata events instead.
+        """
+        # This handler is kept for future compatibility if ShairportSync adds state properties
+        pass
 
     def play(self):
         """Send play command to ShairportSync"""
@@ -582,6 +580,8 @@ class SnapcastControlScript:
             request_id = request.get("id")
             params = request.get("params", {})
 
+            log(f"[Command] Received: {method} (id={request_id})")
+
             if method == "Plugin.Stream.Player.GetProperties":
                 # Return COMPLETE properties object (not just metadata)
                 # Snapcast requires all fields: playback state, control capabilities, AND metadata
@@ -623,7 +623,7 @@ class SnapcastControlScript:
             elif method == "Plugin.Stream.Control":
                 # Handle playback control commands
                 command = params.get("command", "")
-                log(f"[Snapcast] Control command received: {command}")
+                log(f"[Control] Received control command: {command} (params={params})")
 
                 if not self.dbus_monitor.is_available():
                     # Return error if D-Bus not available
@@ -659,9 +659,28 @@ class SnapcastControlScript:
                     "result": {}
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Control] Sent success response for: {command}")
 
+            else:
+                # Unknown method
+                log(f"[Command] WARNING: Unknown method '{method}' - request: {request}")
+                if request_id:
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+
+        except json.JSONDecodeError as e:
+            log(f"[Error] Invalid JSON received: {e} - line: {line[:100]}")
         except Exception as e:
-            log(f"[Error] Command handler: {e}")
+            log(f"[Error] Command handler exception: {e}")
+            import traceback
+            log(f"[Error] {traceback.format_exc()}")
             if request_id:
                 error_response = {
                     "jsonrpc": "2.0",
