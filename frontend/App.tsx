@@ -114,6 +114,31 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
+    // Listen for real-time playback state updates from Snapcast
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onPlaybackStateUpdate((streamId, playbackStatus, properties) => {
+            console.log('Playback state update for stream:', streamId, 'status:', playbackStatus);
+
+            // Update the stream's playing state
+            setStreams(prevStreams =>
+                prevStreams.map(stream => {
+                    if (stream.id === streamId) {
+                        const isPlaying = playbackStatus.toLowerCase() === 'playing';
+                        return {
+                            ...stream,
+                            isPlaying: isPlaying
+                        };
+                    }
+                    return stream;
+                })
+            );
+        });
+
+        return () => unsubscribe();
+    }, []);
+
     // Periodically sync stream status and metadata with server
     useEffect(() => {
         if (!currentStream || !snapcastService) return;

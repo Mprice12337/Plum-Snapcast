@@ -92,6 +92,7 @@ export class SnapcastService {
     private port: number;
     private isConnected = false;
     private metadataUpdateListeners: Set<(streamId: string, metadata: any) => void> = new Set();
+    private playbackStateListeners: Set<(streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void> = new Set();
 
     constructor() {
         this.host =
@@ -105,6 +106,15 @@ export class SnapcastService {
         // Return unsubscribe function
         return () => {
             this.metadataUpdateListeners.delete(listener);
+        };
+    }
+
+    // Subscribe to playback state updates
+    onPlaybackStateUpdate(listener: (streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void): () => void {
+        this.playbackStateListeners.add(listener);
+        // Return unsubscribe function
+        return () => {
+            this.playbackStateListeners.delete(listener);
         };
     }
 
@@ -162,18 +172,24 @@ export class SnapcastService {
         // Handle real-time updates from the server
         console.log('Received notification:', message.method, message.params);
 
-        // Handle stream property updates (including metadata)
+        // Handle stream property updates (including metadata and playback state)
         if (message.method === 'Plugin.Stream.Player.Properties' || message.method === 'Stream.OnProperties') {
             const params = message.params;
-            // The params should contain stream metadata
-            // Notify all listeners
+            const streamId = params.id || params.stream_id || 'unknown';
+
+            // Notify metadata listeners if metadata changed
             if (params && params.metadata) {
-                console.log('Metadata update received:', params.metadata);
-                // We need to figure out which stream this is for
-                // The control script should send stream ID in params, but if not, we'll need to infer it
-                const streamId = params.id || params.stream_id || 'unknown';
+                console.log('Metadata update received for stream', streamId, ':', params.metadata);
                 this.metadataUpdateListeners.forEach(listener => {
                     listener(streamId, params.metadata);
+                });
+            }
+
+            // Notify playback state listeners if playback status changed
+            if (params && params.playbackStatus !== undefined) {
+                console.log('Playback state update received for stream', streamId, ':', params.playbackStatus);
+                this.playbackStateListeners.forEach(listener => {
+                    listener(streamId, params.playbackStatus, params);
                 });
             }
         }

@@ -8,6 +8,7 @@ Based on proven pattern from metadata-debug-server.py:
 - mdst/mden bundle pattern with pending state
 - Independent artwork handling
 - Only send complete, consistent updates to Snapcast
+- D-Bus integration for playback state and remote control
 """
 
 import argparse
@@ -37,10 +38,20 @@ def log(message: str):
     except:
         pass
 
+# Try to import D-Bus - graceful fallback if not available
+try:
+    import dbus
+    from dbus.mainloop.glib import DBusGMainLoop
+    from gi.repository import GLib
+    DBUS_AVAILABLE = True
+except ImportError:
+    DBUS_AVAILABLE = False
+    log("[Warning] D-Bus not available - playback controls disabled")
+
 
 class MetadataStore:
     """
-    Thread-safe storage for current metadata.
+    Thread-safe storage for current metadata and playback state.
     This ensures atomic reads/writes and consistency.
     """
 
@@ -52,7 +63,8 @@ class MetadataStore:
             "album": None,
             "track_id": None,
             "artwork_url": None,
-            "last_updated": None
+            "last_updated": None,
+            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
         }
 
     def update(self, **kwargs):
@@ -345,6 +357,116 @@ class MetadataParser:
             return None
 
 
+class DBusMonitor:
+    """
+    Monitor ShairportSync D-Bus interface for playback state changes.
+    Provides remote control capabilities (play, pause, next, previous).
+    """
+
+    def __init__(self, store: MetadataStore, on_state_change_callback):
+        self.store = store
+        self.on_state_change = on_state_change_callback
+        self.dbus_interface = None
+        self.dbus_properties = None
+
+        if not DBUS_AVAILABLE:
+            log("[DBus] D-Bus not available - control disabled")
+            return
+
+        try:
+            # Initialize D-Bus main loop
+            DBusGMainLoop(set_as_default=True)
+
+            # Connect to system bus
+            bus = dbus.SystemBus()
+
+            # Get ShairportSync RemoteControl interface
+            shairport = bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
+            self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
+            self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
+
+            # Subscribe to property changes
+            self.dbus_properties.connect_to_signal('PropertiesChanged', self.on_properties_changed)
+
+            log("[DBus] Connected to ShairportSync D-Bus interface")
+
+            # Get initial playback state
+            try:
+                playing = self.dbus_properties.Get('org.gnome.ShairportSync.RemoteControl', 'IsPlaying')
+                initial_state = "Playing" if playing else "Paused"
+                self.store.update(playback_status=initial_state)
+                log(f"[DBus] Initial playback state: {initial_state}")
+            except:
+                pass
+
+        except Exception as e:
+            log(f"[DBus] Failed to connect: {e}")
+            self.dbus_interface = None
+
+    def on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
+        """Handle D-Bus property changes"""
+        try:
+            if 'IsPlaying' in changed_properties:
+                is_playing = bool(changed_properties['IsPlaying'])
+                new_status = "Playing" if is_playing else "Paused"
+                log(f"[DBus] Playback state changed: {new_status}")
+                self.store.update(playback_status=new_status)
+                # Notify parent to send update to Snapcast
+                if self.on_state_change:
+                    self.on_state_change()
+        except Exception as e:
+            log(f"[DBus] Error handling property change: {e}")
+
+    def play(self):
+        """Send play command to ShairportSync"""
+        if self.dbus_interface:
+            try:
+                self.dbus_interface.Play()
+                log("[DBus] Sent Play command")
+            except Exception as e:
+                log(f"[DBus] Play failed: {e}")
+
+    def pause(self):
+        """Send pause command to ShairportSync"""
+        if self.dbus_interface:
+            try:
+                self.dbus_interface.Pause()
+                log("[DBus] Sent Pause command")
+            except Exception as e:
+                log(f"[DBus] Pause failed: {e}")
+
+    def play_pause(self):
+        """Toggle play/pause"""
+        if self.dbus_interface:
+            try:
+                self.dbus_interface.PlayPause()
+                log("[DBus] Sent PlayPause command")
+            except Exception as e:
+                log(f"[DBus] PlayPause failed: {e}")
+
+    def next_track(self):
+        """Skip to next track"""
+        if self.dbus_interface:
+            try:
+                self.dbus_interface.Next()
+                log("[DBus] Sent Next command")
+            except Exception as e:
+                log(f"[DBus] Next failed: {e}")
+
+    def previous_track(self):
+        """Skip to previous track"""
+        if self.dbus_interface:
+            try:
+                self.dbus_interface.Previous()
+                log("[DBus] Sent Previous command")
+            except Exception as e:
+                log(f"[DBus] Previous failed: {e}")
+
+    def is_available(self):
+        """Check if D-Bus control is available"""
+        return self.dbus_interface is not None
+
+
 class SnapcastControlScript:
     """Snapcast control script that communicates via stdin/stdout"""
 
@@ -352,6 +474,7 @@ class SnapcastControlScript:
         self.stream_id = stream_id
         self.store = MetadataStore()
         self.metadata_parser = MetadataParser(self.store)
+        self.dbus_monitor = DBusMonitor(self.store, self.send_playback_state_update)
         log(f"[Init] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
@@ -364,16 +487,36 @@ class SnapcastControlScript:
         print(json.dumps(notification), file=sys.stdout, flush=True)
         log(f"[Snapcast] → {method}")
 
+    def send_playback_state_update(self):
+        """Send playback state update to Snapcast (called when D-Bus state changes)"""
+        playback_status = self.store.get_all().get("playback_status", "Stopped")
+        can_control = self.dbus_monitor.is_available()
+
+        params = {
+            "playbackStatus": playback_status,
+            "canGoNext": can_control,
+            "canGoPrevious": can_control,
+            "canPlay": can_control,
+            "canPause": can_control,
+            "canControl": can_control,
+        }
+        self.send_notification("Plugin.Stream.Player.Properties", params)
+        log(f"[Snapcast] Playback state → {playback_status}")
+
     def send_metadata_update(self):
         """Send Plugin.Stream.Player.Properties with current metadata from store"""
         meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
+            # Get current playback state from store
+            playback_status = self.store.get_all().get("playback_status", "Stopped")
+            can_control = self.dbus_monitor.is_available()
+
             # Notification params: all properties FLAT (no "id" - stream is implicit)
             # Snapcast knows which stream this is for based on the control script attachment
             params = {
                 # Playback state (same fields as GetProperties)
-                "playbackStatus": "playing",
+                "playbackStatus": playback_status,
                 "loopStatus": "none",
                 "shuffle": False,
                 "volume": 100,
@@ -381,13 +524,13 @@ class SnapcastControlScript:
                 "rate": 1.0,
                 "position": 0,
 
-                # Control capabilities (same fields as GetProperties)
-                "canGoNext": False,
-                "canGoPrevious": False,
-                "canPlay": False,
-                "canPause": False,
+                # Control capabilities (enable if D-Bus is available)
+                "canGoNext": can_control,
+                "canGoPrevious": can_control,
+                "canPlay": can_control,
+                "canPause": can_control,
                 "canSeek": False,
-                "canControl": False,
+                "canControl": can_control,
 
                 # Metadata (simple field names)
                 "metadata": meta_obj
@@ -398,7 +541,7 @@ class SnapcastControlScript:
             title = meta_obj.get('title', 'N/A')
             artist = meta_obj.get('artist', ['N/A'])
             artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-            log(f"[Snapcast] Metadata → {title} - {artist_str}")
+            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}]")
             if "artUrl" in meta_obj:
                 log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 
@@ -408,16 +551,19 @@ class SnapcastControlScript:
             request = json.loads(line)
             method = request.get("method", "")
             request_id = request.get("id")
+            params = request.get("params", {})
 
             if method == "Plugin.Stream.Player.GetProperties":
                 # Return COMPLETE properties object (not just metadata)
                 # Snapcast requires all fields: playback state, control capabilities, AND metadata
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
+                playback_status = self.store.get_all().get("playback_status", "Stopped")
+                can_control = self.dbus_monitor.is_available()
 
                 # Build complete properties response per Snapcast Stream Plugin API
                 properties = {
-                    # Playback state (AirPlay streams are always "playing" when connected)
-                    "playbackStatus": "playing",
+                    # Playback state (from D-Bus if available)
+                    "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
                     "volume": 100,
@@ -425,13 +571,13 @@ class SnapcastControlScript:
                     "rate": 1.0,
                     "position": 0,
 
-                    # Control capabilities (AirPlay can't be controlled by Snapcast)
-                    "canGoNext": False,
-                    "canGoPrevious": False,
-                    "canPlay": False,
-                    "canPause": False,
+                    # Control capabilities (enable if D-Bus available)
+                    "canGoNext": can_control,
+                    "canGoPrevious": can_control,
+                    "canPlay": can_control,
+                    "canPause": can_control,
                     "canSeek": False,
-                    "canControl": False,
+                    "canControl": can_control,
 
                     # Metadata (MPRIS format)
                     "metadata": meta_obj
@@ -443,10 +589,60 @@ class SnapcastControlScript:
                     "result": properties
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
+
+            elif method == "Plugin.Stream.Control":
+                # Handle playback control commands
+                command = params.get("command", "")
+                log(f"[Snapcast] Control command received: {command}")
+
+                if not self.dbus_monitor.is_available():
+                    # Return error if D-Bus not available
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Control not available (D-Bus not connected)"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+                    return
+
+                # Execute command via D-Bus
+                if command == "play":
+                    self.dbus_monitor.play()
+                elif command == "pause":
+                    self.dbus_monitor.pause()
+                elif command == "playPause":
+                    self.dbus_monitor.play_pause()
+                elif command == "next":
+                    self.dbus_monitor.next_track()
+                elif command == "previous" or command == "prev":
+                    self.dbus_monitor.previous_track()
+                else:
+                    log(f"[Snapcast] Unknown control command: {command}")
+
+                # Send success response
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {}
+                }
+                print(json.dumps(response), file=sys.stdout, flush=True)
 
         except Exception as e:
             log(f"[Error] Command handler: {e}")
+            if request_id:
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32603,
+                        "message": str(e)
+                    }
+                }
+                print(json.dumps(error_response), file=sys.stdout, flush=True)
 
     def monitor_metadata_pipe(self):
         """Monitor shairport-sync metadata pipe"""
@@ -505,6 +701,13 @@ class SnapcastControlScript:
         # Start metadata monitor in background
         monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
         monitor_thread.start()
+
+        # Start D-Bus main loop in background (if available)
+        if DBUS_AVAILABLE and self.dbus_monitor.is_available():
+            dbus_loop = GLib.MainLoop()
+            dbus_thread = threading.Thread(target=dbus_loop.run, daemon=True)
+            dbus_thread.start()
+            log("[Init] D-Bus event loop started")
 
         # Send ready notification
         self.send_notification("Plugin.Stream.Ready", {})
