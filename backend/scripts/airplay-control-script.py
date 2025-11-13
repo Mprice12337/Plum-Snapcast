@@ -228,6 +228,62 @@ class MetadataParser:
                     # Signal update if we changed anything
                     return updated
 
+                # ===== PLAYBACK STATE EVENTS (ssnc) =====
+                elif code == "pbeg":
+                    # Play stream begin
+                    log(f"[Session] Play stream BEGIN")
+                    current_state = self.store.get_all().get("playback_status", "Stopped")
+                    if current_state != "Playing":
+                        self.store.update(playback_status="Playing")
+                        log(f"[State] Playback state → Playing (stream begin)")
+                        return True  # Signal update
+                    return False
+
+                elif code == "pend":
+                    # Play stream end
+                    log(f"[Session] Play stream END")
+                    current_state = self.store.get_all().get("playback_status", "Stopped")
+                    if current_state != "Stopped":
+                        self.store.update(playback_status="Stopped")
+                        log(f"[State] Playback state → Stopped (stream end)")
+                        return True  # Signal update
+                    return False
+
+                elif code == "paus":
+                    # Pause (older shairport-sync versions)
+                    log(f"[Session] PAUSE")
+                    current_state = self.store.get_all().get("playback_status", "Paused")
+                    if current_state != "Paused":
+                        self.store.update(playback_status="Paused")
+                        log(f"[State] Playback state → Paused")
+                        return True  # Signal update
+                    return False
+
+                elif code == "pfls":
+                    # Play stream flush (pause/stop)
+                    log(f"[Session] Play stream FLUSH (pause)")
+                    current_state = self.store.get_all().get("playback_status", "Paused")
+                    if current_state != "Paused":
+                        self.store.update(playback_status="Paused")
+                        log(f"[State] Playback state → Paused (stream flushed)")
+                        return True  # Signal update
+                    return False
+
+                elif code == "prsm":
+                    # Play stream resume
+                    log(f"[Session] Play stream RESUME")
+                    current_state = self.store.get_all().get("playback_status", "Playing")
+                    if current_state != "Playing":
+                        self.store.update(playback_status="Playing")
+                        log(f"[State] Playback state → Playing (stream resumed)")
+                        return True  # Signal update
+                    return False
+
+                elif code == "pvol":
+                    # Volume change (informational, we don't track volume from source)
+                    log(f"[Session] Volume change from source")
+                    return False
+
                 elif code == "pcst":
                     # Artwork bundle START
                     log(f"[Artwork] START")
