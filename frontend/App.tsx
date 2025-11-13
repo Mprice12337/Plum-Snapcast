@@ -168,14 +168,17 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    // Periodically sync metadata with server (playback state handled by real-time notifications)
+    // Periodically sync metadata AND playback state with server as fallback
+    // This ensures GUI stays in sync even if WebSocket notifications fail
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
-        const syncStreamMetadata = async () => {
+        const syncStreamState = async () => {
             try {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
+                    const isPlaying = snapcastService.isStreamPlaying(serverStream);
+
                     // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
                     if (serverStream.properties?.metadata) {
@@ -188,12 +191,17 @@ const App: React.FC = () => {
                         };
                     }
 
-                    // Update stream with latest metadata (but NOT playback state - that's handled by real-time notifications)
+                    // Update stream with latest state AND metadata
                     setStreams(prevStreams =>
                         prevStreams.map(s => {
                             if (s.id === currentStream.id) {
-                                // Only update metadata, preserve current playback state
                                 const updatedStream = { ...s };
+
+                                // Update playback state if changed
+                                if (s.isPlaying !== isPlaying) {
+                                    console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
+                                    updatedStream.isPlaying = isPlaying;
+                                }
 
                                 // Update metadata if we got new data
                                 if (updatedMetadata) {
@@ -217,9 +225,8 @@ const App: React.FC = () => {
             }
         };
 
-        // Sync immediately and then every 5 seconds
-        syncStreamMetadata();
-        const interval = setInterval(syncStreamMetadata, 5000);
+        // Poll every 2 seconds for active streams (more aggressive than before)
+        const interval = setInterval(syncStreamState, 2000);
 
         return () => clearInterval(interval);
     }, [currentStream?.id]);
