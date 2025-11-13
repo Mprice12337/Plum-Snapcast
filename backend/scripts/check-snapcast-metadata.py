@@ -9,6 +9,9 @@ import sys
 
 def query_snapcast(host='localhost', port=1780):
     """Query Snapcast Server.GetStatus via JSON-RPC"""
+    response = None
+    sock = None
+
     try:
         # Create socket connection
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -37,12 +40,20 @@ def query_snapcast(host='localhost', port=1780):
             except:
                 continue
 
-        sock.close()
         return response
 
+    except socket.timeout:
+        print(f"Error: Connection to {host}:{port} timed out", file=sys.stderr)
+        return None
+    except ConnectionRefusedError:
+        print(f"Error: Connection to {host}:{port} refused (is Snapcast running?)", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"Error querying Snapcast: {e}", file=sys.stderr)
         return None
+    finally:
+        if sock:
+            sock.close()
 
 def main():
     print("=" * 60)
