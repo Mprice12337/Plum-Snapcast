@@ -30,7 +30,9 @@ RUN apk add --no-cache \
     libgcrypt \
     libuuid \
     ffmpeg-libs \
-    python3
+    python3 \
+    py3-dbus \
+    py3-gobject3
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \

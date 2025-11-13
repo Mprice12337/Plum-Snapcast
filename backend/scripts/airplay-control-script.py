@@ -368,40 +368,69 @@ class DBusMonitor:
         self.on_state_change = on_state_change_callback
         self.dbus_interface = None
         self.dbus_properties = None
+        self.bus = None
 
         if not DBUS_AVAILABLE:
-            log("[DBus] D-Bus not available - control disabled")
+            log("[DBus] D-Bus Python bindings not available - control disabled")
+            log("[DBus] Install py3-dbus and py3-gobject3 to enable controls")
             return
 
-        try:
-            # Initialize D-Bus main loop
-            DBusGMainLoop(set_as_default=True)
+        # Start connection in background thread to avoid blocking
+        connect_thread = threading.Thread(target=self._connect_with_retry, daemon=True)
+        connect_thread.start()
 
-            # Connect to system bus
-            bus = dbus.SystemBus()
+    def _connect_with_retry(self):
+        """Try to connect to ShairportSync D-Bus with retries"""
+        max_retries = 10
+        retry_delay = 2  # seconds
 
-            # Get ShairportSync RemoteControl interface
-            shairport = bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
-            self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
-            self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
-
-            # Subscribe to property changes
-            self.dbus_properties.connect_to_signal('PropertiesChanged', self.on_properties_changed)
-
-            log("[DBus] Connected to ShairportSync D-Bus interface")
-
-            # Get initial playback state
+        for attempt in range(max_retries):
             try:
-                playing = self.dbus_properties.Get('org.gnome.ShairportSync.RemoteControl', 'IsPlaying')
-                initial_state = "Playing" if playing else "Paused"
-                self.store.update(playback_status=initial_state)
-                log(f"[DBus] Initial playback state: {initial_state}")
-            except:
-                pass
+                # Initialize D-Bus main loop on first attempt
+                if attempt == 0:
+                    DBusGMainLoop(set_as_default=True)
 
-        except Exception as e:
-            log(f"[DBus] Failed to connect: {e}")
-            self.dbus_interface = None
+                # Connect to system bus
+                self.bus = dbus.SystemBus()
+
+                # Get ShairportSync RemoteControl interface
+                shairport = self.bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
+                self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
+                self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
+
+                # Subscribe to property changes
+                self.dbus_properties.connect_to_signal('PropertiesChanged', self.on_properties_changed)
+
+                log("[DBus] ✓ Connected to ShairportSync D-Bus interface")
+
+                # Get initial playback state
+                try:
+                    playing = self.dbus_properties.Get('org.gnome.ShairportSync.RemoteControl', 'IsPlaying')
+                    initial_state = "Playing" if playing else "Paused"
+                    self.store.update(playback_status=initial_state)
+                    log(f"[DBus] ✓ Initial playback state: {initial_state}")
+
+                    # Notify parent that we're ready
+                    if self.on_state_change:
+                        self.on_state_change()
+                except Exception as e:
+                    log(f"[DBus] Could not get initial state: {e}")
+
+                return  # Success!
+
+            except dbus.exceptions.DBusException as e:
+                if attempt < max_retries - 1:
+                    log(f"[DBus] Connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                    log(f"[DBus] Retrying in {retry_delay}s (ShairportSync may not be ready yet)...")
+                    time.sleep(retry_delay)
+                else:
+                    log(f"[DBus] ✗ Failed to connect after {max_retries} attempts: {e}")
+                    log("[DBus] Control features disabled - check that ShairportSync is running")
+                    self.dbus_interface = None
+            except Exception as e:
+                log(f"[DBus] ✗ Unexpected error during connection: {e}")
+                self.dbus_interface = None
+                break
 
     def on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
         """Handle D-Bus property changes"""
