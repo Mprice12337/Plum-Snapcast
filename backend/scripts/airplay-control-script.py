@@ -69,32 +69,32 @@ class MetadataStore:
 
     def get_metadata_for_snapcast(self) -> Optional[Dict]:
         """
-        Get metadata formatted for Snapcast using MPRIS standard.
+        Get metadata formatted for Snapcast.
 
-        MPRIS (Media Player Remote Interfacing Specification) format:
-        - xesam:title (string)
-        - xesam:artist (array of strings)
-        - xesam:album (string)
-        - mpris:artUrl (string)
+        Snapcast expects simple field names (NOT MPRIS format):
+        - title (string)
+        - artist (array of strings)
+        - album (string)
+        - artUrl (string)
         """
         with self.lock:
             # Only return if we have at least a title
             if self.data.get("title"):
                 meta = {}
 
-                # MPRIS format fields
+                # Snapcast metadata fields (simple names, not MPRIS)
                 if self.data.get("title"):
-                    meta["xesam:title"] = self.data["title"]
+                    meta["title"] = self.data["title"]
 
                 if self.data.get("artist"):
-                    # MPRIS requires artist as an array
-                    meta["xesam:artist"] = [self.data["artist"]]
+                    # Snapcast expects artist as an array
+                    meta["artist"] = [self.data["artist"]]
 
                 if self.data.get("album"):
-                    meta["xesam:album"] = self.data["album"]
+                    meta["album"] = self.data["album"]
 
                 if self.data.get("artwork_url"):
-                    meta["mpris:artUrl"] = self.data["artwork_url"]
+                    meta["artUrl"] = self.data["artwork_url"]
 
                 return meta
             return None
@@ -396,13 +396,13 @@ class SnapcastControlScript:
             }
             self.send_notification("Plugin.Stream.Player.Properties", properties)
 
-            # Log what we sent (check MPRIS format keys)
-            title = meta_obj.get('xesam:title', 'N/A')
-            artist = meta_obj.get('xesam:artist', ['N/A'])
+            # Log what we sent (check simple format keys)
+            title = meta_obj.get('title', 'N/A')
+            artist = meta_obj.get('artist', ['N/A'])
             artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
             log(f"[Snapcast] Metadata → {title} - {artist_str}")
-            if "mpris:artUrl" in meta_obj:
-                log(f"[Snapcast]   Artwork: {len(meta_obj['mpris:artUrl'])} chars")
+            if "artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""

@@ -29,16 +29,14 @@ const extractMetadataFromStream = (snapStream: any): {
 
         // Look for metadata in properties
         if (snapStream.properties.metadata) {
-            // Snapcast control script metadata format (MPRIS standard)
+            // Snapcast control script metadata format (simple field names)
             const meta = snapStream.properties.metadata;
             metadata = {
-                // MPRIS format uses xesam:title, xesam:artist (array), xesam:album
-                title: meta['xesam:title'] || meta.title || meta.name,
-                artist: meta['xesam:artist'] ?
-                    (Array.isArray(meta['xesam:artist']) ? meta['xesam:artist'].join(', ') : meta['xesam:artist']) :
-                    (Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist),
-                album: meta['xesam:album'] || meta.album,
-                artUrl: meta['mpris:artUrl'] || meta.artUrl,
+                // Simple field names (title, artist, album, artUrl)
+                title: meta.title || meta.name,
+                artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
+                album: meta.album,
+                artUrl: meta.artUrl,
                 duration: meta.duration
             };
         } else if (snapStream.properties.meta) {

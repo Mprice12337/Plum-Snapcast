@@ -124,17 +124,15 @@ const App: React.FC = () => {
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Extract metadata from stream properties (MPRIS format)
+                    // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
                     if (serverStream.properties?.metadata) {
                         const meta = serverStream.properties.metadata;
                         updatedMetadata = {
-                            title: meta['xesam:title'] || meta.title || meta.name,
-                            artist: meta['xesam:artist'] ?
-                                (Array.isArray(meta['xesam:artist']) ? meta['xesam:artist'].join(', ') : meta['xesam:artist']) :
-                                (Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist),
-                            album: meta['xesam:album'] || meta.album,
-                            albumArtUrl: meta['mpris:artUrl'] || meta.artUrl
+                            title: meta.title || meta.name,
+                            artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
+                            album: meta.album,
+                            albumArtUrl: meta.artUrl
                         };
                     }
 
