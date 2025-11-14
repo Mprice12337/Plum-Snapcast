@@ -270,13 +270,29 @@ const App: React.FC = () => {
 
                                 // Update metadata if we got new data
                                 if (updatedMetadata) {
+                                    // Detect if this is a new track (title changed)
+                                    const isNewTrack = updatedMetadata.title && updatedMetadata.title !== s.currentTrack.title;
+
                                     updatedStream.currentTrack = {
                                         ...s.currentTrack,
                                         title: updatedMetadata.title || s.currentTrack.title,
                                         artist: updatedMetadata.artist || s.currentTrack.artist,
                                         album: updatedMetadata.album || s.currentTrack.album,
-                                        albumArtUrl: updatedMetadata.albumArtUrl || s.currentTrack.albumArtUrl
                                     };
+
+                                    // Handle artwork updates:
+                                    // - If artwork explicitly provided → use it
+                                    // - If new track but no artwork yet → clear to default (prevents showing old track's artwork)
+                                    // - Otherwise → keep current artwork (for partial metadata updates)
+                                    if (updatedMetadata.albumArtUrl !== undefined) {
+                                        updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                    } else if (isNewTrack) {
+                                        // New track detected but artwork not yet available - use default placeholder
+                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+                                    } else {
+                                        // Keep existing artwork
+                                        updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
+                                    }
                                 }
 
                                 return updatedStream;
