@@ -127,14 +127,24 @@ const App: React.FC = () => {
                         const wasPlaying = stream.isPlaying;
                         const nowPlaying = true; // Metadata = audio is flowing = playing
 
-                        if (!wasPlaying && nowPlaying) {
+                        // Check if there's a recent user-initiated pause (grace period)
+                        const now = Date.now();
+                        const gracePeriod = 8000;
+                        const hasRecentPause = recentPlaybackChange &&
+                            recentPlaybackChange.streamId === streamId &&
+                            (now - recentPlaybackChange.timestamp) < gracePeriod;
+
+                        // If user just paused, don't override with metadata-based playing state
+                        const finalPlayingState = hasRecentPause ? stream.isPlaying : nowPlaying;
+
+                        if (!wasPlaying && finalPlayingState && !hasRecentPause) {
                             console.log(`[Metadata] Stream ${streamId} started playing (metadata received)`);
                         }
 
                         return {
                             ...stream,
                             currentTrack: updatedTrack,
-                            isPlaying: nowPlaying
+                            isPlaying: finalPlayingState
                         };
                     }
                     return stream;
@@ -143,7 +153,7 @@ const App: React.FC = () => {
         });
 
         return () => unsubscribe();
-    }, []);
+    }, [recentPlaybackChange]);
 
     // Listen for real-time playback state updates from Snapcast
     useEffect(() => {
