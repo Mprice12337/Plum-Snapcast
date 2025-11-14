@@ -86,8 +86,6 @@ const App: React.FC = () => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
-            console.log('Metadata update for stream:', streamId, metadata);
-
             // Update the stream with new metadata
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
@@ -121,8 +119,6 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
             // Handle refresh signal - fetch latest state for all streams
             if (playbackStatus === 'REFRESH') {
-                console.log('[PlaybackState] Server update detected, refreshing all stream states');
-
                 // Fetch latest state for all streams
                 const serverStatus = await snapcastService.getServerStatus();
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
@@ -148,13 +144,14 @@ const App: React.FC = () => {
 
             // Handle direct playback status update
             const isPlaying = playbackStatus.toLowerCase() === 'playing';
-            console.log(`[PlaybackState] Stream ${streamId}: ${playbackStatus} → isPlaying=${isPlaying}`);
 
             // Update the stream's playing state
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
                     if (stream.id === streamId) {
-                        console.log(`[PlaybackState] Updating stream ${streamId} from isPlaying=${stream.isPlaying} to ${isPlaying}`);
+                        if (stream.isPlaying !== isPlaying) {
+                            console.log(`[WebSocket] Stream ${streamId} playback state: ${stream.isPlaying ? 'Playing' : 'Paused'} → ${isPlaying ? 'Playing' : 'Paused'}`);
+                        }
                         return {
                             ...stream,
                             isPlaying: isPlaying
@@ -240,7 +237,6 @@ const App: React.FC = () => {
             setConnectionError(null);
 
             try {
-                console.log('Fetching Snapcast data...');
                 const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
 
                 if (isCancelled) return; // Don't update state if component unmounted
@@ -265,16 +261,9 @@ const App: React.FC = () => {
                     }
 
                     setClientGroupMap(groupMap);
-                    console.log('Client group mapping:', groupMap);
                 } catch (error) {
                     console.warn('Could not build client group mapping:', error);
                 }
-
-                console.log('Data set successfully:', {
-                    streamsCount: initialStreams.length,
-                    clientsCount: initialClients.length,
-                    firstClient: initialClients[0]
-                });
 
                 // Check if we got error data (connection failed)
                 if (initialStreams.length === 1 && initialStreams[0].id === 'error-stream') {
@@ -317,7 +306,6 @@ const App: React.FC = () => {
         // Send to Snapcast server
         try {
             await snapcastService.setClientVolume(clientId, volume);
-            console.log(`Successfully set volume for client ${clientId} to ${volume}%`);
         } catch (error) {
             console.error(`Failed to set volume for client ${clientId}:`, error);
             // Could revert local state here if needed
@@ -405,8 +393,6 @@ const App: React.FC = () => {
     };
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
-        console.log(`Changing stream for client ${clientId} to ${streamId}`);
-
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
@@ -417,11 +403,9 @@ const App: React.FC = () => {
             const groupId = clientGroupMap[clientId];
             if (groupId && streamId) {
                 await snapcastService.setGroupStream(groupId, streamId);
-                console.log(`Successfully changed group ${groupId} to stream ${streamId}`);
             } else if (groupId && streamId === null) {
                 // For setting to "no stream", we might need a different approach
                 // This depends on how Snapcast handles idle streams
-                console.log(`Setting group ${groupId} to idle (stream: null)`);
                 // You might need to set it to a default idle stream instead
             } else {
                 console.warn(`Could not find group for client ${clientId}`);
@@ -439,12 +423,9 @@ const App: React.FC = () => {
     const handlePlayPause = async () => {
         if (!currentStream) return;
 
-        console.log('Play/Pause button clicked for stream:', currentStream.id);
-
         try {
             // Check stream capabilities first
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-            console.log('Stream capabilities:', capabilities);
 
             if (currentStream.isPlaying) {
                 // Try to pause
@@ -455,9 +436,8 @@ const App: React.FC = () => {
                             s.id === currentStream.id ? {...s, isPlaying: false} : s
                         )
                     );
-                    console.log(`Successfully paused stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support pause`);
+                    console.warn(`Stream ${currentStream.id} does not support pause`);
                 }
             } else {
                 // Try to play
@@ -468,9 +448,8 @@ const App: React.FC = () => {
                             s.id === currentStream.id ? {...s, isPlaying: true} : s
                         )
                     );
-                    console.log(`Successfully started playing stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support play`);
+                    console.warn(`Stream ${currentStream.id} does not support play`);
                 }
             }
         } catch (error) {
@@ -481,8 +460,6 @@ const App: React.FC = () => {
     const handleSkip = async (direction: 'next' | 'prev') => {
         if (!currentStream) return;
 
-        console.log(`Skip ${direction} button clicked for stream:`, currentStream.id);
-
         try {
             // Check stream capabilities first
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
@@ -490,31 +467,20 @@ const App: React.FC = () => {
             if (direction === 'next') {
                 if (capabilities.canGoNext) {
                     await snapcastService.nextTrack(currentStream.id);
-                    console.log(`Successfully skipped to next track for stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support next track`);
+                    console.warn(`Stream ${currentStream.id} does not support next track`);
                 }
             } else {
                 if (capabilities.canGoPrevious) {
                     await snapcastService.previousTrack(currentStream.id);
-                    console.log(`Successfully skipped to previous track for stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support previous track`);
+                    console.warn(`Stream ${currentStream.id} does not support previous track`);
                 }
             }
         } catch (error) {
             console.error(`Skip ${direction} failed for stream ${currentStream.id}:`, error);
         }
     };
-
-    // Debug logging
-    console.log('App render state:', {
-        isLoading,
-        streamsCount: streams.length,
-        clientsCount: clients.length,
-        myClient: myClient?.id,
-        currentStream: currentStream?.id
-    });
 
     if (isLoading) {
         return (
