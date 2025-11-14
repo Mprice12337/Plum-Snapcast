@@ -21,6 +21,10 @@ const App: React.FC = () => {
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Track recent user-initiated playback changes to prevent polling from overwriting them
+    const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
+
     const [settings, setSettings] = useState<Settings>({
         integrations: {
             airplay: true,
@@ -80,6 +84,24 @@ const App: React.FC = () => {
     }, []);
 
     useAudioSync(currentStream, updateStreamProgress);
+
+    // Clean up recent playback change after grace period expires
+    useEffect(() => {
+        if (!recentPlaybackChange) return;
+
+        const gracePeriod = 8000;
+        const timeRemaining = gracePeriod - (Date.now() - recentPlaybackChange.timestamp);
+
+        if (timeRemaining > 0) {
+            const timeout = setTimeout(() => {
+                setRecentPlaybackChange(null);
+            }, timeRemaining);
+
+            return () => clearTimeout(timeout);
+        } else {
+            setRecentPlaybackChange(null);
+        }
+    }, [recentPlaybackChange]);
 
     // Listen for real-time metadata updates from Snapcast
     useEffect(() => {
@@ -205,10 +227,21 @@ const App: React.FC = () => {
                             if (s.id === currentStream.id) {
                                 const updatedStream = { ...s };
 
-                                // Update playback state if changed
+                                // Check if there's a recent user-initiated playback change
+                                const now = Date.now();
+                                const gracePeriod = 8000; // 8 seconds grace period
+                                const hasRecentChange = recentPlaybackChange &&
+                                    recentPlaybackChange.streamId === s.id &&
+                                    (now - recentPlaybackChange.timestamp) < gracePeriod;
+
+                                // Update playback state if changed (but respect grace period)
                                 if (s.isPlaying !== isPlaying) {
-                                    console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
-                                    updatedStream.isPlaying = isPlaying;
+                                    if (hasRecentChange) {
+                                        console.log(`[Polling] Ignoring state change during grace period (${Math.round((gracePeriod - (now - recentPlaybackChange.timestamp!)) / 1000)}s remaining)`);
+                                    } else {
+                                        console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
+                                        updatedStream.isPlaying = isPlaying;
+                                    }
                                 }
 
                                 // Update metadata if we got new data
@@ -438,25 +471,45 @@ const App: React.FC = () => {
             // Check stream capabilities first
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
 
+            const newPlayingState = !currentStream.isPlaying;
+
             if (currentStream.isPlaying) {
                 // Try to pause
                 if (capabilities.canPause) {
+                    // Optimistically update state immediately
+                    setStreams(prevStreams =>
+                        prevStreams.map(s =>
+                            s.id === currentStream.id ? {...s, isPlaying: false} : s
+                        )
+                    );
+                    // Record this change to prevent polling from overwriting for 8 seconds
+                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+
                     await snapcastService.pauseStream(currentStream.id);
-                    // Don't update local state - let polling handle it to avoid flip-flop
                 } else {
                     console.warn(`Stream ${currentStream.id} does not support pause`);
                 }
             } else {
                 // Try to play
                 if (capabilities.canPlay) {
+                    // Optimistically update state immediately
+                    setStreams(prevStreams =>
+                        prevStreams.map(s =>
+                            s.id === currentStream.id ? {...s, isPlaying: true} : s
+                        )
+                    );
+                    // Record this change to prevent polling from overwriting for 8 seconds
+                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+
                     await snapcastService.playStream(currentStream.id);
-                    // Don't update local state - let polling handle it to avoid flip-flop
                 } else {
                     console.warn(`Stream ${currentStream.id} does not support play`);
                 }
             }
         } catch (error) {
             console.error(`Playback control failed for stream ${currentStream.id}:`, error);
+            // On error, clear the grace period so polling can correct the state
+            setRecentPlaybackChange(null);
         }
     };
 
