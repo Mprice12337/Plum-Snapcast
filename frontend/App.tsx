@@ -174,10 +174,6 @@ const App: React.FC = () => {
             try {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
-                    // DEBUG: Log what we're receiving from server
-                    console.log('[Polling DEBUG] serverStream.status:', serverStream.status);
-                    console.log('[Polling DEBUG] serverStream.properties?.playbackStatus:', serverStream.properties?.playbackStatus);
-
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
                     // Extract metadata from stream properties (simple field names)
@@ -435,11 +431,7 @@ const App: React.FC = () => {
                 // Try to pause
                 if (capabilities.canPause) {
                     await snapcastService.pauseStream(currentStream.id);
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: false} : s
-                        )
-                    );
+                    // Don't update local state - let polling handle it to avoid flip-flop
                 } else {
                     console.warn(`Stream ${currentStream.id} does not support pause`);
                 }
@@ -447,11 +439,7 @@ const App: React.FC = () => {
                 // Try to play
                 if (capabilities.canPlay) {
                     await snapcastService.playStream(currentStream.id);
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: true} : s
-                        )
-                    );
+                    // Don't update local state - let polling handle it to avoid flip-flop
                 } else {
                     console.warn(`Stream ${currentStream.id} does not support play`);
                 }
