@@ -151,12 +151,22 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         duration: metadata.duration || 0,
     };
 
+    // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
+    let isPlaying = false;
+    if (snapStream.properties?.playbackStatus) {
+        // Use playbackStatus from control script (more accurate)
+        isPlaying = snapStream.properties.playbackStatus.toLowerCase() === 'playing';
+    } else {
+        // Fall back to stream status
+        isPlaying = snapStream.status === 'playing';
+    }
+
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
         currentTrack: track,
-        isPlaying: snapStream.status === 'playing',
+        isPlaying: isPlaying,
         progress: 0, // Snapcast doesn't provide current position in the status
     };
 };
