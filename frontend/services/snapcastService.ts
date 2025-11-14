@@ -304,10 +304,12 @@ export class SnapcastService {
     isStreamPlaying(stream: SnapcastStream | null): boolean {
         if (!stream) return false;
 
-        // First check the playbackStatus property if available
+        // First check the playbackStatus property if available (but ignore "unknown")
         if (stream.properties?.playbackStatus) {
             const status = stream.properties.playbackStatus.toLowerCase();
-            return status === 'playing';
+            if (status !== 'unknown') {
+                return status === 'playing';
+            }
         }
 
         // Fall back to the stream status field

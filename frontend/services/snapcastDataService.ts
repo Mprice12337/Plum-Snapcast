@@ -145,8 +145,8 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
 
     // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
     let isPlaying = false;
-    if (snapStream.properties?.playbackStatus) {
-        // Use playbackStatus from control script (more accurate)
+    if (snapStream.properties?.playbackStatus && snapStream.properties.playbackStatus.toLowerCase() !== 'unknown') {
+        // Use playbackStatus from control script (more accurate) - but ignore "unknown"
         isPlaying = snapStream.properties.playbackStatus.toLowerCase() === 'playing';
     } else {
         // Fall back to stream status
