@@ -113,14 +113,28 @@ const App: React.FC = () => {
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
                     if (stream.id === streamId) {
+                        // Detect if this is a new track (title changed)
+                        const isNewTrack = metadata.title && metadata.title !== stream.currentTrack.title;
+
                         // Update track metadata
                         const updatedTrack = {
                             ...stream.currentTrack,
                             title: metadata.title || stream.currentTrack.title,
                             artist: metadata.artist || stream.currentTrack.artist,
                             album: metadata.album || stream.currentTrack.album,
-                            albumArtUrl: metadata.artUrl || stream.currentTrack.albumArtUrl,
                         };
+
+                        // Handle artwork updates:
+                        // - If artwork explicitly provided → use it
+                        // - If new track but no artwork yet → clear to default (prevents showing old track's artwork)
+                        // - Otherwise → keep current artwork (for partial metadata updates)
+                        if (metadata.artUrl !== undefined) {
+                            updatedTrack.albumArtUrl = metadata.artUrl;
+                        } else if (isNewTrack) {
+                            // New track detected but artwork not yet available - use default placeholder
+                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+                        }
+                        // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
                         // When we receive metadata, the stream is actively playing
                         // This gives us instant state feedback instead of waiting for stream.status
