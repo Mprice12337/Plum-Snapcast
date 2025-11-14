@@ -87,6 +87,7 @@ const App: React.FC = () => {
 
         const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
             // Update the stream with new metadata
+            // IMPORTANT: Metadata updates are instant and indicate the stream is actively playing
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
                     if (stream.id === streamId) {
@@ -99,9 +100,19 @@ const App: React.FC = () => {
                             albumArtUrl: metadata.artUrl || stream.currentTrack.albumArtUrl,
                         };
 
+                        // When we receive metadata, the stream is actively playing
+                        // This gives us instant state feedback instead of waiting for stream.status
+                        const wasPlaying = stream.isPlaying;
+                        const nowPlaying = true; // Metadata = audio is flowing = playing
+
+                        if (!wasPlaying && nowPlaying) {
+                            console.log(`[Metadata] Stream ${streamId} started playing (metadata received)`);
+                        }
+
                         return {
                             ...stream,
-                            currentTrack: updatedTrack
+                            currentTrack: updatedTrack,
+                            isPlaying: nowPlaying
                         };
                     }
                     return stream;
