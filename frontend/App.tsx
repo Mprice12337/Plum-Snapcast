@@ -174,6 +174,10 @@ const App: React.FC = () => {
             try {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
+                    // DEBUG: Log what we're receiving from server
+                    console.log('[Polling DEBUG] serverStream.status:', serverStream.status);
+                    console.log('[Polling DEBUG] serverStream.properties?.playbackStatus:', serverStream.properties?.playbackStatus);
+
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
                     // Extract metadata from stream properties (simple field names)
