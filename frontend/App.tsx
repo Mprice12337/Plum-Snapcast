@@ -242,6 +242,48 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
+    // Periodically retry fetching artwork when showing placeholder
+    // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
+    useEffect(() => {
+        if (!currentStream) return;
+
+        // Check if current stream has placeholder artwork
+        const hasPlaceholder = currentStream.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+
+        if (!hasPlaceholder) return; // No need to retry if we have real artwork
+
+        console.log(`[ArtworkRetry] Starting periodic check for ${currentStream.currentTrack.title}`);
+
+        const retryInterval = setInterval(async () => {
+            try {
+                const freshStream = await snapcastService.getStreamStatus(currentStream.id);
+                if (freshStream?.properties?.metadata?.artUrl) {
+                    console.log(`[ArtworkRetry] Found artwork - applying`);
+                    setStreams(prev => prev.map(s =>
+                        s.id === currentStream.id
+                            ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: freshStream.properties.metadata.artUrl}}
+                            : s
+                    ));
+                    // Stop retrying once we found artwork
+                    clearInterval(retryInterval);
+                }
+            } catch (error) {
+                console.error(`[ArtworkRetry] Failed to fetch:`, error);
+            }
+        }, 1000); // Check every 1 second
+
+        // Stop retrying after 15 seconds (artwork should have arrived by then)
+        const timeout = setTimeout(() => {
+            console.log(`[ArtworkRetry] Giving up after 15 seconds`);
+            clearInterval(retryInterval);
+        }, 15000);
+
+        return () => {
+            clearInterval(retryInterval);
+            clearTimeout(timeout);
+        };
+    }, [currentStream?.id, currentStream?.currentTrack.albumArtUrl, currentStream?.currentTrack.title]);
+
     // Periodically sync metadata AND playback state with server as fallback
     // This ensures GUI stays in sync even if WebSocket notifications fail
     useEffect(() => {
