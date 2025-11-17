@@ -145,14 +145,18 @@ const App: React.FC = () => {
                         // - If artwork explicitly provided and valid → use it
                         // - If new track but no artwork yet → clear to default
                         // - Otherwise → keep current artwork (for partial metadata updates)
+                        const artUrlType = metadata.artUrl === undefined ? 'undefined' : metadata.artUrl === null ? 'null' : metadata.artUrl === '' ? 'empty' : 'valid';
+                        const artUrlPreview = metadata.artUrl ? `${metadata.artUrl.substring(0, 50)}...` : String(metadata.artUrl);
+                        console.log(`[Metadata] artUrl received: type=${artUrlType}, preview=${artUrlPreview}`);
+
                         if (metadata.artUrl && metadata.artUrl.trim() !== '') {
-                            console.log(`[Metadata] Using provided artwork`);
+                            console.log(`[Metadata] ✓ Using provided artwork (${metadata.artUrl.length} chars)`);
                             updatedTrack.albumArtUrl = metadata.artUrl;
                         } else if (isNewTrack) {
-                            console.log(`[Metadata] New track without artwork - clearing to default`);
+                            console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
                             updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
                         } else {
-                            console.log(`[Metadata] Keeping existing artwork`);
+                            console.log(`[Metadata] → Keeping existing artwork (partial update)`);
                         }
                         // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
@@ -252,14 +256,21 @@ const App: React.FC = () => {
 
         if (!hasPlaceholder) return; // No need to retry if we have real artwork
 
-        console.log(`[ArtworkRetry] Starting periodic check for ${currentStream.currentTrack.title}`);
+        console.log(`[ArtworkRetry] ⏱ Starting periodic check for "${currentStream.currentTrack.title}"`);
 
+        let attemptCount = 0;
         const retryInterval = setInterval(async () => {
+            attemptCount++;
             try {
+                console.log(`[ArtworkRetry] Attempt ${attemptCount}/15: Checking backend...`);
                 const freshStream = await snapcastService.getStreamStatus(currentStream.id);
                 const artUrl = freshStream?.properties?.metadata?.artUrl;
+                const artUrlType = artUrl === undefined ? 'undefined' : artUrl === null ? 'null' : artUrl === '' ? 'empty' : 'valid';
+
+                console.log(`[ArtworkRetry] Backend responded: artUrl type=${artUrlType}`);
+
                 if (artUrl && artUrl.trim() !== '') {
-                    console.log(`[ArtworkRetry] Found artwork - applying`);
+                    console.log(`[ArtworkRetry] ✓ SUCCESS! Found artwork (${artUrl.length} chars) - applying and stopping retry`);
                     setStreams(prev => prev.map(s =>
                         s.id === currentStream.id
                             ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: artUrl}}
@@ -267,15 +278,17 @@ const App: React.FC = () => {
                     ));
                     // Stop retrying once we found artwork
                     clearInterval(retryInterval);
+                } else {
+                    console.log(`[ArtworkRetry] ⏳ No artwork yet, will retry in 1s...`);
                 }
             } catch (error) {
-                console.error(`[ArtworkRetry] Failed to fetch:`, error);
+                console.error(`[ArtworkRetry] ✗ Request failed:`, error);
             }
         }, 1000); // Check every 1 second
 
         // Stop retrying after 15 seconds (artwork should have arrived by then)
         const timeout = setTimeout(() => {
-            console.log(`[ArtworkRetry] Giving up after 15 seconds`);
+            console.log(`[ArtworkRetry] ⏹ Timeout: Giving up after 15 seconds - artwork may not be available for this track`);
             clearInterval(retryInterval);
         }, 15000);
 
@@ -386,11 +399,15 @@ const App: React.FC = () => {
                                     // - If artwork explicitly provided and valid → use it
                                     // - If new track but no artwork yet → clear to default
                                     // - Otherwise → keep current artwork (for partial metadata updates)
+                                    const artUrlType = updatedMetadata.albumArtUrl === undefined ? 'undefined' : updatedMetadata.albumArtUrl === null ? 'null' : updatedMetadata.albumArtUrl === '' ? 'empty' : 'valid';
+                                    const artUrlPreview = updatedMetadata.albumArtUrl ? `${updatedMetadata.albumArtUrl.substring(0, 50)}...` : String(updatedMetadata.albumArtUrl);
+                                    console.log(`[Polling] artUrl from server: type=${artUrlType}, preview=${artUrlPreview}`);
+
                                     if (updatedMetadata.albumArtUrl && updatedMetadata.albumArtUrl.trim() !== '') {
-                                        console.log(`[Polling] Using provided artwork from server`);
+                                        console.log(`[Polling] ✓ Using provided artwork (${updatedMetadata.albumArtUrl.length} chars)`);
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
                                     } else if (isNewTrack) {
-                                        console.log(`[Polling] New track without artwork - clearing to default`);
+                                        console.log(`[Polling] ⚠ New track without artwork - using placeholder`);
                                         updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+Cg==';
                                     } else {
                                         console.log(`[Polling] Keeping existing artwork`);
