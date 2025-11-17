@@ -143,18 +143,16 @@ const App: React.FC = () => {
 
                         // Handle artwork updates:
                         // - If artwork explicitly provided → use it
-                        // - Otherwise → keep current artwork (even on track change)
-                        // Note: Artwork arrives 4-10s after track change when paused, so keeping old artwork
-                        //       provides better UX than showing default placeholder
+                        // - If new track but no artwork yet → clear to default
+                        // - Otherwise → keep current artwork (for partial metadata updates)
                         if (metadata.artUrl !== undefined) {
                             console.log(`[Metadata] Using provided artwork`);
                             updatedTrack.albumArtUrl = metadata.artUrl;
+                        } else if (isNewTrack) {
+                            console.log(`[Metadata] New track without artwork - clearing to default`);
+                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
                         } else {
-                            if (isNewTrack) {
-                                console.log(`[Metadata] New track - keeping old artwork until new artwork arrives`);
-                            } else {
-                                console.log(`[Metadata] Keeping existing artwork`);
-                            }
+                            console.log(`[Metadata] Keeping existing artwork`);
                         }
                         // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
@@ -320,18 +318,16 @@ const App: React.FC = () => {
 
                                     // Handle artwork updates:
                                     // - If artwork explicitly provided → use it
-                                    // - Otherwise → keep current artwork (even on track change)
-                                    // Note: Artwork arrives 4-10s after track change when paused, so keeping old artwork
-                                    //       provides better UX than showing default placeholder
+                                    // - If new track but no artwork yet → clear to default
+                                    // - Otherwise → keep current artwork (for partial metadata updates)
                                     if (updatedMetadata.albumArtUrl !== undefined) {
                                         console.log(`[Polling] Using provided artwork from server`);
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                    } else if (isNewTrack) {
+                                        console.log(`[Polling] New track without artwork - clearing to default`);
+                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ci8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
                                     } else {
-                                        if (isNewTrack) {
-                                            console.log(`[Polling] New track - keeping old artwork until new artwork arrives`);
-                                        } else {
-                                            console.log(`[Polling] Keeping existing artwork`);
-                                        }
+                                        console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
                                     }
                                 }
