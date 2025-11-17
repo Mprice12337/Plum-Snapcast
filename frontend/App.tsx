@@ -108,6 +108,16 @@ const App: React.FC = () => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
+            // Debug: Log all metadata updates
+            console.log(`[Metadata] Update received:`, {
+                streamId,
+                hasTitle: !!metadata.title,
+                hasArtist: !!metadata.artist,
+                hasAlbum: !!metadata.album,
+                hasArtUrl: metadata.artUrl !== undefined,
+                artUrlPreview: metadata.artUrl ? metadata.artUrl.substring(0, 50) + '...' : 'none'
+            });
+
             // Update the stream with new metadata
             // IMPORTANT: Metadata updates are instant and indicate the stream is actively playing
             setStreams(prevStreams =>
@@ -115,6 +125,13 @@ const App: React.FC = () => {
                     if (stream.id === streamId) {
                         // Detect if this is a new track (title changed)
                         const isNewTrack = metadata.title && metadata.title !== stream.currentTrack.title;
+
+                        console.log(`[Metadata] Track analysis:`, {
+                            isNewTrack,
+                            oldTitle: stream.currentTrack.title,
+                            newTitle: metadata.title,
+                            currentArtUrl: stream.currentTrack.albumArtUrl?.substring(0, 50) + '...'
+                        });
 
                         // Update track metadata
                         const updatedTrack = {
@@ -129,10 +146,14 @@ const App: React.FC = () => {
                         // - If new track but no artwork yet → clear to default (prevents showing old track's artwork)
                         // - Otherwise → keep current artwork (for partial metadata updates)
                         if (metadata.artUrl !== undefined) {
+                            console.log(`[Metadata] Using provided artwork`);
                             updatedTrack.albumArtUrl = metadata.artUrl;
                         } else if (isNewTrack) {
                             // New track detected but artwork not yet available - use default placeholder
+                            console.log(`[Metadata] New track without artwork - clearing to default`);
                             updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+                        } else {
+                            console.log(`[Metadata] Keeping existing artwork`);
                         }
                         // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
@@ -243,6 +264,15 @@ const App: React.FC = () => {
                             album: meta.album,
                             albumArtUrl: meta.artUrl
                         };
+
+                        // Debug: Log what we got from server
+                        console.log(`[Polling] Server metadata:`, {
+                            hasTitle: !!updatedMetadata.title,
+                            hasArtist: !!updatedMetadata.artist,
+                            hasAlbum: !!updatedMetadata.album,
+                            hasArtUrl: updatedMetadata.albumArtUrl !== undefined,
+                            artUrlPreview: updatedMetadata.albumArtUrl ? updatedMetadata.albumArtUrl.substring(0, 50) + '...' : 'none'
+                        });
                     }
 
                     // Update stream with latest state AND metadata
@@ -273,6 +303,13 @@ const App: React.FC = () => {
                                     // Detect if this is a new track (title changed)
                                     const isNewTrack = updatedMetadata.title && updatedMetadata.title !== s.currentTrack.title;
 
+                                    console.log(`[Polling] Track analysis:`, {
+                                        isNewTrack,
+                                        oldTitle: s.currentTrack.title,
+                                        newTitle: updatedMetadata.title,
+                                        currentArtUrl: s.currentTrack.albumArtUrl?.substring(0, 50) + '...'
+                                    });
+
                                     updatedStream.currentTrack = {
                                         ...s.currentTrack,
                                         title: updatedMetadata.title || s.currentTrack.title,
@@ -285,12 +322,15 @@ const App: React.FC = () => {
                                     // - If new track but no artwork yet → clear to default (prevents showing old track's artwork)
                                     // - Otherwise → keep current artwork (for partial metadata updates)
                                     if (updatedMetadata.albumArtUrl !== undefined) {
+                                        console.log(`[Polling] Using provided artwork from server`);
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
                                     } else if (isNewTrack) {
                                         // New track detected but artwork not yet available - use default placeholder
+                                        console.log(`[Polling] New track without artwork - clearing to default`);
                                         updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
                                     } else {
                                         // Keep existing artwork
+                                        console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
                                     }
                                 }
