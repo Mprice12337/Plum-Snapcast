@@ -2,6 +2,12 @@
 """
 Snapcast Control Script for Bluetooth Metadata
 Monitors BlueZ D-Bus for MPRIS/AVRCP metadata and provides it to Snapcast via JSON-RPC
+
+Based on proven pattern from airplay-control-script.py:
+- Thread-safe metadata storage with atomic updates
+- Playback state tracking (Playing/Paused/Stopped)
+- Control command handling via BlueZ D-Bus
+- Complete properties response for Snapcast
 """
 
 import argparse
@@ -10,13 +16,9 @@ import sys
 import threading
 import time
 from typing import Dict, Optional
-import dbus
-import dbus.mainloop.glib
-from gi.repository import GLib
 
 # Configuration
 LOG_FILE = "/tmp/bluetooth-control-script.log"
-SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 
 # Set up logging to file
 def log(message: str):
@@ -30,35 +32,109 @@ def log(message: str):
     except:
         pass
 
+# Try to import D-Bus - graceful fallback if not available
+try:
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+    DBUS_AVAILABLE = True
+except ImportError:
+    DBUS_AVAILABLE = False
+    log("[Warning] D-Bus not available - Bluetooth features disabled")
 
-class BluetoothMetadataMonitor:
-    """Monitor BlueZ D-Bus for Bluetooth audio metadata"""
 
-    def __init__(self, on_metadata_changed):
-        self.on_metadata_changed = on_metadata_changed
-        self.current_metadata = {
+class MetadataStore:
+    """
+    Thread-safe storage for current metadata and playback state.
+    This ensures atomic reads/writes and consistency.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = {
             "title": None,
             "artist": None,
             "album": None,
-            "artUrl": None
+            "artUrl": None,
+            "last_updated": None,
+            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
         }
-        self.current_player = None
+
+    def update(self, **kwargs):
+        """Update metadata fields atomically"""
+        with self.lock:
+            self.data.update(kwargs)
+            self.data["last_updated"] = time.time()
+            log(f"[Store] Updated: {list(kwargs.keys())}")
+
+    def get_all(self) -> Dict:
+        """Get all metadata (returns a copy)"""
+        with self.lock:
+            return self.data.copy()
+
+    def get_metadata_for_snapcast(self) -> Optional[Dict]:
+        """
+        Get metadata formatted for Snapcast.
+
+        Snapcast expects simple field names:
+        - title (string)
+        - artist (array of strings)
+        - album (string)
+        - artUrl (string)
+        """
+        with self.lock:
+            # Only return if we have at least a title
+            if self.data.get("title"):
+                meta = {}
+
+                # Snapcast metadata fields (simple names)
+                if self.data.get("title"):
+                    meta["title"] = self.data["title"]
+
+                if self.data.get("artist"):
+                    # Snapcast expects artist as an array
+                    artist = self.data["artist"]
+                    meta["artist"] = [artist] if isinstance(artist, str) else artist
+
+                if self.data.get("album"):
+                    meta["album"] = self.data["album"]
+
+                if self.data.get("artUrl"):
+                    meta["artUrl"] = self.data["artUrl"]
+
+                return meta
+            return None
+
+
+class BluetoothMetadataMonitor:
+    """Monitor BlueZ D-Bus for Bluetooth audio metadata and playback state"""
+
+    def __init__(self, store: MetadataStore, on_update_callback):
+        self.store = store
+        self.on_update = on_update_callback
+        self.current_player_path = None
+        self.player_interface = None
+        self.player_properties = None
+        self.bus = None
+
+        if not DBUS_AVAILABLE:
+            log("[Bluetooth] D-Bus not available - monitoring disabled")
+            return
 
         # Initialize D-Bus
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self.bus = dbus.SystemBus()
-
-        log("[DEBUG] BlueZ metadata monitor initialized")
+        log("[Bluetooth] D-Bus monitor initialized")
 
     def _extract_metadata_from_dict(self, metadata_dict: Dict) -> Dict:
-        """Extract metadata from BlueZ MediaPlayer1 or MediaControl1 properties"""
+        """Extract metadata from BlueZ MediaPlayer1 Track properties"""
         result = {}
 
         try:
             # MPRIS/AVRCP metadata fields
             if 'Title' in metadata_dict:
                 result['title'] = str(metadata_dict['Title'])
-                log(f"[DEBUG] Title: {result['title']}")
+                log(f"[Metadata] Title: {result['title']}")
 
             if 'Artist' in metadata_dict:
                 # Artist can be a string or array
@@ -69,73 +145,76 @@ class BluetoothMetadataMonitor:
                     result['artist'] = ', '.join(str(a) for a in artist)
                 else:
                     result['artist'] = str(artist)
-                log(f"[DEBUG] Artist: {result['artist']}")
+                log(f"[Metadata] Artist: {result['artist']}")
 
             if 'Album' in metadata_dict:
                 result['album'] = str(metadata_dict['Album'])
-                log(f"[DEBUG] Album: {result['album']}")
+                log(f"[Metadata] Album: {result['album']}")
 
-            # Album art - BlueZ doesn't typically provide this via AVRCP
-            # but some implementations might expose it
+            # Note: BlueZ typically doesn't provide album art via AVRCP
+            # Most phone implementations don't support this
             if 'AlbumArt' in metadata_dict:
                 result['artUrl'] = str(metadata_dict['AlbumArt'])
-                log(f"[DEBUG] Album Art: {result['artUrl']}")
+                log(f"[Metadata] Album Art: {result['artUrl']}")
 
         except Exception as e:
-            log(f"[DEBUG] Error extracting metadata: {e}")
+            log(f"[Error] Metadata extraction failed: {e}")
 
         return result
+
+    def _extract_playback_status(self, status_str: str) -> str:
+        """Convert MPRIS playback status to our format"""
+        # MPRIS statuses: "playing", "paused", "stopped"
+        status_map = {
+            "playing": "Playing",
+            "paused": "Paused",
+            "stopped": "Stopped",
+        }
+        return status_map.get(status_str.lower(), "Stopped")
 
     def _properties_changed_handler(self, interface, changed, invalidated, path):
         """Handle D-Bus PropertiesChanged signals"""
         try:
-            # We're interested in MediaPlayer1 or MediaControl1 interfaces
-            if interface not in ['org.bluez.MediaPlayer1', 'org.bluez.MediaControl1']:
+            # We're interested in MediaPlayer1 interface
+            if interface != 'org.bluez.MediaPlayer1':
                 return
 
-            log(f"[DEBUG] Properties changed on {path}: {list(changed.keys())}")
+            log(f"[DBus] Properties changed on {path}: {list(changed.keys())}")
+
+            updated = False
 
             # Check if Track metadata changed
             if 'Track' in changed:
                 track_dict = changed['Track']
-                log(f"[DEBUG] Track metadata changed: {list(track_dict.keys())}")
+                log(f"[DBus] Track metadata changed: {list(track_dict.keys())}")
 
                 metadata = self._extract_metadata_from_dict(track_dict)
 
                 if metadata:
-                    # Update current metadata
-                    for key, value in metadata.items():
-                        if value is not None:
-                            self.current_metadata[key] = value
+                    # Update store with new metadata
+                    self.store.update(**metadata)
+                    updated = True
 
-                    # Notify if we have at least title or artist
-                    if self.current_metadata.get('title') or self.current_metadata.get('artist'):
-                        log(f"[DEBUG] Sending metadata update")
-                        self.on_metadata_changed(self.current_metadata.copy())
+            # Check if playback status changed
+            if 'Status' in changed:
+                status = self._extract_playback_status(str(changed['Status']))
+                log(f"[DBus] Status changed: {status}")
+                self.store.update(playback_status=status)
+                updated = True
 
-            # Some implementations send fields directly
-            else:
-                metadata = {}
-                if 'Title' in changed:
-                    metadata['title'] = str(changed['Title'])
-                if 'Artist' in changed:
-                    metadata['artist'] = str(changed['Artist'])
-                if 'Album' in changed:
-                    metadata['album'] = str(changed['Album'])
-
-                if metadata:
-                    for key, value in metadata.items():
-                        self.current_metadata[key] = value
-
-                    log(f"[DEBUG] Sending direct metadata update")
-                    self.on_metadata_changed(self.current_metadata.copy())
+            # Notify parent if anything changed
+            if updated and self.on_update:
+                self.on_update()
 
         except Exception as e:
-            log(f"[DEBUG] Error handling properties changed: {e}")
+            log(f"[Error] Properties changed handler failed: {e}")
 
     def start(self):
         """Start monitoring D-Bus for Bluetooth metadata"""
-        log("[DEBUG] Starting Bluetooth metadata monitoring...")
+        if not DBUS_AVAILABLE:
+            return
+
+        log("[Bluetooth] Starting metadata monitoring...")
 
         try:
             # Subscribe to PropertiesChanged signals from BlueZ
@@ -146,7 +225,7 @@ class BluetoothMetadataMonitor:
                 path_keyword='path'
             )
 
-            log("[DEBUG] Subscribed to BlueZ D-Bus signals")
+            log("[Bluetooth] Subscribed to BlueZ D-Bus signals")
 
             # Try to find existing media players
             self._scan_for_players()
@@ -156,13 +235,16 @@ class BluetoothMetadataMonitor:
             self.loop_thread = threading.Thread(target=self.loop.run, daemon=True)
             self.loop_thread.start()
 
-            log("[DEBUG] GLib main loop started")
+            log("[Bluetooth] GLib main loop started")
 
         except Exception as e:
-            log(f"[DEBUG] Error starting Bluetooth monitor: {e}")
+            log(f"[Error] Failed to start Bluetooth monitor: {e}")
 
     def _scan_for_players(self):
         """Scan for existing Bluetooth media players"""
+        if not DBUS_AVAILABLE:
+            return
+
         try:
             # Get BlueZ object manager
             obj_manager = dbus.Interface(
@@ -175,21 +257,72 @@ class BluetoothMetadataMonitor:
             for path, interfaces in objects.items():
                 # Look for MediaPlayer1 interfaces
                 if 'org.bluez.MediaPlayer1' in interfaces:
-                    log(f"[DEBUG] Found media player: {path}")
-                    self.current_player = path
+                    log(f"[Bluetooth] Found media player: {path}")
+                    self.current_player_path = path
+
+                    # Get interfaces for control
+                    player_obj = self.bus.get_object('org.bluez', path)
+                    self.player_interface = dbus.Interface(player_obj, 'org.bluez.MediaPlayer1')
+                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
 
                     # Get current track if available
                     props = interfaces['org.bluez.MediaPlayer1']
                     if 'Track' in props:
                         metadata = self._extract_metadata_from_dict(props['Track'])
                         if metadata:
-                            for key, value in metadata.items():
-                                if value is not None:
-                                    self.current_metadata[key] = value
-                            log(f"[DEBUG] Initial metadata loaded")
+                            self.store.update(**metadata)
+                            log(f"[Bluetooth] Initial metadata loaded")
+
+                    # Get current playback status
+                    if 'Status' in props:
+                        status = self._extract_playback_status(str(props['Status']))
+                        self.store.update(playback_status=status)
+                        log(f"[Bluetooth] Initial status: {status}")
 
         except Exception as e:
-            log(f"[DEBUG] Error scanning for players: {e}")
+            log(f"[Error] Player scan failed: {e}")
+
+    def play(self):
+        """Send play command via BlueZ"""
+        if self.player_interface:
+            try:
+                self.player_interface.Play()
+                log("[Control] Sent Play command")
+                self.store.update(playback_status="Playing")
+            except Exception as e:
+                log(f"[Error] Play failed: {e}")
+
+    def pause(self):
+        """Send pause command via BlueZ"""
+        if self.player_interface:
+            try:
+                self.player_interface.Pause()
+                log("[Control] Sent Pause command")
+                self.store.update(playback_status="Paused")
+            except Exception as e:
+                log(f"[Error] Pause failed: {e}")
+
+    def next_track(self):
+        """Skip to next track"""
+        if self.player_interface:
+            try:
+                self.player_interface.Next()
+                log("[Control] Sent Next command")
+            except Exception as e:
+                log(f"[Error] Next failed: {e}")
+
+    def previous_track(self):
+        """Skip to previous track"""
+        if self.player_interface:
+            try:
+                self.player_interface.Previous()
+                log("[Control] Sent Previous command")
+            except Exception as e:
+                log(f"[Error] Previous failed: {e}")
+
+    def is_available(self):
+        """Check if control is available"""
+        return self.player_interface is not None
 
     def stop(self):
         """Stop monitoring"""
@@ -202,9 +335,9 @@ class SnapcastControlScript:
 
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
-        self.last_metadata = {}
-        self.bt_monitor = BluetoothMetadataMonitor(self.on_metadata_changed)
-        log(f"[DEBUG] Initialized for stream: {stream_id}")
+        self.store = MetadataStore()
+        self.bt_monitor = BluetoothMetadataMonitor(self.store, self.send_update)
+        log(f"[Init] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -213,82 +346,51 @@ class SnapcastControlScript:
             "method": method,
             "params": params
         }
-        notification_str = json.dumps(notification)
-        # Write to stdout for Snapcast to read
-        print(notification_str, file=sys.stdout, flush=True)
-        log(f"[DEBUG] Sent notification: {notification_str[:300]}")
+        print(json.dumps(notification), file=sys.stdout, flush=True)
+        log(f"[Snapcast] → {method}")
 
-    def on_metadata_changed(self, metadata: Dict):
-        """Callback when Bluetooth metadata changes"""
-        log(f"[DEBUG] Metadata changed: {metadata}")
+    def send_update(self):
+        """Send Plugin.Stream.Player.Properties with current state and metadata"""
+        meta_obj = self.store.get_metadata_for_snapcast() or {}
+        playback_status = self.store.get_all().get("playback_status", "Stopped")
+        can_control = self.bt_monitor.is_available()
 
-        # Check if this is a new track
-        is_new_track = (
-            not self.last_metadata or
-            self.last_metadata.get("title") != metadata.get("title") or
-            self.last_metadata.get("artist") != metadata.get("artist")
-        )
+        # Notification params: include stream ID and all properties
+        params = {
+            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
 
-        if is_new_track:
-            log(f"[DEBUG] New track: {metadata.get('title')} - {metadata.get('artist')}")
+            # Playback state
+            "playbackStatus": playback_status,
+            "loopStatus": "none",
+            "shuffle": False,
+            "volume": 100,
+            "mute": False,
+            "rate": 1.0,
+            "position": 0,
 
-        self.last_metadata = metadata
-        self.send_metadata_update(metadata)
+            # Control capabilities (enable if D-Bus is available)
+            "canGoNext": can_control,
+            "canGoPrevious": can_control,
+            "canPlay": can_control,
+            "canPause": can_control,
+            "canSeek": False,
+            "canControl": can_control,
 
-    def _write_artwork_json(self, metadata: Dict):
-        """Write current metadata to JSON file for frontend to fetch"""
-        try:
-            from pathlib import Path
-            artwork_file = Path(SNAPCAST_WEB_ROOT) / "bluetooth-artwork.json"
-            artwork_data = {
-                "artUrl": metadata.get("artUrl"),
-                "title": metadata.get("title"),
-                "artist": metadata.get("artist"),
-                "album": metadata.get("album"),
-                "timestamp": time.time()
-            }
-            with open(artwork_file, 'w') as f:
-                json.dump(artwork_data, f)
-            log(f"[DEBUG] Wrote artwork JSON to {artwork_file}")
-        except Exception as e:
-            log(f"Error writing artwork JSON: {e}")
+            # Metadata (simple field names)
+            "metadata": meta_obj
+        }
+        self.send_notification("Plugin.Stream.Player.Properties", params)
 
-    def send_metadata_update(self, metadata: Dict):
-        """Send Plugin.Stream.Player.Properties with metadata"""
-        # Build metadata dict (nested under "metadata" key as per Snapcast spec)
-        meta_obj = {}
-
-        if metadata.get("title"):
-            meta_obj["name"] = metadata["title"]  # Use "name" for title per Snapcast docs
-
-        if metadata.get("artist"):
-            # Artist should be an array
-            artist = metadata["artist"]
-            meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-
-        if metadata.get("album"):
-            meta_obj["album"] = metadata["album"]
-
-        if metadata.get("artUrl"):
-            # Use MPRIS standard field name for artwork
-            meta_obj["mpris:artUrl"] = metadata["artUrl"]
-
+        # Log what we sent
         if meta_obj:
-            # Build the properties object
-            properties = {"metadata": meta_obj}
-
-            # Also add artUrl as a top-level property
-            if metadata.get("artUrl"):
-                properties["artUrl"] = metadata["artUrl"]
-
-            # Send Plugin.Stream.Player.Properties
-            self.send_notification("Plugin.Stream.Player.Properties", properties)
-            log(f"[DEBUG] Sent metadata update: {list(meta_obj.keys())}")
-            if metadata.get("artUrl"):
-                log(f"[DEBUG] Also sent top-level artUrl: {metadata['artUrl']}")
-
-        # Write metadata to JSON file for frontend
-        self._write_artwork_json(metadata)
+            title = meta_obj.get('title', 'N/A')
+            artist = meta_obj.get('artist', ['N/A'])
+            artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
+            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
+            if "artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
+        else:
+            log(f"[Snapcast] State → [{playback_status}] (stream={self.stream_id})")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -296,72 +398,156 @@ class SnapcastControlScript:
             request = json.loads(line)
             method = request.get("method", "")
             request_id = request.get("id")
+            params = request.get("params", {})
 
-            log(f"[DEBUG] Received command: {method}")
+            log(f"[Command] Received: {method} (id={request_id})")
 
-            # Respond to getProperties with current metadata
             if method == "Plugin.Stream.Player.GetProperties":
-                # Build metadata object (same format as notifications)
-                meta_obj = {}
-                if self.last_metadata:
-                    if self.last_metadata.get("title"):
-                        meta_obj["name"] = self.last_metadata["title"]
-                    if self.last_metadata.get("artist"):
-                        artist = self.last_metadata["artist"]
-                        meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-                    if self.last_metadata.get("album"):
-                        meta_obj["album"] = self.last_metadata["album"]
-                    if self.last_metadata.get("artUrl"):
-                        meta_obj["mpris:artUrl"] = self.last_metadata["artUrl"]
+                # Return COMPLETE properties object
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
+                playback_status = self.store.get_all().get("playback_status", "Stopped")
+                can_control = self.bt_monitor.is_available()
 
-                # Build result with metadata and top-level artUrl
-                result = {"metadata": meta_obj}
-                if self.last_metadata and self.last_metadata.get("artUrl"):
-                    result["artUrl"] = self.last_metadata["artUrl"]
+                # Build complete properties response per Snapcast Stream Plugin API
+                properties = {
+                    # Playback state
+                    "playbackStatus": playback_status,
+                    "loopStatus": "none",
+                    "shuffle": False,
+                    "volume": 100,
+                    "mute": False,
+                    "rate": 1.0,
+                    "position": 0,
+
+                    # Control capabilities
+                    "canGoNext": can_control,
+                    "canGoPrevious": can_control,
+                    "canPlay": can_control,
+                    "canPause": can_control,
+                    "canSeek": False,
+                    "canControl": can_control,
+
+                    # Metadata
+                    "metadata": meta_obj
+                }
 
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": result
+                    "result": properties
                 }
-                response_str = json.dumps(response)
-                print(response_str, file=sys.stdout, flush=True)
-                log(f"[DEBUG] Sent GetProperties response: {response_str[:300]}")
+                print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
 
-        except json.JSONDecodeError:
-            log(f"[DEBUG] Invalid JSON: {line}")
+            elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
+                # Handle playback control commands
+                command = params.get("command", "")
+                log(f"[Control] Received control command: {command} (params={params})")
+
+                if not self.bt_monitor.is_available():
+                    # Return error if D-Bus not available
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Control not available (no Bluetooth player connected)"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+                    return
+
+                # Execute command via D-Bus and update state
+                if command == "play":
+                    self.bt_monitor.play()
+                    self.send_update()
+                elif command == "pause":
+                    self.bt_monitor.pause()
+                    self.send_update()
+                elif command == "playPause":
+                    # Toggle state
+                    current_state = self.store.get_all().get("playback_status", "Paused")
+                    if current_state == "Playing":
+                        self.bt_monitor.pause()
+                    else:
+                        self.bt_monitor.play()
+                    self.send_update()
+                elif command == "next":
+                    self.bt_monitor.next_track()
+                    self.send_update()
+                elif command == "previous" or command == "prev":
+                    self.bt_monitor.previous_track()
+                    self.send_update()
+                else:
+                    log(f"[Snapcast] Unknown control command: {command}")
+
+                # Send success response
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {}
+                }
+                print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Control] Sent success response for: {command}")
+
+            else:
+                # Unknown method
+                log(f"[Command] WARNING: Unknown method '{method}'")
+                if request_id:
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+
+        except json.JSONDecodeError as e:
+            log(f"[Error] Invalid JSON received: {e}")
         except Exception as e:
-            log(f"[DEBUG] Error handling command: {e}")
+            log(f"[Error] Command handler exception: {e}")
+            import traceback
+            log(f"[Error] {traceback.format_exc()}")
+            if 'request_id' in locals() and request_id:
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32603,
+                        "message": str(e)
+                    }
+                }
+                print(json.dumps(error_response), file=sys.stdout, flush=True)
 
     def run(self):
         """Main event loop"""
-        log("[DEBUG] Bluetooth Control Script starting...")
+        log("[Init] Bluetooth Control Script starting...")
 
         # Start Bluetooth metadata monitoring
         self.bt_monitor.start()
 
-        # Send Plugin.Stream.Ready notification to tell Snapcast we're ready
+        # Send ready notification
         self.send_notification("Plugin.Stream.Ready", {})
-        log("[DEBUG] Sent Plugin.Stream.Ready notification")
+        log("[Init] Sent Plugin.Stream.Ready")
 
-        # Process commands from stdin (from Snapcast)
-        log("[DEBUG] Listening for commands on stdin...")
+        # Process stdin commands
+        log("[Init] Listening for commands on stdin...")
         try:
             for line in sys.stdin:
                 line = line.strip()
-                log(f"[DEBUG] Received from stdin: {line[:200] if line else '(empty)'}")
                 if line:
                     self.handle_command(line)
         except KeyboardInterrupt:
-            log("[DEBUG] Shutting down...")
+            log("[Init] Shutting down...")
         except Exception as e:
-            log(f"[DEBUG] Fatal error: {e}")
+            log(f"[Error] Fatal error: {e}")
         finally:
             self.bt_monitor.stop()
 
 
 if __name__ == "__main__":
-    # Parse command line arguments passed by Snapcast
     parser = argparse.ArgumentParser(description='Bluetooth metadata control script for Snapcast')
     parser.add_argument('--stream', required=False, default='Bluetooth', help='Stream ID')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
@@ -369,7 +555,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    log(f"[DEBUG] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
+    log(f"[Init] Starting with args: stream={args.stream}")
 
     script = SnapcastControlScript(stream_id=args.stream)
     script.run()
