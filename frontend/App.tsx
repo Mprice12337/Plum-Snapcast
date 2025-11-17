@@ -597,28 +597,28 @@ const App: React.FC = () => {
     const handleSkip = async (direction: 'next' | 'prev') => {
         if (!currentStream) return;
 
-        try {
-            // Check stream capabilities first
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+        // Optimistically clear artwork IMMEDIATELY when user clicks skip
+        // This must happen before any async operations to prevent race condition where
+        // metadata arrives before the clear is applied
+        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
 
-            // Optimistically clear artwork when user skips from GUI
-            // This provides immediate feedback and prevents old artwork from sticking
-            // when metadata arrives without artwork (common when paused)
-            const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
-
-            setStreams(prevStreams =>
-                prevStreams.map(s =>
-                    s.id === currentStream.id
-                        ? {
-                            ...s,
-                            currentTrack: {
-                                ...s.currentTrack,
-                                albumArtUrl: defaultArtwork
-                            }
+        setStreams(prevStreams =>
+            prevStreams.map(s =>
+                s.id === currentStream.id
+                    ? {
+                        ...s,
+                        currentTrack: {
+                            ...s.currentTrack,
+                            albumArtUrl: defaultArtwork
                         }
-                        : s
-                )
-            );
+                    }
+                    : s
+            )
+        );
+
+        try {
+            // Check stream capabilities
+            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
 
             if (direction === 'next') {
                 if (capabilities.canGoNext) {
