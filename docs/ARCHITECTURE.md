@@ -19,7 +19,7 @@ Plum-Snapcast/
 │   │   └── shairport-sync.conf      # AirPlay receiver config
 │   └── scripts/               # Container initialization scripts
 │       ├── setup.sh           # Container startup script
-│       └── process-airplay-metadata.sh  # AirPlay metadata handler
+│       └── airplay-control-script.py  # AirPlay metadata & control handler
 ├── frontend/                  # React/TypeScript web interface
 │   ├── Dockerfile            # Nginx-based frontend container
 │   ├── App.tsx               # Main application component
@@ -166,9 +166,10 @@ Plum-Snapcast/
 
 **Technologies**:
 - Shairport-Sync (latest from Alpine repositories)
-- D-Bus for inter-process communication
+- D-Bus for inter-process communication and remote control
 - Avahi for mDNS service discovery
-- Custom shell script for metadata processing
+- Python control script (`airplay-control-script.py`) for metadata and artwork
+- Shairport-sync metadata pipe for real-time updates
 
 **Deployment**: Managed by Supervisord in backend container
 
@@ -239,14 +240,22 @@ Plum-Snapcast/
 
 **Name**: Album Artwork and Metadata Cache
 
-**Type**: Temporary files in `/tmp` and `/usr/share/snapserver/snapweb`
+**Type**: Temporary files in `/tmp`
 
-**Purpose**: Stores album artwork and metadata for display in web interface
+**Purpose**: Stores album artwork from AirPlay for encoding and transmission to frontend
 
-**Key Files**:
-- `/tmp/coverart.jpg` - Current track artwork
-- `/usr/share/snapserver/snapweb/airplay-artwork.json` - Artwork metadata
-- `/usr/share/snapserver/snapweb/coverart/*.jpg` - Cached artwork
+**Key Directories**:
+- `/tmp/shairport-sync/.cache/coverart/` - Artwork cache written by shairport-sync
+  - Contains `cover-{timestamp}.jpg` files
+  - Automatically created by `setup.sh` on container startup
+  - Read by Python control script to load artwork
+  - Requires proper permissions (777) for write access
+
+**Important Notes**:
+- Cache directory **must exist** before shairport-sync starts, or artwork will fail silently
+- Control script tracks last loaded file to prevent duplicates
+- Artwork is base64-encoded and sent via Snapcast stream properties
+- Cache files are ephemeral (cleared on container restart)
 
 ## 5. External Integrations / APIs
 
@@ -444,21 +453,44 @@ Snapcast achieves **sample-accurate** synchronization across all clients:
 ### Metadata Flow
 
 ```
-AirPlay Device
+AirPlay Device (iOS/macOS)
      │
-     ├─→ Cover Art → Shairport-Sync → /tmp/coverart.jpg
-     │
-     └─→ Track Info → Shairport-Sync → process-airplay-metadata.sh
-                                               │
-                                               ├─→ Saves artwork to snapweb/
-                                               └─→ Writes airplay-artwork.json
+     ├─→ Cover Art → Shairport-Sync → /tmp/shairport-sync/.cache/coverart/cover-XXXXX.jpg
+     │                                                        │
+     │                                                        ↓
+     └─→ Track Info → Shairport-Sync → Metadata Pipe (/tmp/shairport-sync-metadata)
                                                         │
                                                         ↓
-                                                Frontend (via nginx proxy)
+                                        airplay-control-script.py (Python)
                                                         │
-                                                        ↓
-                                                User sees Now Playing
+                                        ┌───────────────┼───────────────┐
+                                        │               │               │
+                                    Read Cache      Parse Metadata   Track State
+                                        │               │               │
+                                        ├───────────────┴───────────────┤
+                                        │                               │
+                                    Base64 Encode                   Bundle Data
+                                        │                               │
+                                        └───────────┬───────────────────┘
+                                                    ↓
+                                        Snapcast Stream Properties
+                                        (artUrl, title, artist, album, playbackStatus)
+                                                    │
+                                                    ↓
+                                        WebSocket → Frontend (React)
+                                                    │
+                                                    ↓
+                                            User sees Now Playing
+                                            (with album artwork)
 ```
+
+**Event Timeline** (pause-then-skip scenario):
+1. User pauses playback → `pfls` event → State: Paused
+2. User skips track → `mper` event (new track ID) → Clear metadata
+3. `mdst`...`mden` bundle → Title/Artist/Album arrive
+4. Playback resumes → `prsm` event → State: Playing
+5. AirPlay sends artwork → `pcst`...`pcen` bundle → Artwork loaded (1-10s delay)
+6. Frontend retry mechanism finds artwork → Display updates
 
 ## 13. Critical Architectural Decisions
 
@@ -545,26 +577,35 @@ AirPlay Device
 - ❌ More CSS to write manually
 - ❌ No pre-built components
 
-### Decision 5: Album Artwork Workaround
+### Decision 5: Album Artwork via Stream Properties
 
-**Context**: Snapcast's plugin system filters out custom metadata fields, preventing direct artwork URLs.
+**Context**: Snapcast's control script can set custom stream properties, which are transmitted to clients via WebSocket.
 
-**Decision**: Save artwork to snapweb directory and expose via nginx proxy.
+**Decision**: Base64-encode artwork and embed in Snapcast stream properties.
 
 **Rationale**:
-- Snapcast web directory is already served by snapserver
-- Frontend container can proxy to snapserver for artwork
-- Avoids CORS issues
-- Works around Snapcast metadata limitations
+- Control scripts can set arbitrary stream properties (no filtering)
+- Properties are automatically sent to WebSocket clients
+- No need for separate HTTP endpoints or file serving
+- Artwork data travels through same channel as other metadata
+- Frontend receives everything in one JSON payload
 
 **Consequences**:
-- ✅ Artwork displays correctly
-- ✅ No CORS issues
-- ❌ Requires nginx proxy configuration
-- ❌ Artwork must be written to disk
-- ❌ Requires coordination between backend script and frontend
+- ✅ Simple architecture - single data channel
+- ✅ No CORS issues or proxy configuration
+- ✅ Artwork arrives automatically via WebSocket
+- ❌ Large base64 payloads (~50-200KB per artwork)
+- ❌ Must write artwork to disk first (shairport-sync limitation)
+- ❌ Requires cache directory to exist on startup
 
-**Implementation**: See `backend/scripts/process-airplay-metadata.sh` and frontend nginx config.
+**Implementation**:
+- `backend/scripts/setup.sh` - Creates `/tmp/shairport-sync/.cache/coverart/`
+- `backend/scripts/airplay-control-script.py` - Loads, encodes, and embeds artwork
+- `frontend/App.tsx` - Receives artwork via WebSocket, displays in `<img src="data:image/jpeg;base64,..."/>`
+
+**Critical Bugs Fixed** (2025-11-17):
+1. **Missing cache directory**: Setup script didn't create artwork directory, causing all artwork to fail silently
+2. **Race condition**: Artwork loaded then immediately cleared by track change event - fixed with 2-second grace period
 
 ## 14. Performance Characteristics
 
@@ -598,8 +639,25 @@ AirPlay Device
 **Common Issues**:
 1. **AirPlay not visible**: Avahi not running or host Avahi conflicting
 2. **No audio output**: Snapclient not running or audio device permissions
-3. **Metadata not updating**: Metadata processing script errors
-4. **Desynchronization**: Network latency too high, buffer adjustment needed
+3. **Artwork not loading**: Cache directory missing or permissions incorrect
+4. **Artwork flashes then disappears**: Race condition between artwork load and track change
+5. **Metadata not updating**: Control script errors or metadata pipe issues
+6. **Desynchronization**: Network latency too high, buffer adjustment needed
+
+**Artwork Troubleshooting**:
+```bash
+# Check if cache directory exists
+docker exec plum-snapcast-server ls -la /tmp/shairport-sync/.cache/coverart/
+
+# Check if artwork files are being written
+docker exec plum-snapcast-server ls -lht /tmp/shairport-sync/.cache/coverart/ | head -5
+
+# Check control script logs
+docker logs plum-snapcast-server 2>&1 | grep -i "artwork\|track"
+
+# Enable detailed frontend logging
+# Browser console will show: [ArtworkRetry], [Metadata], [Polling] logs
+```
 
 **Diagnostic Commands**: See [QUICK-REFERENCE.md](QUICK-REFERENCE.md#troubleshooting)
 
@@ -612,4 +670,4 @@ AirPlay Device
 - Performance characteristics change
 - Security considerations evolve
 
-**Last Reviewed**: 2025-11-04
+**Last Reviewed**: 2025-11-17
