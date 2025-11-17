@@ -142,10 +142,10 @@ const App: React.FC = () => {
                         };
 
                         // Handle artwork updates:
-                        // - If artwork explicitly provided → use it
+                        // - If artwork explicitly provided and valid → use it
                         // - If new track but no artwork yet → clear to default
                         // - Otherwise → keep current artwork (for partial metadata updates)
-                        if (metadata.artUrl !== undefined) {
+                        if (metadata.artUrl && metadata.artUrl.trim() !== '') {
                             console.log(`[Metadata] Using provided artwork`);
                             updatedTrack.albumArtUrl = metadata.artUrl;
                         } else if (isNewTrack) {
@@ -257,11 +257,12 @@ const App: React.FC = () => {
         const retryInterval = setInterval(async () => {
             try {
                 const freshStream = await snapcastService.getStreamStatus(currentStream.id);
-                if (freshStream?.properties?.metadata?.artUrl) {
+                const artUrl = freshStream?.properties?.metadata?.artUrl;
+                if (artUrl && artUrl.trim() !== '') {
                     console.log(`[ArtworkRetry] Found artwork - applying`);
                     setStreams(prev => prev.map(s =>
                         s.id === currentStream.id
-                            ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: freshStream.properties.metadata.artUrl}}
+                            ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: artUrl}}
                             : s
                     ));
                     // Stop retrying once we found artwork
@@ -346,11 +347,12 @@ const App: React.FC = () => {
                                                 // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
                                                 setTimeout(() => {
                                                     snapcastService.getStreamStatus(s.id).then(freshStream => {
-                                                        if (freshStream?.properties?.metadata?.artUrl) {
+                                                        const artUrl = freshStream?.properties?.metadata?.artUrl;
+                                                        if (artUrl && artUrl.trim() !== '') {
                                                             console.log(`[Resume] Found artwork after resume - applying`);
                                                             setStreams(prev => prev.map(st =>
                                                                 st.id === s.id
-                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: freshStream.properties.metadata.artUrl}}
+                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: artUrl}}
                                                                     : st
                                                             ));
                                                         }
@@ -381,10 +383,10 @@ const App: React.FC = () => {
                                     };
 
                                     // Handle artwork updates:
-                                    // - If artwork explicitly provided → use it
+                                    // - If artwork explicitly provided and valid → use it
                                     // - If new track but no artwork yet → clear to default
                                     // - Otherwise → keep current artwork (for partial metadata updates)
-                                    if (updatedMetadata.albumArtUrl !== undefined) {
+                                    if (updatedMetadata.albumArtUrl && updatedMetadata.albumArtUrl.trim() !== '') {
                                         console.log(`[Polling] Using provided artwork from server`);
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
                                     } else if (isNewTrack) {
