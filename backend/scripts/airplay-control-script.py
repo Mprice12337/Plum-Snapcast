@@ -327,6 +327,8 @@ class MetadataParser:
                                 "album": None,
                                 "track_id": track_id
                             }
+                            # CRITICAL: Also clear artwork cache tracker so same artwork can reload
+                            self.last_loaded_cache_file = None
                             self.store.update(
                                 title=None,
                                 artist=None,
@@ -334,6 +336,7 @@ class MetadataParser:
                                 track_id=track_id,
                                 artwork_url=None
                             )
+                            log(f"[Track] Cleared artwork cache tracker for new track")
                             return True  # Signal update to clear Snapcast
                         else:
                             self.current["track_id"] = track_id
