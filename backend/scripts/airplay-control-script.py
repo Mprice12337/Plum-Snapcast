@@ -142,6 +142,9 @@ class MetadataParser:
 
         # Artwork handling
         self.pending_cover_data = []
+
+        # Track when artwork was loaded to prevent race condition clearing
+        self.last_artwork_load_time = 0
         self.last_loaded_cache_file = None
 
         # Bundle state flags
@@ -299,6 +302,7 @@ class MetadataParser:
                     # Load from cache (shairport-sync writes to disk)
                     artwork_url = self._load_artwork_from_cache()
                     if artwork_url:
+                        self.last_artwork_load_time = time.time()
                         self.store.update(artwork_url=artwork_url)
                         log(f"[Artwork] Applied to store ({len(artwork_url)} chars)")
                         return True  # Signal update
@@ -329,14 +333,32 @@ class MetadataParser:
                             }
                             # CRITICAL: Also clear artwork cache tracker so same artwork can reload
                             self.last_loaded_cache_file = None
-                            self.store.update(
-                                title=None,
-                                artist=None,
-                                album=None,
-                                track_id=track_id,
-                                artwork_url=None
-                            )
-                            log(f"[Track] Cleared artwork cache tracker for new track")
+
+                            # Check if artwork was just loaded (within last 2 seconds)
+                            # If yes, it's likely for the NEW track, so keep it
+                            time_since_artwork = time.time() - self.last_artwork_load_time
+                            should_clear_artwork = time_since_artwork > 2.0
+
+                            if should_clear_artwork:
+                                self.store.update(
+                                    title=None,
+                                    artist=None,
+                                    album=None,
+                                    track_id=track_id,
+                                    artwork_url=None
+                                )
+                                log(f"[Track] Cleared all metadata including artwork (last loaded {time_since_artwork:.1f}s ago)")
+                            else:
+                                # Keep artwork - it was just loaded and is likely for this new track
+                                self.store.update(
+                                    title=None,
+                                    artist=None,
+                                    album=None,
+                                    track_id=track_id
+                                    # Note: artwork_url NOT set to None
+                                )
+                                log(f"[Track] Cleared metadata but KEPT artwork (loaded {time_since_artwork:.1f}s ago - likely for new track)")
+
                             return True  # Signal update to clear Snapcast
                         else:
                             self.current["track_id"] = track_id
