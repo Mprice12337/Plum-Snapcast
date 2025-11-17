@@ -294,6 +294,28 @@ const App: React.FC = () => {
                                     } else {
                                         console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
                                         updatedStream.isPlaying = isPlaying;
+
+                                        // If transitioning from paused to playing and artwork is placeholder, immediately refresh
+                                        // This handles the case where user skips while paused and artwork doesn't arrive until playback resumes
+                                        if (!s.isPlaying && isPlaying) {
+                                            const isDefaultArtwork = s.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+                                            if (isDefaultArtwork) {
+                                                console.log(`[Polling] Playback resumed with placeholder artwork - fetching fresh metadata`);
+                                                // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
+                                                setTimeout(() => {
+                                                    snapcastService.getStreamStatus(s.id).then(freshStream => {
+                                                        if (freshStream?.properties?.metadata?.artUrl) {
+                                                            console.log(`[Resume] Found artwork after resume - applying`);
+                                                            setStreams(prev => prev.map(st =>
+                                                                st.id === s.id
+                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: freshStream.properties.metadata.artUrl}}
+                                                                    : st
+                                                            ));
+                                                        }
+                                                    });
+                                                }, 500); // Small delay to let backend process resume
+                                            }
+                                        }
                                     }
                                 }
 
