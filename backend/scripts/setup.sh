@@ -24,6 +24,12 @@ if [ ! -p /tmp/shairport-sync-metadata ]; then
     chmod 666 /tmp/shairport-sync-metadata
 fi
 
+# Create artwork cache directory for shairport-sync
+echo "Creating artwork cache directory..."
+mkdir -p /tmp/shairport-sync/.cache/coverart
+chmod -R 777 /tmp/shairport-sync/.cache
+echo "Artwork cache directory ready at /tmp/shairport-sync/.cache/coverart"
+
 # Generate snapserver configuration if it doesn't exist
 if [ ! -f /app/config/snapserver.conf ]; then
     echo "Generating snapserver.conf..."

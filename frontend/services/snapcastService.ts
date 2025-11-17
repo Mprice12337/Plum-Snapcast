@@ -92,6 +92,7 @@ export class SnapcastService {
     private port: number;
     private isConnected = false;
     private metadataUpdateListeners: Set<(streamId: string, metadata: any) => void> = new Set();
+    private playbackStateListeners: Set<(streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void> = new Set();
 
     constructor() {
         this.host =
@@ -108,6 +109,15 @@ export class SnapcastService {
         };
     }
 
+    // Subscribe to playback state updates
+    onPlaybackStateUpdate(listener: (streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void): () => void {
+        this.playbackStateListeners.add(listener);
+        // Return unsubscribe function
+        return () => {
+            this.playbackStateListeners.delete(listener);
+        };
+    }
+
     connect(): Promise<void> {
         return new Promise((resolve, reject) => {
             try {
@@ -115,7 +125,6 @@ export class SnapcastService {
                 this.ws = new WebSocket(wsUrl);
 
                 this.ws.onopen = () => {
-                    console.log('Connected to Snapcast server');
                     this.isConnected = true;
                     resolve();
                 };
@@ -148,7 +157,6 @@ export class SnapcastService {
                 };
 
                 this.ws.onclose = () => {
-                    console.log('Disconnected from Snapcast server');
                     this.ws = null;
                     this.isConnected = false;
                 };
@@ -159,23 +167,76 @@ export class SnapcastService {
     }
 
     private handleNotification(message: SnapcastResponse) {
-        // Handle real-time updates from the server
-        console.log('Received notification:', message.method, message.params);
-
-        // Handle stream property updates (including metadata)
+        // Handle stream property updates (including metadata and playback state)
         if (message.method === 'Plugin.Stream.Player.Properties' || message.method === 'Stream.OnProperties') {
             const params = message.params;
-            // The params should contain stream metadata
-            // Notify all listeners
+            const streamId = params.id || params.stream_id || 'unknown';
+
+            // Notify metadata listeners if metadata changed
             if (params && params.metadata) {
-                console.log('Metadata update received:', params.metadata);
-                // We need to figure out which stream this is for
-                // The control script should send stream ID in params, but if not, we'll need to infer it
-                const streamId = params.id || params.stream_id || 'unknown';
                 this.metadataUpdateListeners.forEach(listener => {
                     listener(streamId, params.metadata);
                 });
             }
+
+            // Notify playback state listeners if playback status changed
+            if (params && params.playbackStatus !== undefined) {
+                this.playbackStateListeners.forEach(listener => {
+                    listener(streamId, params.playbackStatus, params);
+                });
+            }
+        }
+
+        // Handle Stream.OnUpdate notification - Snapcast broadcasts this when stream changes
+        if (message.method === 'Stream.OnUpdate') {
+            const params = message.params;
+
+            // The notification structure is: {id: 'streamId', stream: {...}}
+            const streamId = params.id;
+            const stream = params.stream;
+
+            if (stream && streamId) {
+                // Check stream status and properties for playback state
+                // Stream status can be: "playing", "idle", "unknown"
+                // Properties.playbackStatus can be: "Playing", "Paused", "Stopped"
+
+                let playbackStatus = null;
+
+                // Prefer properties.playbackStatus if available (from control script)
+                if (stream.properties && stream.properties.playbackStatus) {
+                    playbackStatus = stream.properties.playbackStatus;
+                }
+                // Fall back to stream.status
+                else if (stream.status) {
+                    // Map stream status to playback status
+                    // "playing" -> "Playing", "idle" -> "Paused"
+                    playbackStatus = stream.status === 'playing' ? 'Playing' :
+                                    stream.status === 'idle' ? 'Paused' : 'Stopped';
+                }
+
+                // Notify playback state listeners if we have a status
+                if (playbackStatus) {
+                    this.playbackStateListeners.forEach(listener => {
+                        listener(streamId, playbackStatus, stream.properties || {});
+                    });
+                }
+
+                // Also check for metadata updates
+                if (stream.properties && stream.properties.metadata) {
+                    this.metadataUpdateListeners.forEach(listener => {
+                        listener(streamId, stream.properties.metadata);
+                    });
+                }
+            }
+        }
+
+        // Handle Server.OnUpdate notification (Snapcast broadcasts this when anything changes)
+        // Use this as a fallback to trigger fetching latest stream properties
+        if (message.method === 'Server.OnUpdate') {
+            // Notify playback state listeners with a special signal to refetch
+            this.playbackStateListeners.forEach(listener => {
+                listener('*', 'REFRESH', {});
+            });
         }
     }
 
@@ -209,7 +270,6 @@ export class SnapcastService {
                 }
             });
 
-            console.log('Sending request:', request);
             this.ws.send(JSON.stringify(request));
 
             // Timeout after 5 seconds
@@ -244,10 +304,12 @@ export class SnapcastService {
     isStreamPlaying(stream: SnapcastStream | null): boolean {
         if (!stream) return false;
 
-        // First check the playbackStatus property if available
+        // First check the playbackStatus property if available (but ignore "unknown")
         if (stream.properties?.playbackStatus) {
             const status = stream.properties.playbackStatus.toLowerCase();
-            return status === 'playing';
+            if (status !== 'unknown') {
+                return status === 'playing';
+            }
         }
 
         // Fall back to the stream status field
@@ -257,7 +319,6 @@ export class SnapcastService {
 
     // Set the stream for a specific group
     async setGroupStream(groupId: string, streamId: string): Promise<any> {
-        console.log(`Setting group ${groupId} to stream ${streamId}`);
         return this.sendRequest('Group.SetStream', {
             id: groupId,
             stream_id: streamId
@@ -266,7 +327,6 @@ export class SnapcastService {
 
     // Set volume for a specific client
     async setClientVolume(clientId: string, volume: number, muted: boolean = false): Promise<any> {
-        console.log(`Setting client ${clientId} volume to ${volume}% (muted: ${muted})`);
         return this.sendRequest('Client.SetVolume', {
             id: clientId,
             volume: {
@@ -281,7 +341,6 @@ export class SnapcastService {
         try {
             const serverStatus = await this.getServerStatus();
             const stream = serverStatus.server?.streams?.find((s: any) => s.id === streamId);
-            console.log(`Stream ${streamId} properties:`, stream?.properties);
             return stream?.properties || {};
         } catch (error) {
             console.error(`Failed to get stream properties for ${streamId}:`, error);
@@ -291,7 +350,6 @@ export class SnapcastService {
 
     // Use the correct Stream.Control method for playback commands [[1]](https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/stream_plugin.md)
     private async sendStreamControl(streamId: string, command: string, params: any = {}): Promise<any> {
-        console.log(`Sending Stream.Control command '${command}' to stream ${streamId}`, params);
         return this.sendRequest('Stream.Control', {
             id: streamId,
             command: command,
@@ -302,7 +360,6 @@ export class SnapcastService {
     // Playback controls using the correct Stream.Control API
     async playStream(streamId: string): Promise<any> {
         const properties = await this.getStreamProperties(streamId);
-        console.log(`Play stream ${streamId} - capabilities:`, properties);
 
         if (!properties.canPlay) {
             throw new Error(`Stream ${streamId} does not support play control`);
@@ -320,7 +377,6 @@ export class SnapcastService {
 
     async pauseStream(streamId: string): Promise<any> {
         const properties = await this.getStreamProperties(streamId);
-        console.log(`Pause stream ${streamId} - capabilities:`, properties);
 
         if (!properties.canPause) {
             throw new Error(`Stream ${streamId} does not support pause control`);
@@ -338,7 +394,6 @@ export class SnapcastService {
 
     async nextTrack(streamId: string): Promise<any> {
         const properties = await this.getStreamProperties(streamId);
-        console.log(`Next track for stream ${streamId} - capabilities:`, properties);
 
         if (!properties.canGoNext) {
             throw new Error(`Stream ${streamId} does not support next track control`);
@@ -350,7 +405,6 @@ export class SnapcastService {
 
     async previousTrack(streamId: string): Promise<any> {
         const properties = await this.getStreamProperties(streamId);
-        console.log(`Previous track for stream ${streamId} - capabilities:`, properties);
 
         if (!properties.canGoPrevious) {
             throw new Error(`Stream ${streamId} does not support previous track control`);
@@ -388,7 +442,6 @@ export class SnapcastService {
 
     // Stop playback
     async stopStream(streamId: string): Promise<any> {
-        console.log(`Stopping stream ${streamId}`);
         return this.sendStreamControl(streamId, 'stop');
     }
 
@@ -403,7 +456,6 @@ export class SnapcastService {
     }> {
         try {
             const properties = await this.getStreamProperties(streamId);
-            console.log(`Stream ${streamId} capabilities:`, properties);
             return {
                 canPlay: properties.canPlay || false,
                 canPause: properties.canPause || false,

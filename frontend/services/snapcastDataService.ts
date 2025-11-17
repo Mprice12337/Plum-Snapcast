@@ -18,14 +18,11 @@ const extractMetadataFromStream = (snapStream: any): {
     artUrl?: string;
     duration?: number
 } => {
-    console.log('Processing stream:', snapStream.id, snapStream);
-
     // Check for metadata in different possible locations
     let metadata: any = {};
 
     // Check if stream has properties with metadata
     if (snapStream.properties) {
-        console.log('Stream properties found:', snapStream.properties);
 
         // Look for metadata in properties
         if (snapStream.properties.metadata) {
@@ -55,11 +52,9 @@ const extractMetadataFromStream = (snapStream: any): {
 
     // Also check direct meta property on stream
     if (snapStream.meta) {
-        console.log('Stream meta found:', snapStream.meta);
         metadata = {...metadata, ...snapStream.meta};
     }
 
-    console.log('Extracted metadata:', metadata);
     return metadata;
 };
 
@@ -130,15 +125,12 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         if (metadata.artUrl.startsWith('data:')) {
             // Data URL - use directly
             albumArtUrl = metadata.artUrl;
-            console.log('Using embedded artwork (data URL)');
         } else if (metadata.artUrl.startsWith('/')) {
             // Relative path - prepend Snapcast HTTP server URL
             albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
-            console.log('Using relative artwork URL:', albumArtUrl);
         } else {
             // Absolute URL - use directly
             albumArtUrl = metadata.artUrl;
-            console.log('Using absolute artwork URL:', albumArtUrl);
         }
     }
 
@@ -151,12 +143,22 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         duration: metadata.duration || 0,
     };
 
+    // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
+    let isPlaying = false;
+    if (snapStream.properties?.playbackStatus && snapStream.properties.playbackStatus.toLowerCase() !== 'unknown') {
+        // Use playbackStatus from control script (more accurate) - but ignore "unknown"
+        isPlaying = snapStream.properties.playbackStatus.toLowerCase() === 'playing';
+    } else {
+        // Fall back to stream status
+        isPlaying = snapStream.status === 'playing';
+    }
+
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
         currentTrack: track,
-        isPlaying: snapStream.status === 'playing',
+        isPlaying: isPlaying,
         progress: 0, // Snapcast doesn't provide current position in the status
     };
 };
@@ -179,8 +181,6 @@ export const getSnapcastData = async (): Promise<{
 
         // Get server status
         const serverStatus = await snapcastService.getServerStatus();
-        console.log('Raw server status:', JSON.stringify(serverStatus, null, 2));
-
         const {server} = serverStatus;
 
         if (!server) {
@@ -191,7 +191,6 @@ export const getSnapcastData = async (): Promise<{
         const serverName = server.server?.snapserver?.name ||
             server.server?.host?.name ||
             'Snapcast Server';
-        console.log('Server name:', serverName);
 
         // Convert streams (now async to fetch artwork)
         const streamPromises = server.streams?.map((snapStream: any) =>
@@ -199,15 +198,11 @@ export const getSnapcastData = async (): Promise<{
         ) || [];
         const initialStreams: Stream[] = await Promise.all(streamPromises);
 
-        console.log('Converted streams:', initialStreams);
-
         // Convert clients from groups
         const initialClients: Client[] = [];
 
         if (server.groups) {
-            console.log('Processing groups:', server.groups);
             server.groups.forEach((group: any) => {
-                console.log('Group:', group.id, 'Stream:', group.stream_id, 'Clients:', group.clients?.length);
                 if (group.clients) {
                     group.clients.forEach((client: any) => {
                         initialClients.push(convertSnapcastClientToClient(client, group.stream_id));
@@ -215,8 +210,6 @@ export const getSnapcastData = async (): Promise<{
                 }
             });
         }
-
-        console.log('Converted clients:', initialClients);
 
         // If no clients found, create a default "You" client
         if (initialClients.length === 0) {
@@ -227,12 +220,6 @@ export const getSnapcastData = async (): Promise<{
                 volume: 75,
             });
         }
-
-        console.log('Snapcast data loaded:', {
-            serverName,
-            streamsCount: initialStreams.length,
-            clientsCount: initialClients.length
-        });
 
         return {
             initialStreams,
