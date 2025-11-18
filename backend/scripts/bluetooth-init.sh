@@ -33,6 +33,21 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# Unblock Bluetooth if RF-killed
+echo "Checking RF-kill status..."
+if command -v rfkill >/dev/null 2>&1; then
+    if rfkill list bluetooth | grep -q "Soft blocked: yes"; then
+        echo "Bluetooth is soft-blocked, unblocking..."
+        rfkill unblock bluetooth
+        sleep 1
+        echo "✓ Bluetooth unblocked"
+    else
+        echo "✓ Bluetooth is not blocked"
+    fi
+else
+    echo "Warning: rfkill command not available"
+fi
+
 # Wait for bluetoothd to be ready
 echo "Waiting for bluetoothd to start..."
 for i in $(seq 1 30); do

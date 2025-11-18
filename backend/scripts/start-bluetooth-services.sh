@@ -13,13 +13,16 @@ echo "==========================================="
 
 # Function to wait for supervisord to be ready
 wait_for_supervisord() {
-    echo "Waiting for supervisord to be fully ready..."
+    echo "Waiting for supervisord socket to be ready..."
     local max_attempts=30
     local attempt=0
 
     while [ $attempt -lt $max_attempts ]; do
-        if supervisorctl -c /app/supervisord/supervisord.conf status >/dev/null 2>&1; then
-            echo "Supervisord is ready!"
+        # Check if supervisor socket exists and is accessible
+        if [ -S /var/run/supervisor.sock ]; then
+            # Wait a bit more to ensure RPC interface is fully ready
+            sleep 2
+            echo "Supervisord socket is ready!"
             return 0
         fi
         attempt=$((attempt + 1))
@@ -27,7 +30,7 @@ wait_for_supervisord() {
         sleep 1
     done
 
-    echo "ERROR: Supervisord not ready after $max_attempts seconds"
+    echo "ERROR: Supervisord socket not ready after $max_attempts seconds"
     return 1
 }
 
