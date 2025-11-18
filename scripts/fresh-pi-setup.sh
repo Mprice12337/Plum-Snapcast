@@ -129,7 +129,7 @@ echo ""
 ###############################################################################
 # Step 5: Disable host Avahi (container runs its own)
 ###############################################################################
-echo -e "${YELLOW}[5/6] Disabling host Avahi daemon...${NC}"
+echo -e "${YELLOW}[5/7] Disabling host Avahi daemon...${NC}"
 
 # Check if Avahi is installed
 if systemctl list-unit-files | grep -q avahi-daemon; then
@@ -147,9 +147,29 @@ fi
 echo ""
 
 ###############################################################################
-# Step 6: Install Docker Compose (if needed)
+# Step 6: Disable host Bluetooth (container runs its own)
 ###############################################################################
-echo -e "${YELLOW}[6/6] Checking Docker Compose...${NC}"
+echo -e "${YELLOW}[6/7] Disabling host Bluetooth daemon...${NC}"
+
+# Check if Bluetooth is installed
+if systemctl list-unit-files | grep -q bluetooth.service; then
+    echo "  Stopping Bluetooth daemon..."
+    systemctl stop bluetooth.service 2>/dev/null || true
+
+    echo "  Disabling Bluetooth daemon..."
+    systemctl disable bluetooth.service 2>/dev/null || true
+
+    echo -e "${GREEN}✓ Host Bluetooth disabled (container will run its own)${NC}"
+else
+    echo "  Bluetooth not installed on host (this is fine)"
+fi
+
+echo ""
+
+###############################################################################
+# Step 7: Install Docker Compose (if needed)
+###############################################################################
+echo -e "${YELLOW}[7/7] Checking Docker Compose...${NC}"
 
 # Check if docker compose command exists (Docker Compose V2)
 if docker compose version &> /dev/null; then
@@ -173,6 +193,7 @@ echo "  ✓ Docker Engine"
 echo "  ✓ Git"
 echo "  ✓ Audio device permissions"
 echo "  ✓ Host Avahi disabled (container runs its own)"
+echo "  ✓ Host Bluetooth disabled (container runs its own)"
 echo "  ✓ User '$ACTUAL_USER' added to docker group"
 echo ""
 echo -e "${YELLOW}IMPORTANT: You must log out and back in for docker group membership to take effect.${NC}"

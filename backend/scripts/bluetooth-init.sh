@@ -51,7 +51,7 @@ fi
 # Wait for bluetoothd to be ready
 echo "Waiting for bluetoothd to start..."
 for i in $(seq 1 30); do
-    if bluetoothctl list 2>/dev/null | grep -q "$ADAPTER"; then
+    if bluetoothctl list 2>/dev/null | grep -q "Controller"; then
         echo "Bluetoothd is ready"
         break
     fi
