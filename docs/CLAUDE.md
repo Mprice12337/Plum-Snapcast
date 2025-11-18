@@ -478,25 +478,27 @@ shellcheck backend/scripts/*.sh
 
 ### Container Architecture Pattern
 
-**Critical Architecture: Host D-Bus + Container Avahi**
+**Critical Architecture: Self-Contained Container**
 
-This project uses a specific pattern for D-Bus and Avahi:
+This project uses a fully self-contained container architecture:
 
-1. **Host System**: Provides D-Bus system bus
-   - D-Bus socket at `/var/run/dbus/system_bus_socket`
-   - Socket-activated, always available
-   - Shared with container via volume mount
+1. **Container**: Runs its own D-Bus daemon AND Avahi daemon
+   - Container D-Bus: Managed by supervisord for internal IPC
+   - Container Avahi: Handles mDNS service discovery for AirPlay/Spotify/Bluetooth
+   - All services self-contained within container
 
-2. **Container**: Runs Avahi daemon
-   - Connects to host's D-Bus socket
-   - Handles mDNS service discovery for AirPlay/Spotify
-   - No D-Bus daemon inside container
+2. **Host System**: Minimal requirements
+   - Docker engine
+   - Audio device access (/dev/snd)
+   - No D-Bus or Avahi configuration required
+   - No host OS version dependencies
 
 3. **Why This Pattern**:
-   - Avoids D-Bus conflicts between host and container
-   - Leverages host's existing D-Bus infrastructure
-   - Container Avahi can broadcast on host network (network_mode: host)
-   - Simplifies container startup and permissions
+   - Complete Docker isolation - truly portable container
+   - Works across different host OS versions (Debian 12, 13, etc.)
+   - Eliminates race conditions from host/container service interactions
+   - No host system modification required beyond Docker installation
+   - True "build once, run anywhere" Docker design
 
 ### Volume Mounts (Backend)
 ```yaml
@@ -504,7 +506,7 @@ volumes:
   - snapcast-config:/app/config       # Configuration files (persistent)
   - snapcast-data:/app/data           # Runtime data (persistent)
   - snapcast-certs:/app/certs         # TLS certificates (persistent)
-  - /var/run/dbus:/var/run/dbus:ro    # Host D-Bus socket (read-only)
+  # No host mounts required - container is self-contained
 ```
 
 ### Docker Commands
@@ -592,13 +594,16 @@ Server.GetRPCVersion() → { major: number, minor: number, patch: number }
 
 ### Project-Specific Rules
 
-1. **D-Bus/Avahi Pattern**: Always use host D-Bus socket, never run D-Bus in container
-   ```dockerfile
-   # CORRECT: Mount host D-Bus socket
-   -v /var/run/dbus:/var/run/dbus:ro
+1. **D-Bus/Avahi Pattern**: Container runs its own D-Bus and Avahi (self-contained)
+   ```yaml
+   # CORRECT: No host mounts required
+   volumes:
+     - snapcast-config:/app/config
+     - snapcast-data:/app/data
+     - snapcast-certs:/app/certs
 
-   # WRONG: Don't start D-Bus in container
-   # supervisord.conf should NOT include dbus.ini
+   # Container manages D-Bus and Avahi via supervisord
+   # Services start automatically with proper priorities
    ```
 
 2. **Audio Group GID**: Always set audio group to GID 29 (Raspberry Pi standard)
@@ -763,10 +768,10 @@ docker compose up -d
 1. **Attribution Required**: This project builds on firefrei/docker-snapcast. Always maintain proper attribution in CREDITS.md and respect upstream licensing.
 
 2. **Critical Architecture Pattern**:
-   - Host provides D-Bus socket at /var/run/dbus/system_bus_socket
-   - Container runs Avahi daemon (connects to host D-Bus)
-   - Host's Avahi daemon must be disabled
-   - Never run D-Bus daemon inside container
+   - Container is fully self-contained with its own D-Bus and Avahi
+   - No host system configuration required (except Docker and audio device access)
+   - Container works identically across different host OS versions
+   - D-Bus and Avahi managed by supervisord with proper startup priorities
 
 3. **WebSocket Connection Management**:
    - Always check `isConnected` before sending requests

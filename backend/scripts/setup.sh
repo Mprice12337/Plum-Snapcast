@@ -3,11 +3,12 @@ set -e
 
 echo "Starting Plum Snapcast Server setup..."
 
-# Clean up any stale sockets/pids
-rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket
+# Clean up any stale sockets/pids from previous runs
+# Container runs its own D-Bus and Avahi (fully self-contained)
+rm -rf /var/run/dbus/*
 rm -rf /var/run/avahi-daemon/*
 
-# Create required directories
+# Create required directories for container's D-Bus and Avahi
 mkdir -p /var/run/dbus /var/run/avahi-daemon
 chmod 755 /var/run/dbus /var/run/avahi-daemon
 
