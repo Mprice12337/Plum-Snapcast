@@ -75,9 +75,23 @@ class AutoPairAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
-        """Auto-confirm all pairing requests"""
-        print(f"Auto-confirming pairing for {device} with passkey {passkey:06d}")
-        return
+        """
+        Handle SSP (Secure Simple Pairing) numeric comparison requests.
+
+        If a PIN code is configured, we REJECT this to force PIN entry mode.
+        If no PIN is configured, we auto-accept for easy pairing.
+        """
+        if self.pairing_code:
+            # Reject SSP to force the device to use PIN entry instead
+            print(f"Rejecting SSP confirmation for {device} (passkey {passkey:06d}) - PIN code required")
+            raise dbus.exceptions.DBusException(
+                "org.bluez.Error.Rejected",
+                "PIN code entry required - use configured PIN"
+            )
+        else:
+            # Auto-accept if no PIN configured
+            print(f"Auto-confirming pairing for {device} with passkey {passkey:06d}")
+            return
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
@@ -104,8 +118,9 @@ def main():
         manager = dbus.Interface(obj, "org.bluez.AgentManager1")
 
         # Register our agent with appropriate capability
-        # Use "DisplayYesNo" if PIN is set, "NoInputNoOutput" for auto-accept
-        capability = "DisplayYesNo" if PAIRING_CODE else "NoInputNoOutput"
+        # Use "KeyboardOnly" if PIN is set (forces PIN entry, rejects SSP)
+        # Use "NoInputNoOutput" for auto-accept
+        capability = "KeyboardOnly" if PAIRING_CODE else "NoInputNoOutput"
         manager.RegisterAgent(AGENT_PATH, capability)
         print(f"Agent registered with BlueZ (capability: {capability})")
 
