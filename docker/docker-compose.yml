@@ -12,6 +12,9 @@ services:
     privileged: true
     devices:
       - /dev/snd:/dev/snd
+      # Bluetooth device (may not exist on all hosts)
+    # Uncomment if Bluetooth device path is different
+    # - /dev/hci0:/dev/hci0
     environment:
       - TZ=${TZ:-America/Los_Angeles}
       - AIRPLAY_CONFIG_ENABLED=1
