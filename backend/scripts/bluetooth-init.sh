@@ -84,8 +84,8 @@ echo "Executing Bluetooth configuration commands..."
 bluetoothctl <<EOF
 power on
 pairable on
+discoverable-timeout 0
 discoverable $([ "$DISCOVERABLE" = "1" ] && echo "on" || echo "off")
-agent NoInputNoOutput
 default-agent
 EOF
 
@@ -134,15 +134,17 @@ fi
 # Keep the script running to maintain the agent
 if [ "$AUTO_PAIR" = "1" ]; then
     echo ""
-    echo "Bluetooth agent active - ready for pairing"
+    echo "Starting auto-pairing agent..."
     echo "========================================"
 
-    # Keep agent alive
-    # Use bluetoothctl in agent mode
-    exec bluetoothctl
+    # Use Python D-Bus agent for auto-pairing
+    # This will auto-accept all pairing requests without user confirmation
+    exec python3 /app/scripts/bluetooth-auto-pair-agent.py
 else
     echo ""
-    echo "Auto-pairing disabled"
+    echo "Auto-pairing disabled - using bluetoothctl interactive mode"
     echo "========================================"
-    tail -f /dev/null
+
+    # Run bluetoothctl in interactive mode for manual pairing
+    exec bluetoothctl
 fi
