@@ -490,7 +490,8 @@ This project uses a fully self-contained container architecture:
 2. **Host System**: Minimal requirements
    - Docker engine
    - Audio device access (/dev/snd)
-   - No D-Bus or Avahi configuration required
+   - Host Avahi must be disabled (container runs its own)
+   - No host D-Bus configuration required
    - No host OS version dependencies
 
 3. **Why This Pattern**:

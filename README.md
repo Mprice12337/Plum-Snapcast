@@ -95,7 +95,7 @@ sudo docker compose up -d
 sudo reboot
 ```
 
-**Note**: The container is fully self-contained and requires no host D-Bus or Avahi configuration. It will work identically across different OS versions.
+**Note**: The container runs its own D-Bus and Avahi daemons. The only host requirement is that the host's Avahi daemon must be disabled (the fresh-pi-setup.sh script handles this automatically).
 
 ### Accessing the Application
 

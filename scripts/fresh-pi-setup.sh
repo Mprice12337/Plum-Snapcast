@@ -44,6 +44,7 @@ echo "This script will install and configure:"
 echo "  - Docker Engine"
 echo "  - Git"
 echo "  - Audio device permissions"
+echo "  - Disable host Avahi (container runs its own)"
 echo ""
 echo "Target user: $ACTUAL_USER"
 echo ""
@@ -126,9 +127,29 @@ fi
 echo ""
 
 ###############################################################################
-# Step 5: Install Docker Compose (if needed)
+# Step 5: Disable host Avahi (container runs its own)
 ###############################################################################
-echo -e "${YELLOW}[5/5] Checking Docker Compose...${NC}"
+echo -e "${YELLOW}[5/6] Disabling host Avahi daemon...${NC}"
+
+# Check if Avahi is installed
+if systemctl list-unit-files | grep -q avahi-daemon; then
+    echo "  Stopping Avahi daemon..."
+    systemctl stop avahi-daemon.service avahi-daemon.socket 2>/dev/null || true
+
+    echo "  Disabling Avahi daemon..."
+    systemctl disable avahi-daemon.service avahi-daemon.socket 2>/dev/null || true
+
+    echo -e "${GREEN}✓ Host Avahi disabled (container will run its own)${NC}"
+else
+    echo "  Avahi not installed on host (this is fine)"
+fi
+
+echo ""
+
+###############################################################################
+# Step 6: Install Docker Compose (if needed)
+###############################################################################
+echo -e "${YELLOW}[6/6] Checking Docker Compose...${NC}"
 
 # Check if docker compose command exists (Docker Compose V2)
 if docker compose version &> /dev/null; then
@@ -151,6 +172,7 @@ echo "Installed/Configured:"
 echo "  ✓ Docker Engine"
 echo "  ✓ Git"
 echo "  ✓ Audio device permissions"
+echo "  ✓ Host Avahi disabled (container runs its own)"
 echo "  ✓ User '$ACTUAL_USER' added to docker group"
 echo ""
 echo -e "${YELLOW}IMPORTANT: You must log out and back in for docker group membership to take effect.${NC}"
