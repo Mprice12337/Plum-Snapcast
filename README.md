@@ -132,6 +132,11 @@ Edit `docker/.env` to customize:
 - `FRONTEND_PORT`: Web interface port (default: 3000)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device for audio output (default: hw:Headphones)
 
+**Bluetooth Notes:**
+- Provides track metadata (title, artist, album) and media controls (play, pause, skip)
+- Album artwork is not currently available (requires BlueZ 5.81+; Alpine currently ships 5.70)
+- Auto-pairing mode only (modern devices use SSP, not PIN codes)
+
 For more details, see [CLAUDE.md](CLAUDE.md).
 
 ## License
