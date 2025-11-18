@@ -2,11 +2,14 @@
 """
 Bluetooth Auto-Pairing Agent for Plum-Snapcast
 
-This agent automatically accepts all Bluetooth pairing requests
-without requiring user confirmation. Designed for headless audio
-receivers where manual pairing confirmation isn't possible.
+This agent handles Bluetooth pairing requests with configurable security:
+- If BLUETOOTH_PAIRING_CODE is set: Requires that specific PIN code
+- If not set: Auto-accepts all pairing requests (less secure, easier setup)
+
+Designed for headless audio receivers where manual pairing isn't possible.
 """
 
+import os
 import dbus
 import dbus.service
 import dbus.mainloop.glib
@@ -16,16 +19,25 @@ BUS_NAME = 'org.bluez'
 AGENT_INTERFACE = 'org.bluez.Agent1'
 AGENT_PATH = "/plum/snapcast/agent"
 
+# Read pairing code from environment variable
+PAIRING_CODE = os.environ.get('BLUETOOTH_PAIRING_CODE', '')
+
 
 class AutoPairAgent(dbus.service.Object):
     """
-    BlueZ Agent that auto-accepts all pairing requests.
+    BlueZ Agent that handles pairing with configurable PIN code.
     Implements the org.bluez.Agent1 D-Bus interface.
     """
 
-    def __init__(self, bus, path):
+    def __init__(self, bus, path, pairing_code=''):
         super().__init__(bus, path)
-        print(f"Bluetooth auto-pair agent initialized at {path}")
+        self.pairing_code = pairing_code
+        if self.pairing_code:
+            print(f"Bluetooth agent initialized with static PIN code: {self.pairing_code}")
+            print("Devices must enter this code to pair")
+        else:
+            print(f"Bluetooth agent initialized in auto-accept mode (no PIN required)")
+            print("WARNING: Any device can pair without authentication")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
@@ -35,15 +47,21 @@ class AutoPairAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
-        """Return a default PIN for devices that require it"""
-        print(f"Auto-providing PIN '0000' for device {device}")
-        return "0000"
+        """Return the configured PIN for devices that require it"""
+        pin = self.pairing_code if self.pairing_code else "0000"
+        print(f"Providing PIN '{pin}' for device {device}")
+        return pin
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
-        """Return a default passkey"""
-        print(f"Auto-providing passkey 0 for device {device}")
-        return dbus.UInt32(0)
+        """Return the configured passkey as a number"""
+        # Convert PIN string to number (default 0 if not a valid number)
+        try:
+            passkey = int(self.pairing_code) if self.pairing_code and self.pairing_code.isdigit() else 0
+        except ValueError:
+            passkey = 0
+        print(f"Providing passkey {passkey} for device {device}")
+        return dbus.UInt32(passkey)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
@@ -78,23 +96,28 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     bus = dbus.SystemBus()
-    agent = AutoPairAgent(bus, AGENT_PATH)
+    agent = AutoPairAgent(bus, AGENT_PATH, pairing_code=PAIRING_CODE)
 
     try:
         # Get the BlueZ agent manager
         obj = bus.get_object(BUS_NAME, "/org/bluez")
         manager = dbus.Interface(obj, "org.bluez.AgentManager1")
 
-        # Register our agent
-        manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
-        print("Agent registered with BlueZ")
+        # Register our agent with appropriate capability
+        # Use "DisplayYesNo" if PIN is set, "NoInputNoOutput" for auto-accept
+        capability = "DisplayYesNo" if PAIRING_CODE else "NoInputNoOutput"
+        manager.RegisterAgent(AGENT_PATH, capability)
+        print(f"Agent registered with BlueZ (capability: {capability})")
 
         # Request to be the default agent
         manager.RequestDefaultAgent(AGENT_PATH)
         print("Set as default agent")
 
-        print("Bluetooth auto-pair agent is running...")
-        print("All pairing requests will be automatically accepted")
+        print("Bluetooth pairing agent is running...")
+        if PAIRING_CODE:
+            print(f"Pairing mode: PIN code required (code: {PAIRING_CODE})")
+        else:
+            print("Pairing mode: Auto-accept (no PIN required)")
 
         # Run the main loop
         mainloop = GLib.MainLoop()
