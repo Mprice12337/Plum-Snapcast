@@ -2,14 +2,17 @@
 """
 Bluetooth Auto-Pairing Agent for Plum-Snapcast
 
-This agent handles Bluetooth pairing requests with configurable security:
-- If BLUETOOTH_PAIRING_CODE is set: Requires that specific PIN code
-- If not set: Auto-accepts all pairing requests (less secure, easier setup)
+This agent automatically accepts all Bluetooth pairing requests without
+requiring user confirmation. This is how commercial Bluetooth speakers work.
 
-Designed for headless audio receivers where manual pairing isn't possible.
+Note: Modern devices (iOS 8+, Android 6+) only support SSP (Secure Simple Pairing)
+with numeric comparison. They do NOT support legacy PIN codes. Attempting to force
+PIN entry causes pairing to fail immediately on these devices.
+
+For security, use network-level controls (firewall, MAC filtering) rather than
+Bluetooth pairing codes.
 """
 
-import os
 import dbus
 import dbus.service
 import dbus.mainloop.glib
@@ -19,25 +22,17 @@ BUS_NAME = 'org.bluez'
 AGENT_INTERFACE = 'org.bluez.Agent1'
 AGENT_PATH = "/plum/snapcast/agent"
 
-# Read pairing code from environment variable
-PAIRING_CODE = os.environ.get('BLUETOOTH_PAIRING_CODE', '')
-
 
 class AutoPairAgent(dbus.service.Object):
     """
-    BlueZ Agent that handles pairing with configurable PIN code.
+    BlueZ Agent that auto-accepts all pairing requests.
     Implements the org.bluez.Agent1 D-Bus interface.
     """
 
-    def __init__(self, bus, path, pairing_code=''):
+    def __init__(self, bus, path):
         super().__init__(bus, path)
-        self.pairing_code = pairing_code
-        if self.pairing_code:
-            print(f"Bluetooth agent initialized with static PIN code: {self.pairing_code}")
-            print("Devices must enter this code to pair")
-        else:
-            print(f"Bluetooth agent initialized in auto-accept mode (no PIN required)")
-            print("WARNING: Any device can pair without authentication")
+        print("Bluetooth auto-pairing agent initialized")
+        print("Mode: Auto-accept all devices (no PIN required)")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
@@ -47,51 +42,31 @@ class AutoPairAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
-        """Return the configured PIN for devices that require it"""
-        pin = self.pairing_code if self.pairing_code else "0000"
-        print(f"Providing PIN '{pin}' for device {device}")
-        return pin
+        """Return default PIN for legacy devices that require it"""
+        print(f"Providing default PIN '0000' for legacy device {device}")
+        return "0000"
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
-        """Return the configured passkey as a number"""
-        # Convert PIN string to number (default 0 if not a valid number)
-        try:
-            passkey = int(self.pairing_code) if self.pairing_code and self.pairing_code.isdigit() else 0
-        except ValueError:
-            passkey = 0
-        print(f"Providing passkey {passkey} for device {device}")
-        return dbus.UInt32(passkey)
+        """Return default passkey for legacy devices"""
+        print(f"Providing default passkey 0 for legacy device {device}")
+        return dbus.UInt32(0)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
         """Display passkey (just log it)"""
-        print(f"Passkey for {device}: {passkey:06d} (entered: {entered})")
+        print(f"DisplayPasskey for {device}: {passkey:06d} (entered: {entered})")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
         """Display PIN code (just log it)"""
-        print(f"PIN code for {device}: {pincode}")
+        print(f"DisplayPinCode for {device}: {pincode}")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
-        """
-        Handle SSP (Secure Simple Pairing) numeric comparison requests.
-
-        If a PIN code is configured, we REJECT this to force PIN entry mode.
-        If no PIN is configured, we auto-accept for easy pairing.
-        """
-        if self.pairing_code:
-            # Reject SSP to force the device to use PIN entry instead
-            print(f"Rejecting SSP confirmation for {device} (passkey {passkey:06d}) - PIN code required")
-            raise dbus.exceptions.DBusException(
-                "org.bluez.Error.Rejected",
-                "PIN code entry required - use configured PIN"
-            )
-        else:
-            # Auto-accept if no PIN configured
-            print(f"Auto-confirming pairing for {device} with passkey {passkey:06d}")
-            return
+        """Auto-confirm all SSP pairing requests"""
+        print(f"Auto-confirming pairing for {device} with passkey {passkey:06d}")
+        return
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
@@ -110,29 +85,23 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     bus = dbus.SystemBus()
-    agent = AutoPairAgent(bus, AGENT_PATH, pairing_code=PAIRING_CODE)
+    agent = AutoPairAgent(bus, AGENT_PATH)
 
     try:
         # Get the BlueZ agent manager
         obj = bus.get_object(BUS_NAME, "/org/bluez")
         manager = dbus.Interface(obj, "org.bluez.AgentManager1")
 
-        # Register our agent with appropriate capability
-        # Use "KeyboardOnly" if PIN is set (forces PIN entry, rejects SSP)
-        # Use "NoInputNoOutput" for auto-accept
-        capability = "KeyboardOnly" if PAIRING_CODE else "NoInputNoOutput"
-        manager.RegisterAgent(AGENT_PATH, capability)
-        print(f"Agent registered with BlueZ (capability: {capability})")
+        # Register agent with NoInputNoOutput capability (auto-accept)
+        manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+        print("Agent registered with BlueZ (capability: NoInputNoOutput)")
 
         # Request to be the default agent
         manager.RequestDefaultAgent(AGENT_PATH)
         print("Set as default agent")
 
-        print("Bluetooth pairing agent is running...")
-        if PAIRING_CODE:
-            print(f"Pairing mode: PIN code required (code: {PAIRING_CODE})")
-        else:
-            print("Pairing mode: Auto-accept (no PIN required)")
+        print("Bluetooth auto-pairing agent is running...")
+        print("All pairing requests will be automatically accepted")
 
         # Run the main loop
         mainloop = GLib.MainLoop()
