@@ -181,6 +181,23 @@ class BluetoothMetadataMonitor:
 
             log(f"[DBus] Properties changed on {path}: {list(changed.keys())}")
 
+            # If we don't have a player interface yet, set it up now
+            # This handles the case where bluetoothd wasn't ready during startup scan
+            if self.player_interface is None and path:
+                try:
+                    log(f"[DBus] Setting up player interface for {path}")
+                    player_obj = self.bus.get_object('org.bluez', path)
+                    self.player_interface = dbus.Interface(player_obj, 'org.bluez.MediaPlayer1')
+                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                    self.current_player_path = path
+                    log(f"[DBus] ✓ Player interface ready - controls enabled")
+
+                    # Notify that control became available
+                    if self.on_update:
+                        self.on_update()
+                except Exception as e:
+                    log(f"[Error] Failed to setup player interface: {e}")
+
             updated = False
 
             # Check if Track metadata changed
