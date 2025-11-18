@@ -413,6 +413,12 @@ shellcheck backend/scripts/*.sh
 - `BLUETOOTH_AUTO_PAIR`: Auto-accept pairing requests (default: `1`)
 - `BLUETOOTH_DISCOVERABLE`: Make device discoverable for pairing (default: `1`)
 
+**Bluetooth Feature Notes:**
+- **Pairing**: Auto-accept mode only. Modern devices (iOS 8+, Android 6+) use SSP (Secure Simple Pairing) and do not support legacy PIN codes.
+- **Metadata**: Title, artist, and album are provided via AVRCP (Audio/Video Remote Control Profile).
+- **Album Art**: Currently not available. AVRCP 1.6+ supports album art via BIP (Bluetooth Image Profile), but requires BlueZ 5.81+ with experimental features enabled. Alpine Linux currently packages BlueZ 5.70. See "Bluetooth Limitations" in Important Notes for details.
+- **Media Controls**: Play, pause, skip (next/previous) supported via AVRCP MediaPlayer1 D-Bus interface.
+
 #### Spotify Configuration
 - `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (default: `0`)
 - `SPOTIFY_SOURCE_NAME`: Display name in Snapcast (default: `Spotify`)
@@ -790,9 +796,10 @@ docker compose up -d
    - Track pre-mute volumes for proper mute/unmute behavior
 
 6. **Metadata Handling**:
-   - Metadata format varies by source (AirPlay vs Spotify vs Pipe)
+   - Metadata format varies by source (AirPlay vs Spotify vs Bluetooth vs Pipe)
    - Always provide fallback values (Unknown Track, Unknown Artist, etc.)
    - Album art may be base64 data URL or external URL
+   - Bluetooth streams currently do not provide album art (requires BlueZ 5.81+, see note #11)
 
 7. **TypeScript Best Practices**:
    - Use explicit types from `types.ts`
@@ -814,6 +821,26 @@ docker compose up -d
     - This deployment integrates snapclient for single-device setup
     - For true multi-room, deploy additional snapclient-only containers
     - All clients must be on same Layer 2 network for mDNS discovery
+
+11. **Bluetooth Limitations and Future Enhancements**:
+    - **Album Art Not Available**: AVRCP 1.6+ supports album art via BIP (Bluetooth Image Profile), but implementation requires:
+      - BlueZ 5.81+ (Alpine currently ships 5.70)
+      - Experimental D-Bus interfaces enabled (bluetoothd with `-E` flag)
+      - OBEX client implementation to download 200x200 JPEG thumbnails
+      - Query `ObexPort` property from MediaPlayer1 interface
+      - Download image via OBEX protocol and convert to data URL
+    - **Implementation Path** (when BlueZ 5.81+ becomes available in Alpine):
+      1. Modify `bluetooth-init.sh` to start bluetoothd with experimental flag
+      2. Update `bluetooth-control-script.py` to detect BIP support
+      3. Query MediaPlayer1 `ObexPort` property when track changes
+      4. Implement OBEX image download using Python `dbus` bindings
+      5. Convert downloaded image to base64 data URL
+      6. Add image to metadata response sent to Snapcast
+    - **Why Album Art Works for AirPlay but Not Bluetooth**:
+      - AirPlay uses custom metadata protocol (shairport-sync pipe) with embedded artwork
+      - Bluetooth AVRCP 1.5 only provides text metadata (title, artist, album)
+      - AVRCP 1.6 BIP requires separate OBEX connection to retrieve artwork
+    - **Modern Device Support**: iOS 13+, Android 12+ support AVRCP 1.6 album art
 
 ---
 
