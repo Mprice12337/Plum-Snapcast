@@ -35,7 +35,7 @@ RUN apk add --no-cache \
     py3-gobject3 \
     bluez \
     bluez-alsa \
-    rfkill
+    util-linux
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
