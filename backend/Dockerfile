@@ -52,6 +52,7 @@ RUN apk add --no-cache --virtual .build-deps \
     autoconf \
     automake \
     libtool \
+    pkgconfig \
     alsa-lib-dev \
     avahi-dev \
     libconfig-dev \
