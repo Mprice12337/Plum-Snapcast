@@ -54,16 +54,19 @@ RUN apk add --no-cache --virtual .build-deps \
     libtool \
     pkgconfig \
     alsa-lib-dev \
+    alsa-lib-static \
     avahi-dev \
     libconfig-dev \
     libsndfile-dev \
     popt-dev \
     openssl-dev \
+    openssl-libs-static \
     libsodium-dev \
     libdaemon-dev \
     libplist-dev \
     glib-dev \
     dbus-dev \
+    dbus-static \
     mbedtls-dev \
     soxr-dev \
     libgcrypt-dev \
