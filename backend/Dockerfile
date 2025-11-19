@@ -103,11 +103,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     . $HOME/.cargo/env && \
     rustup target add $(uname -m)-unknown-linux-musl 2>/dev/null || true
 
-# Build librespot 0.8.0 from source with D-Bus MPRIS support
+# Build librespot from source with D-Bus MPRIS support
+# Using main branch for latest D-Bus MPRIS implementation
 RUN . $HOME/.cargo/env && \
-    git clone --depth 1 --branch v0.8.0 https://github.com/librespot-org/librespot.git && \
+    git clone --depth 1 https://github.com/librespot-org/librespot.git && \
     cd librespot && \
-    cargo build --release --no-default-features --features "alsa-backend,dbus_mpris" && \
+    cargo build --release --no-default-features --features "alsa-backend,with-dbus" && \
     cp target/release/librespot /usr/local/bin/librespot && \
     chmod +x /usr/local/bin/librespot && \
     cd .. && \
