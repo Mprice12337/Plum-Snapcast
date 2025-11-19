@@ -98,6 +98,21 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
     cd .. && \
     rm -rf shairport-sync
 
+# Install Rust for building librespot
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+    . $HOME/.cargo/env && \
+    rustup target add $(uname -m)-unknown-linux-musl 2>/dev/null || true
+
+# Build librespot 0.8.0 from source with D-Bus MPRIS support
+RUN . $HOME/.cargo/env && \
+    git clone --depth 1 --branch v0.8.0 https://github.com/librespot-org/librespot.git && \
+    cd librespot && \
+    cargo build --release --no-default-features --features "alsa-backend,dbus_mpris" && \
+    cp target/release/librespot /usr/local/bin/librespot && \
+    chmod +x /usr/local/bin/librespot && \
+    cd .. && \
+    rm -rf librespot $HOME/.cargo $HOME/.rustup
+
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
 RUN apk del --force-broken-world .build-deps && \
@@ -105,10 +120,6 @@ RUN apk del --force-broken-world .build-deps && \
 
 # Fix the world file to only include packages we want to keep
 RUN apk fix
-
-# Try to install librespot from Alpine edge repository (optional)
-RUN apk add --no-cache librespot@edge 2>/dev/null || \
-    echo "Spotify Connect (librespot) not available - continuing without it"
 
 # Configure users and groups
 # Create all required system users
