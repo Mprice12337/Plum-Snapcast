@@ -146,6 +146,11 @@ RUN deluser snapcast 2>/dev/null || true && \
 RUN mkdir -p /var/lib/dbus && \
     dbus-uuidgen > /var/lib/dbus/machine-id
 
+# Copy D-Bus policy files for shairport-sync and spotifyd
+RUN mkdir -p /etc/dbus-1/system.d
+COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/
+COPY config/spotifyd-dbus.conf /etc/dbus-1/system.d/
+
 # Configure Avahi
 RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
     chmod 755 /run/avahi-daemon /var/run/dbus
