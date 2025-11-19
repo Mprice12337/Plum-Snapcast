@@ -126,7 +126,7 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 Expected output:
 ```
 avahi              RUNNING
-librespot          RUNNING (if Spotify enabled)
+spotifyd           RUNNING (if Spotify enabled)
 shairport-sync     RUNNING
 snapclient         RUNNING
 snapserver         RUNNING

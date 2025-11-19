@@ -114,9 +114,7 @@ RUN . $HOME/.cargo/env && \
     git clone --depth 1 https://github.com/Spotifyd/spotifyd.git && \
     cd spotifyd && \
     # Patch Cargo.toml to enable with-avahi feature on librespot-discovery
-    echo "Before patch:" && grep "librespot-discovery" Cargo.toml && \
     sed -i 's/librespot-discovery = "0.8.0"/librespot-discovery = { version = "0.8.0", default-features = false, features = ["with-avahi"] }/' Cargo.toml && \
-    echo "After patch:" && grep "librespot-discovery" Cargo.toml && \
     RUSTFLAGS="-C target-feature=-crt-static" \
     cargo build --release --no-default-features --features "alsa_backend,dbus_mpris" && \
     cp target/release/spotifyd /usr/local/bin/spotifyd && \

@@ -11,7 +11,7 @@
 - Hardware audio output via integrated snapclient (Raspberry Pi 3.5mm jack)
 - Modern React-based web interface for controlling streams and managing clients
 - Real-time WebSocket communication using JSON-RPC 2.0
-- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect, FIFO pipes
+- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect (Spotifyd), FIFO pipes
 - Real-time metadata display with album artwork
 - Individual and group volume control with mute functionality
 
@@ -52,7 +52,7 @@
 - **Audio Sources**:
   - **Shairport-Sync**: AirPlay Classic/1 and AirPlay 2 support
   - **BlueZ + bluez-alsa**: Bluetooth A2DP audio reception
-  - **Librespot**: Spotify Connect client
+  - **Spotifyd**: Spotify Connect client with D-Bus MPRIS support
   - **FIFO Pipes**: Direct audio input support
 - **Process Management**: Supervisord for managing multiple processes
 - **Service Discovery**: Avahi daemon for mDNS/DNS-SD
@@ -83,7 +83,7 @@ Backend (via Docker):
 - `bluez` - Linux Bluetooth stack for device pairing and control
 - `bluez-alsa` - Bluetooth audio (A2DP) via ALSA integration
 - `py3-dbus` - Python D-Bus bindings for Bluetooth metadata extraction
-- `librespot` - Spotify Connect client
+- `spotifyd` - Spotify Connect client (built from source with MPRIS support)
 - `avahi` - Service discovery for network audio (mDNS/DNS-SD)
 - `dbus` - Inter-process communication (container uses host's D-Bus socket)
 - `nqptp` - Network Time Protocol for AirPlay 2 (airplay2 builds only)
@@ -191,7 +191,7 @@ Frontend:
 - **`original/`**: Archive of previous documentation versions
 
 ### Key Directories
-- **backend/**: Docker container with Alpine Linux, Snapcast, Shairport-Sync, Librespot
+- **backend/**: Docker container with Alpine Linux, Snapcast, Shairport-Sync, Spotifyd
 - **frontend/**: React/TypeScript web application with Vite build system
 - **docker/**: Docker Compose orchestration and build scripts
 - **scripts/**: Helper scripts for deployment and setup
@@ -207,7 +207,7 @@ The complete audio flow from source to speakers:
 ```
 iOS/Mac Device (AirPlay), Bluetooth Phone, or Spotify App
               ↓
-    shairport-sync / bluealsa / librespot
+    shairport-sync / bluealsa / spotifyd
     (receives audio stream)
               ↓
        /tmp/snapfifo or /tmp/bluetooth-fifo (FIFO pipe)
@@ -234,10 +234,10 @@ All services run in a single Docker container managed by supervisord for simplif
 - **Snapcast Client**: Audio output client (integrated in same container, outputs to hardware)
 - **Shairport-Sync**: Receives AirPlay audio streams and outputs to Snapcast via FIFO
 - **BlueZ + bluez-alsa**: Bluetooth stack for A2DP audio reception and ALSA integration
-- **Librespot**: Spotify Connect endpoint that streams to Snapcast via FIFO
+- **Spotifyd**: Spotify Connect endpoint with D-Bus MPRIS for metadata and playback control
 - **Supervisord**: Manages all services within the container with auto-restart
 - **Avahi Daemon**: Broadcasts AirPlay/Spotify services on the network via mDNS
-- **D-Bus**: Inter-process communication (uses host socket at /var/run/dbus/system_bus_socket)
+- **D-Bus**: Inter-process communication (system bus for MPRIS integration)
 
 **Frontend Components:**
 - **App.tsx**: Main application component managing global state and layout
@@ -262,7 +262,7 @@ All services run in a single Docker container managed by supervisord for simplif
 ### Design Patterns Used
 - **Container Architecture**: Single container with multiple supervised processes
 - **JSON-RPC over WebSocket**: Standard protocol for all Snapcast communication
-- **FIFO Pipes**: Audio transport from sources (shairport-sync, librespot) to snapserver
+- **FIFO Pipes**: Audio transport from sources (shairport-sync, spotifyd) to snapserver
 - **Host D-Bus + Container Avahi**: Critical pattern - host provides D-Bus socket, container runs Avahi
 - **React Component Composition**: Modular UI with props drilling for state
 - **Custom Hooks**: useAudioSync for progress tracking with client-side prediction
@@ -271,7 +271,7 @@ All services run in a single Docker container managed by supervisord for simplif
 User action → React component → snapcastService (WebSocket JSON-RPC) → Snapcast server → Audio output via snapclient → Speakers
 
 **Metadata Flow:**
-AirPlay/Bluetooth/Spotify → Shairport-Sync/BlueZ D-Bus/Librespot → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
+AirPlay/Bluetooth/Spotify → Shairport-Sync/BlueZ D-Bus/Spotifyd MPRIS → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
 
 ---
 
@@ -422,8 +422,16 @@ shellcheck backend/scripts/*.sh
 #### Spotify Configuration
 - `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (default: `0`)
 - `SPOTIFY_SOURCE_NAME`: Display name in Snapcast (default: `Spotify`)
-- `SPOTIFY_DEVICE_NAME`: Speaker name in Spotify app (default: `Snapcast`)
+- `SPOTIFY_DEVICE_NAME`: Speaker name in Spotify app (default: `Plum Audio`)
 - `SPOTIFY_BITRATE`: Stream quality - 96, 160, or 320 (default: `320`)
+
+**Spotify Implementation Notes:**
+- **Spotifyd vs Librespot**: Uses spotifyd (built on librespot) for working D-Bus MPRIS support
+- **Avahi Integration**: Patched to use `with-avahi` feature to avoid port 5353 conflicts with container's Avahi daemon
+- **D-Bus Permissions**: Permissive policy allows snapcast user to register instance-based service names (e.g., `org.mpris.MediaPlayer2.spotifyd.instance35`)
+- **Lazy Player Detection**: Control script auto-detects spotifyd when it registers on D-Bus (handles startup timing)
+- **Metadata & Controls**: Full playback control (play/pause/next/previous) and metadata (title, artist, album, artwork) via MPRIS
+- **Album Artwork**: Downloaded from Spotify CDN and cached to `/usr/share/snapserver/snapweb/coverart/`
 
 #### FIFO Pipe Configuration
 - `PIPE_CONFIG_ENABLED`: Enable FIFO pipe source (default: `0`)
@@ -796,7 +804,7 @@ docker compose up -d
    - Track pre-mute volumes for proper mute/unmute behavior
 
 6. **Metadata Handling**:
-   - Metadata format varies by source (AirPlay vs Spotify vs Bluetooth vs Pipe)
+   - Metadata format varies by source (AirPlay pipe vs Spotify MPRIS vs Bluetooth AVRCP vs Pipe)
    - Always provide fallback values (Unknown Track, Unknown Artist, etc.)
    - Album art may be base64 data URL or external URL
    - Bluetooth streams currently do not provide album art (requires BlueZ 5.81+, see note #11)
@@ -851,7 +859,8 @@ docker compose up -d
 - **Snapcast JSON-RPC API**: https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/
 - **Docker Snapcast**: https://github.com/firefrei/docker-snapcast
 - **Shairport-Sync**: https://github.com/mikebrady/shairport-sync
-- **Librespot**: https://github.com/librespot-org/librespot
+- **Spotifyd**: https://github.com/Spotifyd/spotifyd
+- **Librespot**: https://github.com/librespot-org/librespot (foundation for spotifyd)
 - **Alpine Linux Packages**: https://pkgs.alpinelinux.org/
 
 ---
