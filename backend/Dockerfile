@@ -54,7 +54,6 @@ RUN apk add --no-cache --virtual .build-deps \
     libtool \
     pkgconfig \
     alsa-lib-dev \
-    alsa-lib-static \
     avahi-dev \
     libconfig-dev \
     libsndfile-dev \
@@ -66,7 +65,6 @@ RUN apk add --no-cache --virtual .build-deps \
     libplist-dev \
     glib-dev \
     dbus-dev \
-    dbus-static \
     mbedtls-dev \
     soxr-dev \
     libgcrypt-dev \
@@ -110,9 +108,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 # Build spotifyd from source with D-Bus MPRIS support
 # spotifyd is a Spotify daemon built on librespot with working MPRIS support
 # This provides both metadata and playback controls via D-Bus
+# Use dynamic linking for system libraries (ALSA, OpenSSL, D-Bus)
 RUN . $HOME/.cargo/env && \
     git clone --depth 1 https://github.com/Spotifyd/spotifyd.git && \
     cd spotifyd && \
+    RUSTFLAGS="-C target-feature=-crt-static" \
     cargo build --release --no-default-features --features "alsa_backend,dbus_mpris" && \
     cp target/release/spotifyd /usr/local/bin/spotifyd && \
     chmod +x /usr/local/bin/spotifyd && \
