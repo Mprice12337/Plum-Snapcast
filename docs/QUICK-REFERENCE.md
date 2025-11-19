@@ -547,12 +547,12 @@ iOS/Mac (AirPlay) or Spotify App
 
 ### Critical Architecture Pattern
 
-**D-Bus/Avahi Configuration:**
-- **Host System**: Provides D-Bus socket at `/var/run/dbus/system_bus_socket`
-- **Container**: Runs Avahi daemon (connects to host D-Bus)
-- **Host Avahi**: MUST be disabled (`systemctl disable avahi-daemon.service`)
+**Self-Contained Container:**
+- **Container**: Runs its own D-Bus and Avahi daemons (fully self-contained)
+- **Host System**: Only requires Docker and audio device access - no D-Bus/Avahi config needed
+- **Portability**: Works identically across different host OS versions (Debian 12, 13, etc.)
 
-**Why**: Avoids conflicts, leverages host D-Bus, enables network service discovery
+**Why**: True Docker isolation, no host dependencies, eliminates OS-specific issues
 
 ### Port Mappings
 

@@ -3,11 +3,12 @@ set -e
 
 echo "Starting Plum Snapcast Server setup..."
 
-# Clean up any stale sockets/pids
-rm -f /var/run/dbus/pid /var/run/dbus/system_bus_socket
+# Clean up any stale sockets/pids from previous runs
+# Container runs its own D-Bus and Avahi (fully self-contained)
+rm -rf /var/run/dbus/*
 rm -rf /var/run/avahi-daemon/*
 
-# Create required directories
+# Create required directories for container's D-Bus and Avahi
 mkdir -p /var/run/dbus /var/run/avahi-daemon
 chmod 755 /var/run/dbus /var/run/avahi-daemon
 
@@ -22,6 +23,12 @@ if [ ! -p /tmp/shairport-sync-metadata ]; then
     echo "Creating metadata pipe..."
     mkfifo /tmp/shairport-sync-metadata
     chmod 666 /tmp/shairport-sync-metadata
+fi
+
+if [ ! -p /tmp/bluetooth-fifo ]; then
+    echo "Creating Bluetooth FIFO pipe..."
+    mkfifo /tmp/bluetooth-fifo
+    chmod 666 /tmp/bluetooth-fifo
 fi
 
 # Create artwork cache directory for shairport-sync
@@ -62,6 +69,14 @@ SNAPCONF
         echo "Adding AirPlay source..."
         # Insert source after [stream] line with control script for metadata
         sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+    fi
+
+    # Add Bluetooth source to [stream] section
+    if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
+        echo "Adding Bluetooth source..."
+        # Insert source after [stream] line with control script for metadata
+        # Bluetooth audio is typically 44.1kHz/16-bit stereo
+        sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
     fi
 fi
 

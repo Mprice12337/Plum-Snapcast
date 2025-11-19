@@ -5,7 +5,7 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
 LABEL maintainer="Plum-Snapcast"
-LABEL description="Snapcast server with AirPlay and Spotify support"
+LABEL description="Snapcast server with AirPlay, Bluetooth, and Spotify support"
 
 # Install runtime dependencies (ADDED python3 for metadata processor)
 RUN apk add --no-cache \
@@ -32,7 +32,10 @@ RUN apk add --no-cache \
     ffmpeg-libs \
     python3 \
     py3-dbus \
-    py3-gobject3
+    py3-gobject3 \
+    bluez \
+    bluez-alsa \
+    util-linux
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
@@ -175,6 +178,13 @@ ENV TZ=Etc/UTC \
     SPOTIFY_DEVICE_NAME=Snapcast \
     SPOTIFY_BITRATE=320 \
     SPOTIFY_ACCESS_TOKEN="" \
+    BLUETOOTH_ENABLED=0 \
+    BLUETOOTH_SOURCE_NAME=Bluetooth \
+    BLUETOOTH_DEVICE_NAME="Plum Audio" \
+    BLUETOOTH_ADAPTER=hci0 \
+    BLUETOOTH_DEVICE_PATH="" \
+    BLUETOOTH_AUTO_PAIR=1 \
+    BLUETOOTH_DISCOVERABLE=1 \
     PIPE_CONFIG_ENABLED=0 \
     PIPE_SOURCE_NAME=Pipe \
     PIPE_PATH=/tmp/snapfifo \

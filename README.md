@@ -1,6 +1,6 @@
 # Plum-Snapcast
 
-A comprehensive multi-room audio streaming solution combining Snapcast with a modern React frontend.
+A comprehensive multi-room audio streaming solution combining Snapcast with a modern React frontend. Supports AirPlay, Bluetooth (A2DP), and Spotify Connect.
 
 ## Project Structure
 
@@ -73,18 +73,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-#### 3. Disable Host Avahi Services
-
-Disable the host's Avahi daemon to prevent conflicts with the container's Avahi:
-
-```bash
-sudo systemctl disable avahi-daemon.service
-sudo systemctl disable avahi-daemon.socket
-```
-
-**Important**: The container runs its own Avahi daemon for AirPlay discovery. The host's D-Bus service must remain enabled (it's socket-activated by default).
-
-#### 4. Clone and Deploy
+#### 3. Clone and Deploy
 
 ```bash
 # Clone the repository
@@ -100,11 +89,13 @@ sudo docker compose pull
 sudo docker compose up -d
 ```
 
-#### 5. Reboot
+#### 4. Reboot
 
 ```bash
 sudo reboot
 ```
+
+**Note**: The container runs its own D-Bus and Avahi daemons. The only host requirement is that the host's Avahi daemon must be disabled (the fresh-pi-setup.sh script handles this automatically).
 
 ### Accessing the Application
 
@@ -112,6 +103,7 @@ After deployment:
 
 - **Web Interface**: http://raspberrypi.local:3000 or http://<pi-ip-address>:3000
 - **AirPlay Device**: Look for "Plum Audio" in AirPlay devices on iOS/macOS
+- **Bluetooth Device**: Look for "Plum Audio" in Bluetooth settings on your phone/device (if enabled)
 
 ### Verification
 
@@ -134,8 +126,16 @@ snapserver         RUNNING
 
 Edit `docker/.env` to customize:
 - `AIRPLAY_DEVICE_NAME`: Name shown in AirPlay device list
+- `BLUETOOTH_ENABLED`: Enable Bluetooth A2DP audio (default: 0, set to 1 to enable)
+- `BLUETOOTH_DEVICE_NAME`: Name shown in Bluetooth pairing list
+- `BLUETOOTH_ADAPTER`: Bluetooth adapter to use (default: hci0)
 - `FRONTEND_PORT`: Web interface port (default: 3000)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device for audio output (default: hw:Headphones)
+
+**Bluetooth Notes:**
+- Provides track metadata (title, artist, album) and media controls (play, pause, skip)
+- Album artwork is not currently available (requires BlueZ 5.81+; Alpine currently ships 5.70)
+- Auto-pairing mode only (modern devices use SSP, not PIN codes)
 
 For more details, see [CLAUDE.md](CLAUDE.md).
 
