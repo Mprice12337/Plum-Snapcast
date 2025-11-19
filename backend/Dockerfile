@@ -103,17 +103,17 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     . $HOME/.cargo/env && \
     rustup target add $(uname -m)-unknown-linux-musl 2>/dev/null || true
 
-# Build librespot from source for Spotify Connect audio streaming
-# Note: D-Bus MPRIS support is not yet available in librespot (still in draft PR #1341)
-# Building for audio streaming only - metadata/controls will be added when MPRIS lands
+# Build spotifyd from source with D-Bus MPRIS support
+# spotifyd is a Spotify daemon built on librespot with working MPRIS support
+# This provides both metadata and playback controls via D-Bus
 RUN . $HOME/.cargo/env && \
-    git clone --depth 1 https://github.com/librespot-org/librespot.git && \
-    cd librespot && \
-    cargo build --release --no-default-features --features "alsa-backend" && \
-    cp target/release/librespot /usr/local/bin/librespot && \
-    chmod +x /usr/local/bin/librespot && \
+    git clone --depth 1 https://github.com/Spotifyd/spotifyd.git && \
+    cd spotifyd && \
+    cargo build --release --no-default-features --features "alsa_backend,dbus_mpris" && \
+    cp target/release/spotifyd /usr/local/bin/spotifyd && \
+    chmod +x /usr/local/bin/spotifyd && \
     cd .. && \
-    rm -rf librespot $HOME/.cargo $HOME/.rustup
+    rm -rf spotifyd $HOME/.cargo $HOME/.rustup
 
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
@@ -144,6 +144,7 @@ RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
 # FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
 COPY config/shairport-sync.conf /app/config/
+COPY config/spotifyd.conf /app/config/
 
 
 # Create required directories
