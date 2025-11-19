@@ -27,7 +27,7 @@ from typing import Dict, Optional
 # Configuration
 LOG_FILE = "/tmp/spotify-control-script.log"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
-COVER_ART_DIR = "/tmp/spotify/.cache/coverart"
+COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 
 # Set up logging to file
 def log(message: str):
@@ -150,12 +150,12 @@ class SpotifyMetadataMonitor:
             filename = f"{url_hash}.jpg"
 
             # Save to Snapcast web root so it's accessible via HTTP
-            web_cover_dir = Path(SNAPCAST_WEB_ROOT) / "coverart"
-            web_cover_dir.mkdir(parents=True, exist_ok=True)
-            web_cover_path = web_cover_dir / filename
+            cover_dir = Path(COVER_ART_DIR)
+            cover_dir.mkdir(parents=True, exist_ok=True)
+            cover_path = cover_dir / filename
 
             # Check if already downloaded
-            if web_cover_path.exists():
+            if cover_path.exists():
                 log(f"[Artwork] Cached: {filename}")
                 return f"/coverart/{filename}"
 
@@ -166,18 +166,11 @@ class SpotifyMetadataMonitor:
                 cover_data = response.read()
 
             # Save to web root
-            with open(web_cover_path, "wb") as f:
+            with open(cover_path, "wb") as f:
                 f.write(cover_data)
 
             # Make sure the file is readable by the web server
-            os.chmod(web_cover_path, 0o644)
-
-            # Also save to cache directory for backup
-            cover_dir = Path(COVER_ART_DIR)
-            cover_dir.mkdir(parents=True, exist_ok=True)
-            cache_path = cover_dir / filename
-            with open(cache_path, "wb") as f:
-                f.write(cover_data)
+            os.chmod(cover_path, 0o644)
 
             log(f"[Artwork] Downloaded: {len(cover_data)} bytes → /coverart/{filename}")
             return f"/coverart/{filename}"
@@ -284,43 +277,50 @@ class SpotifyMetadataMonitor:
             log(f"[Error] Properties changed handler failed: {e}")
 
     def _scan_for_players(self):
-        """Scan for existing librespot player on D-Bus"""
+        """Scan for existing spotifyd player on D-Bus"""
         if not self.bus:
             return
 
         try:
-            # Look for librespot's MPRIS interface
-            # Service name is typically org.mpris.MediaPlayer2.spotifyd or similar
-            bus_names = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
+            # Get list of all D-Bus names
+            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
+            all_names = bus_interface.ListNames()
 
-            for service_name in bus_names:
-                try:
-                    player_obj = self.bus.get_object(service_name, '/org/mpris/MediaPlayer2')
-                    self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
-                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
-                    log(f"[DBus] ✓ Found player: {service_name}")
+            # Look for any service starting with org.mpris.MediaPlayer2.spotifyd or librespot
+            # (spotifyd uses instance-based naming like org.mpris.MediaPlayer2.spotifyd.instance35)
+            prefixes = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
 
-                    # Get initial metadata
-                    try:
-                        metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
-                        if metadata:
-                            extracted = self._extract_metadata_from_dict(metadata)
-                            if extracted:
-                                self.store.update(**extracted)
+            for name in all_names:
+                for prefix in prefixes:
+                    if name.startswith(prefix):
+                        try:
+                            player_obj = self.bus.get_object(name, '/org/mpris/MediaPlayer2')
+                            self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
+                            self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                            log(f"[DBus] ✓ Found player: {name}")
 
-                        status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
-                        if status:
-                            self.store.update(playback_status=self._extract_playback_status(str(status)))
-                    except:
-                        pass
+                            # Get initial metadata
+                            try:
+                                metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
+                                if metadata:
+                                    extracted = self._extract_metadata_from_dict(metadata)
+                                    if extracted:
+                                        self.store.update(**extracted)
 
-                    # Notify that control is available
-                    if self.on_update:
-                        self.on_update()
+                                status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                                if status:
+                                    self.store.update(playback_status=self._extract_playback_status(str(status)))
+                            except:
+                                pass
 
-                    return
-                except dbus.DBusException:
-                    continue
+                            # Notify that control is available
+                            if self.on_update:
+                                self.on_update()
+
+                            return
+                        except dbus.DBusException:
+                            continue
 
             log("[DBus] No Spotify player found yet (will monitor for connections)")
 
