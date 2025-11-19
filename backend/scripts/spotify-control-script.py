@@ -239,6 +239,12 @@ class SpotifyMetadataMonitor:
             if interface != 'org.mpris.MediaPlayer2.Player':
                 return
 
+            # If we don't have a player interface yet, try to find it now
+            # (This handles the case where spotifyd registers after script startup)
+            if not self.player_interface:
+                log("[DBus] Received properties but no player interface - scanning now")
+                self._scan_for_players()
+
             log(f"[DBus] Properties changed: {list(changed.keys())}")
 
             updated = False
