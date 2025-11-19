@@ -103,12 +103,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     . $HOME/.cargo/env && \
     rustup target add $(uname -m)-unknown-linux-musl 2>/dev/null || true
 
-# Build librespot from source with D-Bus MPRIS support
-# Using main branch for latest D-Bus MPRIS implementation
+# Build librespot from source for Spotify Connect audio streaming
+# Note: D-Bus MPRIS support is not yet available in librespot (still in draft PR #1341)
+# Building for audio streaming only - metadata/controls will be added when MPRIS lands
 RUN . $HOME/.cargo/env && \
     git clone --depth 1 https://github.com/librespot-org/librespot.git && \
     cd librespot && \
-    cargo build --release --no-default-features --features "alsa-backend,with-dbus" && \
+    cargo build --release --no-default-features --features "alsa-backend" && \
     cp target/release/librespot /usr/local/bin/librespot && \
     chmod +x /usr/local/bin/librespot && \
     cd .. && \
