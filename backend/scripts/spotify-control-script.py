@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """
 Snapcast Control Script for Spotify Connect (Librespot)
-Monitors metadata from librespot event handler and provides playback control
+Monitors librespot D-Bus MPRIS interface for metadata and provides playback control
+
+Based on proven pattern from bluetooth-control-script.py:
+- Thread-safe metadata storage with atomic updates
+- Playback state tracking (Playing/Paused/Stopped)
+- Control command handling via D-Bus MPRIS
+- Complete properties response for Snapcast
+- Album artwork download and caching
 """
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import sys
@@ -16,11 +25,9 @@ from pathlib import Path
 from typing import Dict, Optional
 
 # Configuration
-METADATA_FILE = "/tmp/spotify-metadata.json"
-COVER_ART_DIR = "/tmp/spotify/.cache/coverart"
-SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 LOG_FILE = "/tmp/spotify-control-script.log"
-LIBRESPOT_CONTROL_PIPE = "/tmp/librespot-control"
+SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
+COVER_ART_DIR = "/tmp/spotify/.cache/coverart"
 
 # Set up logging to file
 def log(message: str):
@@ -34,80 +41,103 @@ def log(message: str):
     except:
         pass
 
+# Try to import D-Bus - graceful fallback if not available
+try:
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+    DBUS_AVAILABLE = True
+except ImportError:
+    DBUS_AVAILABLE = False
+    log("[Warning] D-Bus not available - Spotify features disabled")
 
-class SpotifyMetadataMonitor:
-    """Monitor Spotify metadata from librespot event handler"""
+
+class MetadataStore:
+    """
+    Thread-safe storage for current metadata and playback state.
+    This ensures atomic reads/writes and consistency.
+    """
 
     def __init__(self):
-        self.last_metadata = {}
-        self.last_mtime = 0
-
-    def get_metadata(self) -> Optional[Dict]:
-        """Check for new metadata from event handler"""
-        try:
-            if not Path(METADATA_FILE).exists():
-                return None
-
-            # Check if file was modified
-            mtime = os.path.getmtime(METADATA_FILE)
-            if mtime <= self.last_mtime:
-                return None
-
-            self.last_mtime = mtime
-
-            # Read metadata
-            with open(METADATA_FILE, 'r') as f:
-                metadata = json.load(f)
-
-            # Only return metadata for track change events
-            event = metadata.get('event', '')
-            if event in ['start', 'load', 'change']:
-                return metadata
-
-            return None
-
-        except Exception as e:
-            log(f"Error reading metadata: {e}")
-            return None
-
-
-class SnapcastControlScript:
-    """Snapcast control script that communicates via stdin/stdout"""
-
-    def __init__(self, stream_id: str):
-        self.stream_id = stream_id
-        self.metadata_monitor = SpotifyMetadataMonitor()
-        self.last_metadata = {}
-        log(f"[DEBUG] Initialized for stream: {stream_id}")
-
-    def send_notification(self, method: str, params: Dict):
-        """Send JSON-RPC notification to Snapcast via stdout"""
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
+        self.lock = threading.Lock()
+        self.data = {
+            "title": None,
+            "artist": None,
+            "album": None,
+            "artUrl": None,
+            "duration": None,
+            "position": 0,
+            "last_updated": None,
+            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
         }
-        notification_str = json.dumps(notification)
-        # Write to stdout for Snapcast to read
-        print(notification_str, file=sys.stdout, flush=True)
-        log(f"[DEBUG] Sent notification: {notification_str[:300]}")
 
-    def _write_artwork_json(self, metadata: Dict):
-        """Write current artwork URL to JSON file for frontend to fetch"""
-        try:
-            artwork_file = Path(SNAPCAST_WEB_ROOT) / "spotify-artwork.json"
-            artwork_data = {
-                "artUrl": metadata.get("artUrl"),
-                "title": metadata.get("title"),
-                "artist": metadata.get("artist"),
-                "album": metadata.get("album"),
-                "timestamp": time.time()
-            }
-            with open(artwork_file, 'w') as f:
-                json.dump(artwork_data, f)
-            log(f"[DEBUG] Wrote artwork JSON to {artwork_file}")
-        except Exception as e:
-            log(f"Error writing artwork JSON: {e}")
+    def update(self, **kwargs):
+        """Update metadata fields atomically"""
+        with self.lock:
+            self.data.update(kwargs)
+            self.data["last_updated"] = time.time()
+            log(f"[Store] Updated: {list(kwargs.keys())}")
+
+    def get_all(self) -> Dict:
+        """Get all metadata (returns a copy)"""
+        with self.lock:
+            return self.data.copy()
+
+    def get_metadata_for_snapcast(self) -> Optional[Dict]:
+        """
+        Get metadata formatted for Snapcast.
+
+        Snapcast expects simple field names:
+        - title (string)
+        - artist (array of strings)
+        - album (string)
+        - artUrl (string)
+        """
+        with self.lock:
+            # Only return if we have at least a title
+            if self.data.get("title"):
+                meta = {}
+
+                # Snapcast metadata fields (simple names)
+                if self.data.get("title"):
+                    meta["title"] = self.data["title"]
+
+                if self.data.get("artist"):
+                    # Snapcast expects artist as an array
+                    artist = self.data["artist"]
+                    meta["artist"] = [artist] if isinstance(artist, str) else artist
+
+                if self.data.get("album"):
+                    meta["album"] = self.data["album"]
+
+                if self.data.get("artUrl"):
+                    meta["artUrl"] = self.data["artUrl"]
+
+                if self.data.get("duration"):
+                    meta["duration"] = self.data["duration"]
+
+                return meta
+            return None
+
+
+class SpotifyMetadataMonitor:
+    """Monitor librespot D-Bus MPRIS interface for Spotify metadata and playback state"""
+
+    def __init__(self, store: MetadataStore, on_update_callback):
+        self.store = store
+        self.on_update = on_update_callback
+        self.player_interface = None
+        self.player_properties = None
+        self.bus = None
+
+        if not DBUS_AVAILABLE:
+            log("[Spotify] D-Bus not available - monitoring disabled")
+            return
+
+        # Initialize D-Bus
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        self.bus = dbus.SessionBus() if 'DBUS_SESSION_BUS_ADDRESS' in os.environ else dbus.SystemBus()
+        log("[Spotify] D-Bus monitor initialized")
 
     def _download_cover_art(self, cover_url: str) -> Optional[str]:
         """Download cover art from Spotify and save to web root"""
@@ -116,7 +146,6 @@ class SnapcastControlScript:
 
         try:
             # Create a filename from the URL
-            import hashlib
             url_hash = hashlib.md5(cover_url.encode()).hexdigest()
             filename = f"{url_hash}.jpg"
 
@@ -127,11 +156,11 @@ class SnapcastControlScript:
 
             # Check if already downloaded
             if web_cover_path.exists():
-                log(f"[DEBUG] Cover art already cached: {filename}")
+                log(f"[Artwork] Cached: {filename}")
                 return f"/coverart/{filename}"
 
             # Download cover art
-            log(f"[DEBUG] Downloading cover art from: {cover_url[:100]}")
+            log(f"[Artwork] Downloading from: {cover_url[:100]}")
             req = urllib.request.Request(cover_url, headers={'User-Agent': 'Snapcast/1.0'})
             with urllib.request.urlopen(req, timeout=10) as response:
                 cover_data = response.read()
@@ -150,85 +179,288 @@ class SnapcastControlScript:
             with open(cache_path, "wb") as f:
                 f.write(cover_data)
 
-            # Return HTTP URL that's accessible from browser
-            log(f"[DEBUG] Cover art saved to {web_cover_path} ({len(cover_data)} bytes)")
+            log(f"[Artwork] Downloaded: {len(cover_data)} bytes → /coverart/{filename}")
             return f"/coverart/{filename}"
 
         except Exception as e:
-            log(f"Error downloading cover art: {e}")
+            log(f"[Error] Artwork download failed: {e}")
             return None
 
-    def send_metadata_update(self, metadata: Dict):
-        """Send Plugin.Stream.Player.Properties with metadata"""
-        # Build metadata dict (nested under "metadata" key as per Snapcast spec)
-        meta_obj = {}
+    def _extract_metadata_from_dict(self, metadata_dict: Dict) -> Dict:
+        """Extract metadata from MPRIS metadata properties"""
+        result = {}
 
-        if metadata.get("title"):
-            meta_obj["name"] = metadata["title"]  # Use "name" for title per Snapcast docs
-
-        if metadata.get("artist"):
-            # Artist should be an array
-            artist = metadata["artist"]
-            meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-
-        if metadata.get("album"):
-            meta_obj["album"] = metadata["album"]
-
-        if metadata.get("artUrl"):
-            # Use MPRIS standard field name for artwork
-            meta_obj["mpris:artUrl"] = metadata["artUrl"]
-
-        if metadata.get("track_id"):
-            meta_obj["mpris:trackid"] = f"spotify:track:{metadata['track_id']}"
-
-        if metadata.get("duration_ms"):
-            # Duration in microseconds (MPRIS standard)
-            try:
-                meta_obj["mpris:length"] = int(metadata["duration_ms"]) * 1000
-            except:
-                pass
-
-        if meta_obj:
-            # Build the properties object
-            properties = {"metadata": meta_obj}
-
-            # Also add artUrl as a top-level property
-            if metadata.get("artUrl"):
-                properties["artUrl"] = metadata["artUrl"]
-
-            # Send Plugin.Stream.Player.Properties
-            self.send_notification("Plugin.Stream.Player.Properties", properties)
-            log(f"[DEBUG] Sent metadata update: {list(meta_obj.keys())}")
-            if metadata.get("artUrl"):
-                log(f"[DEBUG] Also sent top-level artUrl: {metadata['artUrl']}")
-
-        # Write artwork JSON for frontend
-        if metadata.get("artUrl"):
-            self._write_artwork_json(metadata)
-
-    def send_playback_command(self, command: str):
-        """Send playback command to librespot via control pipe"""
         try:
-            # Librespot doesn't have a built-in control interface via pipe
-            # We need to use D-Bus MPRIS interface instead
-            # For now, just log the command
-            log(f"[DEBUG] Playback command received: {command}")
-            log(f"[WARNING] Playback control via D-Bus MPRIS not yet implemented")
-            # TODO: Implement D-Bus MPRIS control
-            # import dbus
-            # bus = dbus.SessionBus()
-            # player = bus.get_object('org.mpris.MediaPlayer2.spotifyd', '/org/mpris/MediaPlayer2')
-            # player_iface = dbus.Interface(player, 'org.mpris.MediaPlayer2.Player')
-            # if command == "play":
-            #     player_iface.Play()
-            # elif command == "pause":
-            #     player_iface.Pause()
-            # elif command == "next":
-            #     player_iface.Next()
-            # elif command == "previous":
-            #     player_iface.Previous()
+            # MPRIS metadata fields
+            if 'xesam:title' in metadata_dict:
+                result['title'] = str(metadata_dict['xesam:title'])
+                log(f"[Metadata] Title: {result['title']}")
+
+            if 'xesam:artist' in metadata_dict:
+                # Artist can be an array
+                artists = metadata_dict['xesam:artist']
+                if isinstance(artists, (list, tuple)) and artists:
+                    result['artist'] = ', '.join(str(a) for a in artists)
+                else:
+                    result['artist'] = str(artists)
+                log(f"[Metadata] Artist: {result['artist']}")
+
+            if 'xesam:album' in metadata_dict:
+                result['album'] = str(metadata_dict['xesam:album'])
+                log(f"[Metadata] Album: {result['album']}")
+
+            if 'mpris:artUrl' in metadata_dict:
+                art_url = str(metadata_dict['mpris:artUrl'])
+                log(f"[Metadata] Album Art URL: {art_url[:100]}")
+
+                # Download and cache the artwork
+                local_art_url = self._download_cover_art(art_url)
+                if local_art_url:
+                    result['artUrl'] = local_art_url
+
+            if 'mpris:length' in metadata_dict:
+                # MPRIS length is in microseconds
+                length_us = int(metadata_dict['mpris:length'])
+                result['duration'] = length_us // 1000  # Convert to milliseconds
+                log(f"[Metadata] Duration: {result['duration']}ms")
+
         except Exception as e:
-            log(f"Error sending playback command: {e}")
+            log(f"[Error] Metadata extraction failed: {e}")
+
+        return result
+
+    def _extract_playback_status(self, status_str: str) -> str:
+        """Convert MPRIS playback status to our format"""
+        # MPRIS statuses: "Playing", "Paused", "Stopped"
+        status_map = {
+            "playing": "Playing",
+            "paused": "Paused",
+            "stopped": "Stopped",
+        }
+        return status_map.get(status_str.lower(), "Stopped")
+
+    def _properties_changed_handler(self, interface, changed, invalidated, sender):
+        """Handle D-Bus PropertiesChanged signals"""
+        try:
+            # We're interested in MediaPlayer2.Player interface
+            if interface != 'org.mpris.MediaPlayer2.Player':
+                return
+
+            log(f"[DBus] Properties changed: {list(changed.keys())}")
+
+            updated = False
+
+            # Check if Metadata changed
+            if 'Metadata' in changed:
+                metadata_dict = changed['Metadata']
+                log(f"[DBus] Metadata changed: {list(metadata_dict.keys())}")
+
+                metadata = self._extract_metadata_from_dict(metadata_dict)
+
+                if metadata:
+                    # Update store with new metadata
+                    self.store.update(**metadata)
+                    updated = True
+
+            # Check if playback status changed
+            if 'PlaybackStatus' in changed:
+                status = self._extract_playback_status(str(changed['PlaybackStatus']))
+                log(f"[DBus] Status changed: {status}")
+                self.store.update(playback_status=status)
+                updated = True
+
+            # Check if position changed
+            if 'Position' in changed:
+                position_us = int(changed['Position'])
+                position_ms = position_us // 1000
+                self.store.update(position=position_ms)
+                # Don't trigger update for position changes alone
+
+            # Notify parent if anything changed
+            if updated and self.on_update:
+                self.on_update()
+
+        except Exception as e:
+            log(f"[Error] Properties changed handler failed: {e}")
+
+    def _scan_for_players(self):
+        """Scan for existing librespot player on D-Bus"""
+        if not self.bus:
+            return
+
+        try:
+            # Look for librespot's MPRIS interface
+            # Service name is typically org.mpris.MediaPlayer2.spotifyd or similar
+            bus_names = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
+
+            for service_name in bus_names:
+                try:
+                    player_obj = self.bus.get_object(service_name, '/org/mpris/MediaPlayer2')
+                    self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
+                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                    log(f"[DBus] ✓ Found player: {service_name}")
+
+                    # Get initial metadata
+                    try:
+                        metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
+                        if metadata:
+                            extracted = self._extract_metadata_from_dict(metadata)
+                            if extracted:
+                                self.store.update(**extracted)
+
+                        status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                        if status:
+                            self.store.update(playback_status=self._extract_playback_status(str(status)))
+                    except:
+                        pass
+
+                    # Notify that control is available
+                    if self.on_update:
+                        self.on_update()
+
+                    return
+                except dbus.DBusException:
+                    continue
+
+            log("[DBus] No Spotify player found yet (will monitor for connections)")
+
+        except Exception as e:
+            log(f"[Error] Player scan failed: {e}")
+
+    def start(self):
+        """Start monitoring D-Bus for Spotify metadata"""
+        if not DBUS_AVAILABLE:
+            return
+
+        log("[Spotify] Starting metadata monitoring...")
+
+        try:
+            # Subscribe to PropertiesChanged signals from MPRIS
+            self.bus.add_signal_receiver(
+                self._properties_changed_handler,
+                dbus_interface='org.freedesktop.DBus.Properties',
+                signal_name='PropertiesChanged',
+                sender_keyword='sender'
+            )
+
+            log("[Spotify] Subscribed to MPRIS D-Bus signals")
+
+            # Try to find existing player
+            self._scan_for_players()
+
+        except Exception as e:
+            log(f"[Error] Failed to start monitoring: {e}")
+
+    def play(self):
+        """Send play command via MPRIS"""
+        if self.player_interface:
+            try:
+                self.player_interface.Play()
+                log("[Control] Sent Play command")
+                self.store.update(playback_status="Playing")
+            except Exception as e:
+                log(f"[Error] Play failed: {e}")
+
+    def pause(self):
+        """Send pause command via MPRIS"""
+        if self.player_interface:
+            try:
+                self.player_interface.Pause()
+                log("[Control] Sent Pause command")
+                self.store.update(playback_status="Paused")
+            except Exception as e:
+                log(f"[Error] Pause failed: {e}")
+
+    def next_track(self):
+        """Skip to next track"""
+        if self.player_interface:
+            try:
+                self.player_interface.Next()
+                log("[Control] Sent Next command")
+            except Exception as e:
+                log(f"[Error] Next failed: {e}")
+
+    def previous_track(self):
+        """Skip to previous track"""
+        if self.player_interface:
+            try:
+                self.player_interface.Previous()
+                log("[Control] Sent Previous command")
+            except Exception as e:
+                log(f"[Error] Previous failed: {e}")
+
+    def is_available(self):
+        """Check if control is available"""
+        return self.player_interface is not None
+
+    def stop(self):
+        """Stop monitoring"""
+        pass  # D-Bus loop handled by main script
+
+
+class SnapcastControlScript:
+    """Snapcast control script that communicates via stdin/stdout"""
+
+    def __init__(self, stream_id: str):
+        self.stream_id = stream_id
+        self.store = MetadataStore()
+        self.spotify_monitor = SpotifyMetadataMonitor(self.store, self.send_update)
+        log(f"[Init] Initialized for stream: {stream_id}")
+
+    def send_notification(self, method: str, params: Dict):
+        """Send JSON-RPC notification to Snapcast via stdout"""
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        }
+        print(json.dumps(notification), file=sys.stdout, flush=True)
+        log(f"[Snapcast] → {method}")
+
+    def send_update(self):
+        """Send Plugin.Stream.Player.Properties with current state and metadata"""
+        meta_obj = self.store.get_metadata_for_snapcast() or {}
+        state_data = self.store.get_all()
+        playback_status = state_data.get("playback_status", "Stopped")
+        position = state_data.get("position", 0)
+        can_control = self.spotify_monitor.is_available()
+
+        # Notification params: include stream ID and all properties
+        params = {
+            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
+
+            # Playback state
+            "playbackStatus": playback_status,
+            "loopStatus": "none",
+            "shuffle": False,
+            "volume": 100,
+            "mute": False,
+            "rate": 1.0,
+            "position": position,
+
+            # Control capabilities
+            "canGoNext": can_control,
+            "canGoPrevious": can_control,
+            "canPlay": can_control,
+            "canPause": can_control,
+            "canSeek": False,
+            "canControl": can_control,
+
+            # Metadata (simple field names)
+            "metadata": meta_obj
+        }
+        self.send_notification("Plugin.Stream.Player.Properties", params)
+
+        # Log what we sent
+        if meta_obj:
+            title = meta_obj.get('title', 'N/A')
+            artist = meta_obj.get('artist', ['N/A'])
+            artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
+            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
+            if "artUrl" in meta_obj:
+                log(f"[Snapcast]   Artwork: {meta_obj['artUrl']}")
+        else:
+            log(f"[Snapcast] State → [{playback_status}] (stream={self.stream_id})")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -238,119 +470,143 @@ class SnapcastControlScript:
             request_id = request.get("id")
             params = request.get("params", {})
 
-            log(f"[DEBUG] Received command: {method} with params: {params}")
+            log(f"[Command] Received: {method} (id={request_id})")
 
-            # Respond to getProperties with current metadata
             if method == "Plugin.Stream.Player.GetProperties":
-                # Build metadata object (same format as notifications)
-                meta_obj = {}
-                if self.last_metadata:
-                    if self.last_metadata.get("title"):
-                        meta_obj["name"] = self.last_metadata["title"]
-                    if self.last_metadata.get("artist"):
-                        artist = self.last_metadata["artist"]
-                        meta_obj["artist"] = [artist] if isinstance(artist, str) else artist
-                    if self.last_metadata.get("album"):
-                        meta_obj["album"] = self.last_metadata["album"]
-                    if self.last_metadata.get("artUrl"):
-                        meta_obj["mpris:artUrl"] = self.last_metadata["artUrl"]
-                    if self.last_metadata.get("track_id"):
-                        meta_obj["mpris:trackid"] = f"spotify:track:{self.last_metadata['track_id']}"
-                    if self.last_metadata.get("duration_ms"):
-                        try:
-                            meta_obj["mpris:length"] = int(self.last_metadata["duration_ms"]) * 1000
-                        except:
-                            pass
+                # Return COMPLETE properties object
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "Stopped")
+                position = state_data.get("position", 0)
+                can_control = self.spotify_monitor.is_available()
 
-                # Build result with metadata and top-level artUrl
-                result = {"metadata": meta_obj}
-                if self.last_metadata and self.last_metadata.get("artUrl"):
-                    result["artUrl"] = self.last_metadata["artUrl"]
+                # Build complete properties response per Snapcast Stream Plugin API
+                properties = {
+                    # Playback state
+                    "playbackStatus": playback_status,
+                    "loopStatus": "none",
+                    "shuffle": False,
+                    "volume": 100,
+                    "mute": False,
+                    "rate": 1.0,
+                    "position": position,
+
+                    # Control capabilities
+                    "canGoNext": can_control,
+                    "canGoPrevious": can_control,
+                    "canPlay": can_control,
+                    "canPause": can_control,
+                    "canSeek": False,
+                    "canControl": can_control,
+
+                    # Metadata
+                    "metadata": meta_obj
+                }
 
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": result
+                    "result": properties
                 }
-                response_str = json.dumps(response)
-                print(response_str, file=sys.stdout, flush=True)
-                log(f"[DEBUG] Sent GetProperties response: {response_str[:300]}")
+                print(json.dumps(response), file=sys.stdout, flush=True)
+                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
 
-            # Handle playback control commands
-            elif method == "Plugin.Stream.Player.Control":
+            elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
+                # Handle playback control commands
                 command = params.get("command", "")
-                log(f"[DEBUG] Control command: {command}")
-                self.send_playback_command(command)
+                log(f"[Control] Received control command: {command} (params={params})")
 
-                # Send response
+                if not self.spotify_monitor.is_available():
+                    # Return error if D-Bus not available
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Control not available (Spotify not connected)"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+                    return
+
+                # Execute command via D-Bus and update state
+                if command == "play":
+                    self.spotify_monitor.play()
+                    self.send_update()
+                elif command == "pause":
+                    self.spotify_monitor.pause()
+                    self.send_update()
+                elif command == "playPause":
+                    # Toggle state
+                    current_state = self.store.get_all().get("playback_status", "Paused")
+                    if current_state == "Playing":
+                        self.spotify_monitor.pause()
+                    else:
+                        self.spotify_monitor.play()
+                    self.send_update()
+                elif command == "next":
+                    self.spotify_monitor.next_track()
+                    self.send_update()
+                elif command == "previous" or command == "prev":
+                    self.spotify_monitor.previous_track()
+                    self.send_update()
+                else:
+                    log(f"[Warning] Unknown control command: {command}")
+
+                # Send success response
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {}
                 }
-                response_str = json.dumps(response)
-                print(response_str, file=sys.stdout, flush=True)
+                print(json.dumps(response), file=sys.stdout, flush=True)
 
         except json.JSONDecodeError:
-            log(f"[DEBUG] Invalid JSON: {line}")
+            log(f"[Error] Invalid JSON: {line}")
         except Exception as e:
-            log(f"[DEBUG] Error handling command: {e}")
-
-    def monitor_metadata(self):
-        """Monitor metadata file in background thread"""
-        log("[DEBUG] Starting metadata monitor")
-
-        while True:
-            try:
-                # Check for new metadata
-                metadata = self.metadata_monitor.get_metadata()
-
-                if metadata:
-                    log(f"[DEBUG] New metadata: {metadata.get('title')} - {metadata.get('artist')}")
-
-                    # Download cover art if available
-                    cover_url = metadata.get("cover_url")
-                    if cover_url:
-                        art_url = self._download_cover_art(cover_url)
-                        if art_url:
-                            metadata["artUrl"] = art_url
-
-                    # Update last metadata
-                    self.last_metadata = metadata
-
-                    # Send metadata update
-                    self.send_metadata_update(metadata)
-
-                time.sleep(0.5)  # Poll every 500ms
-
-            except Exception as e:
-                log(f"[DEBUG] Error in metadata monitor: {e}")
-                time.sleep(1)
+            log(f"[Error] Command handling failed: {e}")
+            import traceback
+            log(traceback.format_exc())
 
     def run(self):
         """Main event loop"""
-        log("[DEBUG] Spotify Control Script starting...")
+        log("[Main] Spotify Control Script starting...")
 
         # Start metadata monitor in background thread
-        metadata_thread = threading.Thread(target=self.monitor_metadata, daemon=True)
-        metadata_thread.start()
+        if DBUS_AVAILABLE:
+            monitor_thread = threading.Thread(target=self._run_dbus_loop, daemon=True)
+            monitor_thread.start()
+            self.spotify_monitor.start()
 
-        # Send Plugin.Stream.Ready notification to tell Snapcast we're ready
+        # Send Plugin.Stream.Ready notification
         self.send_notification("Plugin.Stream.Ready", {})
-        log("[DEBUG] Sent Plugin.Stream.Ready notification")
+        log("[Main] Sent Plugin.Stream.Ready notification")
 
         # Process commands from stdin (from Snapcast)
-        log("[DEBUG] Listening for commands on stdin...")
+        log("[Main] Listening for commands on stdin...")
         try:
             for line in sys.stdin:
                 line = line.strip()
-                log(f"[DEBUG] Received from stdin: {line[:200] if line else '(empty)'}")
                 if line:
                     self.handle_command(line)
         except KeyboardInterrupt:
-            log("[DEBUG] Shutting down...")
+            log("[Main] Shutting down...")
         except Exception as e:
-            log(f"[DEBUG] Fatal error: {e}")
+            log(f"[Main] Fatal error: {e}")
+            import traceback
+            log(traceback.format_exc())
+
+    def _run_dbus_loop(self):
+        """Run D-Bus main loop in background thread"""
+        if not DBUS_AVAILABLE:
+            return
+
+        try:
+            log("[DBus] Starting GLib main loop...")
+            loop = GLib.MainLoop()
+            loop.run()
+        except Exception as e:
+            log(f"[DBus] Main loop error: {e}")
 
 
 if __name__ == "__main__":
@@ -362,7 +618,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    log(f"[DEBUG] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
+    log(f"[Main] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
 
     script = SnapcastControlScript(stream_id=args.stream)
     script.run()
