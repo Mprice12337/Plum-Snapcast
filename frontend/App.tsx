@@ -21,6 +21,10 @@ const App: React.FC = () => {
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Track recent user-initiated playback changes to prevent polling from overwriting them
+    const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
+
     const [settings, setSettings] = useState<Settings>({
         integrations: {
             airplay: true,
@@ -81,33 +85,349 @@ const App: React.FC = () => {
 
     useAudioSync(currentStream, updateStreamProgress);
 
-    // Periodically sync stream status with server
+    // Clean up recent playback change after grace period expires
+    useEffect(() => {
+        if (!recentPlaybackChange) return;
+
+        const gracePeriod = 8000;
+        const timeRemaining = gracePeriod - (Date.now() - recentPlaybackChange.timestamp);
+
+        if (timeRemaining > 0) {
+            const timeout = setTimeout(() => {
+                setRecentPlaybackChange(null);
+            }, timeRemaining);
+
+            return () => clearTimeout(timeout);
+        } else {
+            setRecentPlaybackChange(null);
+        }
+    }, [recentPlaybackChange]);
+
+    // Listen for real-time metadata updates from Snapcast
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onMetadataUpdate((streamId, metadata) => {
+            // Debug: Log all metadata updates
+            console.log(`[Metadata] Update received:`, {
+                streamId,
+                hasTitle: !!metadata.title,
+                hasArtist: !!metadata.artist,
+                hasAlbum: !!metadata.album,
+                hasArtUrl: metadata.artUrl !== undefined,
+                artUrlPreview: metadata.artUrl ? metadata.artUrl.substring(0, 50) + '...' : 'none'
+            });
+
+            // Update the stream with new metadata
+            // IMPORTANT: Metadata updates are instant and indicate the stream is actively playing
+            setStreams(prevStreams =>
+                prevStreams.map(stream => {
+                    if (stream.id === streamId) {
+                        // Detect if this is a new track (title changed)
+                        const isNewTrack = metadata.title && metadata.title !== stream.currentTrack.title;
+
+                        console.log(`[Metadata] Track analysis:`, {
+                            isNewTrack,
+                            oldTitle: stream.currentTrack.title,
+                            newTitle: metadata.title,
+                            currentArtUrl: stream.currentTrack.albumArtUrl?.substring(0, 50) + '...'
+                        });
+
+                        // Update track metadata
+                        const updatedTrack = {
+                            ...stream.currentTrack,
+                            title: metadata.title || stream.currentTrack.title,
+                            artist: metadata.artist || stream.currentTrack.artist,
+                            album: metadata.album || stream.currentTrack.album,
+                        };
+
+                        // Handle artwork updates:
+                        // - If artwork explicitly provided and valid → use it
+                        // - If new track but no artwork yet → clear to default
+                        // - Otherwise → keep current artwork (for partial metadata updates)
+                        const artUrlType = metadata.artUrl === undefined ? 'undefined' : metadata.artUrl === null ? 'null' : metadata.artUrl === '' ? 'empty' : 'valid';
+                        const artUrlPreview = metadata.artUrl ? `${metadata.artUrl.substring(0, 50)}...` : String(metadata.artUrl);
+                        console.log(`[Metadata] artUrl received: type=${artUrlType}, preview=${artUrlPreview}`);
+
+                        if (metadata.artUrl && metadata.artUrl.trim() !== '') {
+                            console.log(`[Metadata] ✓ Using provided artwork (${metadata.artUrl.length} chars)`);
+                            updatedTrack.albumArtUrl = metadata.artUrl;
+                        } else if (isNewTrack) {
+                            console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
+                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+                        } else {
+                            console.log(`[Metadata] → Keeping existing artwork (partial update)`);
+                        }
+                        // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
+
+                        // When we receive metadata, the stream is actively playing
+                        // This gives us instant state feedback instead of waiting for stream.status
+                        const wasPlaying = stream.isPlaying;
+                        const nowPlaying = true; // Metadata = audio is flowing = playing
+
+                        // Check if there's a recent user-initiated pause (grace period)
+                        const now = Date.now();
+                        const gracePeriod = 8000;
+                        const hasRecentPause = recentPlaybackChange &&
+                            recentPlaybackChange.streamId === streamId &&
+                            (now - recentPlaybackChange.timestamp) < gracePeriod;
+
+                        // If user just paused, don't override with metadata-based playing state
+                        const finalPlayingState = hasRecentPause ? stream.isPlaying : nowPlaying;
+
+                        if (!wasPlaying && finalPlayingState && !hasRecentPause) {
+                            console.log(`[Metadata] Stream ${streamId} started playing (metadata received)`);
+                        }
+
+                        return {
+                            ...stream,
+                            currentTrack: updatedTrack,
+                            isPlaying: finalPlayingState
+                        };
+                    }
+                    return stream;
+                })
+            );
+        });
+
+        return () => unsubscribe();
+    }, [recentPlaybackChange]);
+
+    // Listen for real-time playback state updates from Snapcast
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
+            // Handle refresh signal - fetch latest state for all streams
+            if (playbackStatus === 'REFRESH') {
+                // Fetch latest state for all streams
+                const serverStatus = await snapcastService.getServerStatus();
+                if (serverStatus && serverStatus.server && serverStatus.server.streams) {
+                    setStreams(prevStreams =>
+                        prevStreams.map(stream => {
+                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === stream.id);
+                            if (serverStream) {
+                                const isPlaying = snapcastService.isStreamPlaying(serverStream);
+                                if (stream.isPlaying !== isPlaying) {
+                                    console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                }
+                                return {
+                                    ...stream,
+                                    isPlaying: isPlaying
+                                };
+                            }
+                            return stream;
+                        })
+                    );
+                }
+                return;
+            }
+
+            // Handle direct playback status update
+            const isPlaying = playbackStatus.toLowerCase() === 'playing';
+
+            // Update the stream's playing state
+            setStreams(prevStreams =>
+                prevStreams.map(stream => {
+                    if (stream.id === streamId) {
+                        if (stream.isPlaying !== isPlaying) {
+                            console.log(`[WebSocket] Stream ${streamId} playback state: ${stream.isPlaying ? 'Playing' : 'Paused'} → ${isPlaying ? 'Playing' : 'Paused'}`);
+                        }
+                        return {
+                            ...stream,
+                            isPlaying: isPlaying
+                        };
+                    }
+                    return stream;
+                })
+            );
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    // Periodically retry fetching artwork when showing placeholder
+    // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
+    useEffect(() => {
+        if (!currentStream) return;
+
+        // Check if current stream has placeholder artwork
+        const hasPlaceholder = currentStream.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+
+        if (!hasPlaceholder) return; // No need to retry if we have real artwork
+
+        console.log(`[ArtworkRetry] ⏱ Starting periodic check for "${currentStream.currentTrack.title}"`);
+
+        let attemptCount = 0;
+        const retryInterval = setInterval(async () => {
+            attemptCount++;
+            try {
+                console.log(`[ArtworkRetry] Attempt ${attemptCount}/15: Checking backend...`);
+                const freshStream = await snapcastService.getStreamStatus(currentStream.id);
+                const artUrl = freshStream?.properties?.metadata?.artUrl;
+                const artUrlType = artUrl === undefined ? 'undefined' : artUrl === null ? 'null' : artUrl === '' ? 'empty' : 'valid';
+
+                console.log(`[ArtworkRetry] Backend responded: artUrl type=${artUrlType}`);
+
+                if (artUrl && artUrl.trim() !== '') {
+                    console.log(`[ArtworkRetry] ✓ SUCCESS! Found artwork (${artUrl.length} chars) - applying and stopping retry`);
+                    setStreams(prev => prev.map(s =>
+                        s.id === currentStream.id
+                            ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: artUrl}}
+                            : s
+                    ));
+                    // Stop retrying once we found artwork
+                    clearInterval(retryInterval);
+                } else {
+                    console.log(`[ArtworkRetry] ⏳ No artwork yet, will retry in 1s...`);
+                }
+            } catch (error) {
+                console.error(`[ArtworkRetry] ✗ Request failed:`, error);
+            }
+        }, 1000); // Check every 1 second
+
+        // Stop retrying after 15 seconds (artwork should have arrived by then)
+        const timeout = setTimeout(() => {
+            console.log(`[ArtworkRetry] ⏹ Timeout: Giving up after 15 seconds - artwork may not be available for this track`);
+            clearInterval(retryInterval);
+        }, 15000);
+
+        return () => {
+            clearInterval(retryInterval);
+            clearTimeout(timeout);
+        };
+    }, [currentStream?.id, currentStream?.currentTrack.albumArtUrl, currentStream?.currentTrack.title]);
+
+    // Periodically sync metadata AND playback state with server as fallback
+    // This ensures GUI stays in sync even if WebSocket notifications fail
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
 
-        const syncStreamStatus = async () => {
+        const syncStreamState = async () => {
             try {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Only update if the status has changed
-                    if (isPlaying !== currentStream.isPlaying) {
-                        setStreams(prevStreams =>
-                            prevStreams.map(s =>
-                                s.id === currentStream.id ? {...s, isPlaying} : s
-                            )
-                        );
+                    // Extract metadata from stream properties (simple field names)
+                    let updatedMetadata = null;
+                    if (serverStream.properties?.metadata) {
+                        const meta = serverStream.properties.metadata;
+                        updatedMetadata = {
+                            title: meta.title || meta.name,
+                            artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
+                            album: meta.album,
+                            albumArtUrl: meta.artUrl
+                        };
+
+                        // Debug: Log what we got from server
+                        console.log(`[Polling] Server metadata:`, {
+                            hasTitle: !!updatedMetadata.title,
+                            hasArtist: !!updatedMetadata.artist,
+                            hasAlbum: !!updatedMetadata.album,
+                            hasArtUrl: updatedMetadata.albumArtUrl !== undefined,
+                            artUrlPreview: updatedMetadata.albumArtUrl ? updatedMetadata.albumArtUrl.substring(0, 50) + '...' : 'none'
+                        });
                     }
+
+                    // Update stream with latest state AND metadata
+                    setStreams(prevStreams =>
+                        prevStreams.map(s => {
+                            if (s.id === currentStream.id) {
+                                const updatedStream = { ...s };
+
+                                // Check if there's a recent user-initiated playback change
+                                const now = Date.now();
+                                const gracePeriod = 8000; // 8 seconds grace period
+                                const hasRecentChange = recentPlaybackChange &&
+                                    recentPlaybackChange.streamId === s.id &&
+                                    (now - recentPlaybackChange.timestamp) < gracePeriod;
+
+                                // Update playback state if changed (but respect grace period)
+                                if (s.isPlaying !== isPlaying) {
+                                    if (hasRecentChange) {
+                                        console.log(`[Polling] Ignoring state change during grace period (${Math.round((gracePeriod - (now - recentPlaybackChange.timestamp!)) / 1000)}s remaining)`);
+                                    } else {
+                                        console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
+                                        updatedStream.isPlaying = isPlaying;
+
+                                        // If transitioning from paused to playing and artwork is placeholder, immediately refresh
+                                        // This handles the case where user skips while paused and artwork doesn't arrive until playback resumes
+                                        if (!s.isPlaying && isPlaying) {
+                                            const isDefaultArtwork = s.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+                                            if (isDefaultArtwork) {
+                                                console.log(`[Polling] Playback resumed with placeholder artwork - fetching fresh metadata`);
+                                                // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
+                                                setTimeout(() => {
+                                                    snapcastService.getStreamStatus(s.id).then(freshStream => {
+                                                        const artUrl = freshStream?.properties?.metadata?.artUrl;
+                                                        if (artUrl && artUrl.trim() !== '') {
+                                                            console.log(`[Resume] Found artwork after resume - applying`);
+                                                            setStreams(prev => prev.map(st =>
+                                                                st.id === s.id
+                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: artUrl}}
+                                                                    : st
+                                                            ));
+                                                        }
+                                                    });
+                                                }, 500); // Small delay to let backend process resume
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Update metadata if we got new data
+                                if (updatedMetadata) {
+                                    // Detect if this is a new track (title changed)
+                                    const isNewTrack = updatedMetadata.title && updatedMetadata.title !== s.currentTrack.title;
+
+                                    console.log(`[Polling] Track analysis:`, {
+                                        isNewTrack,
+                                        oldTitle: s.currentTrack.title,
+                                        newTitle: updatedMetadata.title,
+                                        currentArtUrl: s.currentTrack.albumArtUrl?.substring(0, 50) + '...'
+                                    });
+
+                                    updatedStream.currentTrack = {
+                                        ...s.currentTrack,
+                                        title: updatedMetadata.title || s.currentTrack.title,
+                                        artist: updatedMetadata.artist || s.currentTrack.artist,
+                                        album: updatedMetadata.album || s.currentTrack.album,
+                                    };
+
+                                    // Handle artwork updates:
+                                    // - If artwork explicitly provided and valid → use it
+                                    // - If new track but no artwork yet → clear to default
+                                    // - Otherwise → keep current artwork (for partial metadata updates)
+                                    const artUrlType = updatedMetadata.albumArtUrl === undefined ? 'undefined' : updatedMetadata.albumArtUrl === null ? 'null' : updatedMetadata.albumArtUrl === '' ? 'empty' : 'valid';
+                                    const artUrlPreview = updatedMetadata.albumArtUrl ? `${updatedMetadata.albumArtUrl.substring(0, 50)}...` : String(updatedMetadata.albumArtUrl);
+                                    console.log(`[Polling] artUrl from server: type=${artUrlType}, preview=${artUrlPreview}`);
+
+                                    if (updatedMetadata.albumArtUrl && updatedMetadata.albumArtUrl.trim() !== '') {
+                                        console.log(`[Polling] ✓ Using provided artwork (${updatedMetadata.albumArtUrl.length} chars)`);
+                                        updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                    } else if (isNewTrack) {
+                                        console.log(`[Polling] ⚠ New track without artwork - using placeholder`);
+                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+Cg==';
+                                    } else {
+                                        console.log(`[Polling] Keeping existing artwork`);
+                                        updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
+                                    }
+                                }
+
+                                return updatedStream;
+                            }
+                            return s;
+                        })
+                    );
                 }
             } catch (error) {
                 // Silently handle errors to avoid spam
             }
         };
 
-        // Sync immediately and then every 5 seconds
-        syncStreamStatus();
-        const interval = setInterval(syncStreamStatus, 5000);
+        // Poll every 2 seconds for active streams (more aggressive than before)
+        const interval = setInterval(syncStreamState, 2000);
 
         return () => clearInterval(interval);
     }, [currentStream?.id]);
@@ -121,7 +441,6 @@ const App: React.FC = () => {
             setConnectionError(null);
 
             try {
-                console.log('Fetching Snapcast data...');
                 const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
 
                 if (isCancelled) return; // Don't update state if component unmounted
@@ -146,16 +465,9 @@ const App: React.FC = () => {
                     }
 
                     setClientGroupMap(groupMap);
-                    console.log('Client group mapping:', groupMap);
                 } catch (error) {
                     console.warn('Could not build client group mapping:', error);
                 }
-
-                console.log('Data set successfully:', {
-                    streamsCount: initialStreams.length,
-                    clientsCount: initialClients.length,
-                    firstClient: initialClients[0]
-                });
 
                 // Check if we got error data (connection failed)
                 if (initialStreams.length === 1 && initialStreams[0].id === 'error-stream') {
@@ -198,7 +510,6 @@ const App: React.FC = () => {
         // Send to Snapcast server
         try {
             await snapcastService.setClientVolume(clientId, volume);
-            console.log(`Successfully set volume for client ${clientId} to ${volume}%`);
         } catch (error) {
             console.error(`Failed to set volume for client ${clientId}:`, error);
             // Could revert local state here if needed
@@ -286,8 +597,6 @@ const App: React.FC = () => {
     };
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
-        console.log(`Changing stream for client ${clientId} to ${streamId}`);
-
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
@@ -298,11 +607,9 @@ const App: React.FC = () => {
             const groupId = clientGroupMap[clientId];
             if (groupId && streamId) {
                 await snapcastService.setGroupStream(groupId, streamId);
-                console.log(`Successfully changed group ${groupId} to stream ${streamId}`);
             } else if (groupId && streamId === null) {
                 // For setting to "no stream", we might need a different approach
                 // This depends on how Snapcast handles idle streams
-                console.log(`Setting group ${groupId} to idle (stream: null)`);
                 // You might need to set it to a default idle stream instead
             } else {
                 console.warn(`Could not find group for client ${clientId}`);
@@ -320,82 +627,95 @@ const App: React.FC = () => {
     const handlePlayPause = async () => {
         if (!currentStream) return;
 
-        console.log('Play/Pause button clicked for stream:', currentStream.id);
-
         try {
             // Check stream capabilities first
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-            console.log('Stream capabilities:', capabilities);
+
+            const newPlayingState = !currentStream.isPlaying;
 
             if (currentStream.isPlaying) {
                 // Try to pause
                 if (capabilities.canPause) {
-                    await snapcastService.pauseStream(currentStream.id);
+                    // Optimistically update state immediately
                     setStreams(prevStreams =>
                         prevStreams.map(s =>
                             s.id === currentStream.id ? {...s, isPlaying: false} : s
                         )
                     );
-                    console.log(`Successfully paused stream ${currentStream.id}`);
+                    // Record this change to prevent polling from overwriting for 8 seconds
+                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+
+                    await snapcastService.pauseStream(currentStream.id);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support pause`);
+                    console.warn(`Stream ${currentStream.id} does not support pause`);
                 }
             } else {
                 // Try to play
                 if (capabilities.canPlay) {
-                    await snapcastService.playStream(currentStream.id);
+                    // Optimistically update state immediately
                     setStreams(prevStreams =>
                         prevStreams.map(s =>
                             s.id === currentStream.id ? {...s, isPlaying: true} : s
                         )
                     );
-                    console.log(`Successfully started playing stream ${currentStream.id}`);
+                    // Record this change to prevent polling from overwriting for 8 seconds
+                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+
+                    await snapcastService.playStream(currentStream.id);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support play`);
+                    console.warn(`Stream ${currentStream.id} does not support play`);
                 }
             }
         } catch (error) {
             console.error(`Playback control failed for stream ${currentStream.id}:`, error);
+            // On error, clear the grace period so polling can correct the state
+            setRecentPlaybackChange(null);
         }
     };
 
     const handleSkip = async (direction: 'next' | 'prev') => {
         if (!currentStream) return;
 
-        console.log(`Skip ${direction} button clicked for stream:`, currentStream.id);
+        // Optimistically clear artwork IMMEDIATELY when user clicks skip
+        // This must happen before any async operations to prevent race condition where
+        // metadata arrives before the clear is applied
+        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxwYXRoIGQ9Ik0yMDAgMTAwQzE0NC43NzIgMTAwIDEwMCAxNDQuNzcyIDEwMCAyMDBTMTQ0Ljc3MiAzMDAgMjAwIDMwMFMyNDUgMjU1LjIyOCAyNDUgMjAwSDIzMEM4My41Nzg2IDE4NSAxMTUgMTU1IDExNSAyMDBDMTE1IDI0Ny40NjcgMTUyLjUzMyAyODUgMjAwIDI4NUMyNDcuNDY3IDI4NSAyODUgMjQ3LjQ2NyAyODUgMjAwSDE3MFpNMjQ1IDEzNVYyMDBIMjMwVjEzNVYxMDBIMjQ1VjEzNVoiIGZpbGw9IiNGMEYwRjAiLz4KPC9zdmc+';
+
+        setStreams(prevStreams =>
+            prevStreams.map(s =>
+                s.id === currentStream.id
+                    ? {
+                        ...s,
+                        currentTrack: {
+                            ...s.currentTrack,
+                            albumArtUrl: defaultArtwork
+                        }
+                    }
+                    : s
+            )
+        );
 
         try {
-            // Check stream capabilities first
+            // Check stream capabilities
             const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
 
             if (direction === 'next') {
                 if (capabilities.canGoNext) {
                     await snapcastService.nextTrack(currentStream.id);
-                    console.log(`Successfully skipped to next track for stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support next track`);
+                    console.warn(`Stream ${currentStream.id} does not support next track`);
                 }
             } else {
                 if (capabilities.canGoPrevious) {
                     await snapcastService.previousTrack(currentStream.id);
-                    console.log(`Successfully skipped to previous track for stream ${currentStream.id}`);
                 } else {
-                    console.log(`Stream ${currentStream.id} does not support previous track`);
+                    console.warn(`Stream ${currentStream.id} does not support previous track`);
                 }
             }
         } catch (error) {
             console.error(`Skip ${direction} failed for stream ${currentStream.id}:`, error);
         }
     };
-
-    // Debug logging
-    console.log('App render state:', {
-        isLoading,
-        streamsCount: streams.length,
-        clientsCount: clients.length,
-        myClient: myClient?.id,
-        currentStream: currentStream?.id
-    });
 
     if (isLoading) {
         return (

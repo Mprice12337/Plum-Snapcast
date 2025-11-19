@@ -5,7 +5,7 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
 LABEL maintainer="Plum-Snapcast"
-LABEL description="Snapcast server with AirPlay and Spotify support"
+LABEL description="Snapcast server with AirPlay, Bluetooth, and Spotify support"
 
 # Install runtime dependencies (ADDED python3 for metadata processor)
 RUN apk add --no-cache \
@@ -30,7 +30,12 @@ RUN apk add --no-cache \
     libgcrypt \
     libuuid \
     ffmpeg-libs \
-    python3
+    python3 \
+    py3-dbus \
+    py3-gobject3 \
+    bluez \
+    bluez-alsa \
+    util-linux
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
@@ -147,21 +152,18 @@ RUN mkdir -p \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
     && chmod 755 /usr/share/snapserver/snapweb
 
-# Copy configuration and scripts (UPDATED to include control script and Spotify scripts)
+# Copy configuration and scripts (copy all scripts at once)
 COPY config/supervisord/ /app/supervisord/
 COPY config/shairport-sync.conf /app/config/
-COPY scripts/setup.sh /app/scripts/
-COPY scripts/process-airplay-metadata-v2.py /app/scripts/
-COPY scripts/airplay-control-script.py /app/scripts/
-COPY scripts/spotify-event-handler.sh /app/scripts/
-COPY scripts/spotify-control-script.py /app/scripts/
-RUN chmod +x /app/scripts/*.sh /app/scripts/*.py && \
+COPY scripts/ /app/scripts/
+RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
     chown -R snapcast:snapcast /app
 
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000
+# Metadata Debug Server: 8080 (HTTP)
+EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 
 # Set working directory
 WORKDIR /app
@@ -176,6 +178,13 @@ ENV TZ=Etc/UTC \
     SPOTIFY_DEVICE_NAME=Snapcast \
     SPOTIFY_BITRATE=320 \
     SPOTIFY_ACCESS_TOKEN="" \
+    BLUETOOTH_ENABLED=0 \
+    BLUETOOTH_SOURCE_NAME=Bluetooth \
+    BLUETOOTH_DEVICE_NAME="Plum Audio" \
+    BLUETOOTH_ADAPTER=hci0 \
+    BLUETOOTH_DEVICE_PATH="" \
+    BLUETOOTH_AUTO_PAIR=1 \
+    BLUETOOTH_DISCOVERABLE=1 \
     PIPE_CONFIG_ENABLED=0 \
     PIPE_SOURCE_NAME=Pipe \
     PIPE_PATH=/tmp/snapfifo \
