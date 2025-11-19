@@ -142,11 +142,12 @@ RUN mkdir -p /var/lib/dbus && \
     dbus-uuidgen > /var/lib/dbus/machine-id
 
 # Configure Avahi
-RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
-    chmod 755 /run/avahi-daemon /var/run/dbus
+RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
+    chmod 755 /run/avahi-daemon /var/run/dbus /etc/avahi/services
 
 # FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
+COPY config/spotify-connect.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/spotifyd.conf /app/config/
 
