@@ -105,13 +105,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     . $HOME/.cargo/env && \
     rustup target add $(uname -m)-unknown-linux-musl 2>/dev/null || true
 
-# Build spotifyd from source with D-Bus MPRIS support
+# Build spotifyd from source with D-Bus MPRIS support and Avahi integration
 # spotifyd is a Spotify daemon built on librespot with working MPRIS support
 # This provides both metadata and playback controls via D-Bus
+# Patch to use Avahi for discovery instead of libmdns (avoids port 5353 conflict)
 # Use dynamic linking for system libraries (ALSA, OpenSSL, D-Bus)
 RUN . $HOME/.cargo/env && \
     git clone --depth 1 https://github.com/Spotifyd/spotifyd.git && \
     cd spotifyd && \
+    # Patch Cargo.toml to enable with-avahi feature on librespot-discovery
+    sed -i 's/librespot-discovery = { version = "0.8.0" }/librespot-discovery = { version = "0.8.0", default-features = false, features = ["with-avahi"] }/' Cargo.toml && \
     RUSTFLAGS="-C target-feature=-crt-static" \
     cargo build --release --no-default-features --features "alsa_backend,dbus_mpris" && \
     cp target/release/spotifyd /usr/local/bin/spotifyd && \
@@ -142,12 +145,11 @@ RUN mkdir -p /var/lib/dbus && \
     dbus-uuidgen > /var/lib/dbus/machine-id
 
 # Configure Avahi
-RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
-    chmod 755 /run/avahi-daemon /var/run/dbus /etc/avahi/services
+RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
+    chmod 755 /run/avahi-daemon /var/run/dbus
 
 # FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
-COPY config/spotify-connect.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/spotifyd.conf /app/config/
 
