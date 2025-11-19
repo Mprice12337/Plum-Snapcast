@@ -313,11 +313,27 @@ const App: React.FC = () => {
                     let updatedMetadata = null;
                     if (serverStream.properties?.metadata) {
                         const meta = serverStream.properties.metadata;
+
+                        // Handle artwork URL properly (same as snapcastDataService.ts)
+                        let albumArtUrl = undefined;
+                        if (meta.artUrl) {
+                            if (meta.artUrl.startsWith('data:')) {
+                                // Data URL - use directly
+                                albumArtUrl = meta.artUrl;
+                            } else if (meta.artUrl.startsWith('/')) {
+                                // Relative path - prepend Snapcast HTTP server URL
+                                albumArtUrl = `${snapcastService.getHttpUrl()}${meta.artUrl}`;
+                            } else {
+                                // Absolute URL - use directly
+                                albumArtUrl = meta.artUrl;
+                            }
+                        }
+
                         updatedMetadata = {
                             title: meta.title || meta.name,
                             artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
                             album: meta.album,
-                            albumArtUrl: meta.artUrl
+                            albumArtUrl: albumArtUrl
                         };
 
                         // Debug: Log what we got from server
