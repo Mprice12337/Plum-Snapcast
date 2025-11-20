@@ -48,6 +48,11 @@
             -webkit-appearance: none;
             appearance: none;
             background-color: transparent;
+            height: 1rem; /* Set input height to thumb height for proper vertical centering */
+        }
+        .volume-slider::-webkit-slider-runnable-track {
+            height: 0.5rem;
+            border-radius: 0.25rem;
         }
         .volume-slider::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -57,7 +62,10 @@
             background: var(--text-primary);
             border-radius: 50%;
             cursor: pointer;
-            margin-top: -0.25rem; /* Center 1rem thumb on 0.5rem track: -(1-0.5)/2 = -0.25rem */
+        }
+        .volume-slider::-moz-range-track {
+            height: 0.5rem;
+            border-radius: 0.25rem;
         }
         .volume-slider::-moz-range-thumb {
             width: 1rem;
