@@ -154,7 +154,7 @@ const App: React.FC = () => {
                             updatedTrack.albumArtUrl = metadata.artUrl;
                         } else if (isNewTrack) {
                             console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
-                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8cGF0aCBkPSJNMjgwIDgwVjI3MEMyODAgMjcwIDI4MCAyOTAgMjYwIDI5MEMyNDAgMjkwIDIzMCAyODAgMjMwIDI3MEMyMzAgMjYwIDI0MCAyNTAgMjYwIDI1MEMyNzAgMjUwIDI4MCAyNTUgMjgwIDI1NVYxNDBMMTYwIDE3MFYzMDBDMTYwIDMwMCAxNjAgMzIwIDE0MCAzMjBDMTIwIDMyMCAxMTAgMzEwIDExMCAzMDBDMTEwIDI5MCAxMjAgMjgwIDE0MCAyODBDMTUwIDI4MCAxNjAgMjg1IDE2MCAyODVWMTUwTDI4MCAxMjBWODBaIiBmaWxsPSIjRjBGMEYwIi8+Cjwvc3ZnPgo=';
+                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8IS0tIFNpbXBsZSBtdXNpYyBub3RlIHNpbWlsYXIgdG8gTWF0ZXJpYWwgRGVzaWduIC0tPgogIDxjaXJjbGUgY3g9IjE4MCIgY3k9IjI4MCIgcj0iNDAiIGZpbGw9IiNGMEYwRjAiLz4KICA8cmVjdCB4PSIyMTUiIHk9IjExMCIgd2lkdGg9IjE2IiBoZWlnaHQ9IjE3MCIgZmlsbD0iI0YwRjBGMCIvPgogIDxwYXRoIGQ9Ik0yMzEgMTEwIEMyMzEgMTEwLCAyNzAgOTUsIDI3MCAxMzAgQzI3MCAxNDUsIDI1MCAxNTAsIDIzMSAxNDUgWiIgZmlsbD0iI0YwRjBGMCIvPgo8L3N2Zz4K';
                         } else {
                             console.log(`[Metadata] → Keeping existing artwork (partial update)`);
                         }
@@ -424,7 +424,7 @@ const App: React.FC = () => {
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
                                     } else if (isNewTrack) {
                                         console.log(`[Polling] ⚠ New track without artwork - using placeholder`);
-                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8cGF0aCBkPSJNMjgwIDgwVjI3MEMyODAgMjcwIDI4MCAyOTAgMjYwIDI5MEMyNDAgMjkwIDIzMCAyODAgMjMwIDI3MEMyMzAgMjYwIDI0MCAyNTAgMjYwIDI1MEMyNzAgMjUwIDI4MCAyNTUgMjgwIDI1NVYxNDBMMTYwIDE3MFYzMDBDMTYwIDMwMCAxNjAgMzIwIDE0MCAzMjBDMTIwIDMyMCAxMTAgMzEwIDExMCAzMDBDMTEwIDI5MCAxMjAgMjgwIDE0MCAyODBDMTUwIDI4MCAxNjAgMjg1IDE2MCAyODVWMTUwTDI4MCAxMjBWODBaIiBmaWxsPSIjRjBGMEYwIi8+Cjwvc3ZnPgo=Cg==';
+                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8IS0tIFNpbXBsZSBtdXNpYyBub3RlIHNpbWlsYXIgdG8gTWF0ZXJpYWwgRGVzaWduIC0tPgogIDxjaXJjbGUgY3g9IjE4MCIgY3k9IjI4MCIgcj0iNDAiIGZpbGw9IiNGMEYwRjAiLz4KICA8cmVjdCB4PSIyMTUiIHk9IjExMCIgd2lkdGg9IjE2IiBoZWlnaHQ9IjE3MCIgZmlsbD0iI0YwRjBGMCIvPgogIDxwYXRoIGQ9Ik0yMzEgMTEwIEMyMzEgMTEwLCAyNzAgOTUsIDI3MCAxMzAgQzI3MCAxNDUsIDI1MCAxNTAsIDIzMSAxNDUgWiIgZmlsbD0iI0YwRjBGMCIvPgo8L3N2Zz4KCg==';
                                     } else {
                                         console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
@@ -695,7 +695,7 @@ const App: React.FC = () => {
         // Optimistically clear artwork IMMEDIATELY when user clicks skip
         // This must happen before any async operations to prevent race condition where
         // metadata arrives before the clear is applied
-        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8cGF0aCBkPSJNMjgwIDgwVjI3MEMyODAgMjcwIDI4MCAyOTAgMjYwIDI5MEMyNDAgMjkwIDIzMCAyODAgMjMwIDI3MEMyMzAgMjYwIDI0MCAyNTAgMjYwIDI1MEMyNzAgMjUwIDI4MCAyNTUgMjgwIDI1NVYxNDBMMTYwIDE3MFYzMDBDMTYwIDMwMCAxNjAgMzIwIDE0MCAzMjBDMTIwIDMyMCAxMTAgMzEwIDExMCAzMDBDMTEwIDI5MCAxMjAgMjgwIDE0MCAyODBDMTUwIDI4MCAxNjAgMjg1IDE2MCAyODVWMTUwTDI4MCAxMjBWODBaIiBmaWxsPSIjRjBGMEYwIi8+Cjwvc3ZnPgo=';
+        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MDAiIGZpbGw9IiMyQTJBMzYiLz4KICA8IS0tIFNpbXBsZSBtdXNpYyBub3RlIHNpbWlsYXIgdG8gTWF0ZXJpYWwgRGVzaWduIC0tPgogIDxjaXJjbGUgY3g9IjE4MCIgY3k9IjI4MCIgcj0iNDAiIGZpbGw9IiNGMEYwRjAiLz4KICA8cmVjdCB4PSIyMTUiIHk9IjExMCIgd2lkdGg9IjE2IiBoZWlnaHQ9IjE3MCIgZmlsbD0iI0YwRjBGMCIvPgogIDxwYXRoIGQ9Ik0yMzEgMTEwIEMyMzEgMTEwLCAyNzAgOTUsIDI3MCAxMzAgQzI3MCAxNDUsIDI1MCAxNTAsIDIzMSAxNDUgWiIgZmlsbD0iI0YwRjBGMCIvPgo8L3N2Zz4K';
 
         setStreams(prevStreams =>
             prevStreams.map(s =>
