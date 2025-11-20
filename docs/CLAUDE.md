@@ -4,14 +4,14 @@
 
 ## Project Overview
 
-**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, and direct streaming sources.
+**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, DLNA/UPnP, and direct streaming sources.
 
 ### Key Features
 - Multi-room audio synchronization with sample-accurate playback
 - Hardware audio output via integrated snapclient (Raspberry Pi 3.5mm jack)
 - Modern React-based web interface for controlling streams and managing clients
 - Real-time WebSocket communication using JSON-RPC 2.0
-- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect (Spotifyd), FIFO pipes
+- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect (Spotifyd), DLNA/UPnP, FIFO pipes
 - Real-time metadata display with album artwork
 - Individual and group volume control with mute functionality
 
@@ -53,6 +53,7 @@
   - **Shairport-Sync**: AirPlay Classic/1 and AirPlay 2 support
   - **BlueZ + bluez-alsa**: Bluetooth A2DP audio reception
   - **Spotifyd**: Spotify Connect client with D-Bus MPRIS support
+  - **gmrender-resurrect**: DLNA/UPnP media renderer with GStreamer
   - **FIFO Pipes**: Direct audio input support
 - **Process Management**: Supervisord for managing multiple processes
 - **Service Discovery**: Avahi daemon for mDNS/DNS-SD
@@ -84,6 +85,9 @@ Backend (via Docker):
 - `bluez-alsa` - Bluetooth audio (A2DP) via ALSA integration
 - `py3-dbus` - Python D-Bus bindings for Bluetooth metadata extraction
 - `spotifyd` - Spotify Connect client (built from source with MPRIS support)
+- `gmrender-resurrect` - DLNA/UPnP media renderer (built from source)
+- `gstreamer` - Multimedia framework for gmrender audio processing
+- `libupnp` - UPnP library for service discovery and control
 - `avahi` - Service discovery for network audio (mDNS/DNS-SD)
 - `dbus` - Inter-process communication (container uses host's D-Bus socket)
 - `nqptp` - Network Time Protocol for AirPlay 2 (airplay2 builds only)
@@ -432,6 +436,22 @@ shellcheck backend/scripts/*.sh
 - **Lazy Player Detection**: Control script auto-detects spotifyd when it registers on D-Bus (handles startup timing)
 - **Metadata & Controls**: Full playback control (play/pause/next/previous) and metadata (title, artist, album, artwork) via MPRIS
 - **Album Artwork**: Downloaded from Spotify CDN and cached to `/usr/share/snapserver/snapweb/coverart/`
+
+#### DLNA/UPnP Configuration
+- `DLNA_ENABLED`: Enable DLNA/UPnP renderer (default: `0`)
+- `DLNA_SOURCE_NAME`: Display name in Snapcast (default: `DLNA`)
+- `DLNA_DEVICE_NAME`: Renderer name visible to DLNA controllers (default: `Plum Audio`)
+- `DLNA_UUID`: Custom UPnP UUID (optional, auto-generated if not set)
+
+**DLNA/UPnP Implementation Notes:**
+- **gmrender-resurrect**: Lightweight UPnP/DLNA media renderer built on GStreamer
+- **Network Discovery**: Advertises via Avahi (mDNS/DNS-SD) for automatic discovery
+- **Audio Processing**: GStreamer pipeline converts streams to 44.1kHz/16-bit stereo PCM
+- **Output Method**: Audio routed to FIFO pipe for Snapcast integration
+- **Metadata Support**: Extracts title, artist, album, and artwork from UPnP AVTransport metadata
+- **Playback Control**: Basic play/pause support (controlled by DLNA controller app)
+- **Album Artwork**: Downloaded from URLs in UPnP metadata and cached to `/usr/share/snapserver/snapweb/coverart/`
+- **Compatible Controllers**: Works with any DLNA/UPnP control point (BubbleUPnP, mConnect, Windows Media Player, etc.)
 
 #### FIFO Pipe Configuration
 - `PIPE_CONFIG_ENABLED`: Enable FIFO pipe source (default: `0`)

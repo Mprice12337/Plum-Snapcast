@@ -5,7 +5,7 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
 LABEL maintainer="Plum-Snapcast"
-LABEL description="Snapcast server with AirPlay, Bluetooth, and Spotify support"
+LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, and DLNA/UPnP support"
 
 # Install runtime dependencies (ADDED python3 for metadata processor)
 RUN apk add --no-cache \
@@ -35,7 +35,15 @@ RUN apk add --no-cache \
     py3-gobject3 \
     bluez \
     bluez-alsa \
-    util-linux
+    util-linux \
+    # DLNA/UPnP runtime dependencies
+    gstreamer \
+    gst-plugins-base \
+    gst-plugins-good \
+    gst-plugins-bad \
+    gst-plugins-ugly \
+    gst-libav \
+    libupnp
 
 # Add edge repository and install snapcast
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
@@ -68,7 +76,11 @@ RUN apk add --no-cache --virtual .build-deps \
     mbedtls-dev \
     soxr-dev \
     libgcrypt-dev \
-    ffmpeg-dev
+    ffmpeg-dev \
+    # DLNA/UPnP build dependencies
+    gstreamer-dev \
+    gst-plugins-base-dev \
+    libupnp-dev
 
 # Build Apple ALAC library first (required for shairport-sync)
 WORKDIR /tmp
@@ -121,6 +133,20 @@ RUN . $HOME/.cargo/env && \
     chmod +x /usr/local/bin/spotifyd && \
     cd .. && \
     rm -rf spotifyd $HOME/.cargo $HOME/.rustup
+
+# Build gmrender-resurrect for DLNA/UPnP support
+# This provides a UPnP/DLNA media renderer that integrates with Snapcast via FIFO pipe
+# Uses GStreamer for audio processing with network discovery via Avahi
+RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
+    cd gmrender-resurrect && \
+    autoreconf -fi && \
+    ./configure \
+        --prefix=/usr/local \
+        --with-build-date="$(date '+%Y-%m-%d')" && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf gmrender-resurrect
 
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
@@ -211,6 +237,10 @@ ENV TZ=Etc/UTC \
     BLUETOOTH_DEVICE_PATH="" \
     BLUETOOTH_AUTO_PAIR=1 \
     BLUETOOTH_DISCOVERABLE=1 \
+    DLNA_ENABLED=0 \
+    DLNA_SOURCE_NAME=DLNA \
+    DLNA_DEVICE_NAME="Plum Audio" \
+    DLNA_UUID="" \
     PIPE_CONFIG_ENABLED=0 \
     PIPE_SOURCE_NAME=Pipe \
     PIPE_PATH=/tmp/snapfifo \
