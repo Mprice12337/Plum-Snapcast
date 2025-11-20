@@ -43,14 +43,21 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
     };
 
     return (
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6 px-4">
-            <div className="flex items-center gap-4 order-2 md:order-1">
+        <div className="flex flex-col md:flex-row items-center gap-6 px-4">
+            {/* Mobile: Volume on top, Controls below */}
+            {/* Desktop: Controls on left (aligned with artwork), Volume on right (aligned with text) */}
+
+            {/* Media Controls - order-2 on mobile, order-1 on desktop */}
+            {/* On desktop: flex-shrink-0 w-56 to match album artwork width (14rem = 224px) */}
+            <div className="flex items-center gap-4 order-2 md:order-1 md:flex-shrink-0 md:w-56 justify-center">
                 <ControlButton icon="fa-backward-step" onClick={() => onSkip('prev')}/>
                 <ControlButton icon={stream.isPlaying ? 'fa-pause' : 'fa-play'} onClick={onPlayPause} size="lg"/>
                 <ControlButton icon="fa-forward-step" onClick={() => onSkip('next')}/>
             </div>
 
-            <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2">
+            {/* Volume Control - order-1 on mobile, order-2 on desktop */}
+            {/* On desktop: flex-1 to fill remaining space (same as text area above) */}
+            <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2 md:flex-1 md:max-w-none">
                 <i className="fas fa-volume-down text-[var(--text-secondary)] w-6 text-center" aria-hidden="true"></i>
                 <input
                     type="range"

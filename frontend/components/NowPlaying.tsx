@@ -1,10 +1,35 @@
-import React from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import type {Stream} from '../types';
 import {formatTime} from '../utils/time';
 
 interface NowPlayingProps {
     stream: Stream;
 }
+
+const ScrollingText: React.FC<{ text: string; className: string }> = ({text, className}) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const textRef = useRef<HTMLDivElement>(null);
+    const [shouldScroll, setShouldScroll] = useState(false);
+
+    useEffect(() => {
+        if (containerRef.current && textRef.current) {
+            const isOverflowing = textRef.current.scrollWidth > containerRef.current.clientWidth;
+            setShouldScroll(isOverflowing);
+        }
+    }, [text]);
+
+    return (
+        <div ref={containerRef} className={`overflow-hidden ${className}`}>
+            <div
+                ref={textRef}
+                className={shouldScroll ? 'scrolling-text' : ''}
+                style={shouldScroll ? {'--scroll-width': `${textRef.current?.scrollWidth || 0}px`} as React.CSSProperties : undefined}
+            >
+                {text}
+            </div>
+        </div>
+    );
+};
 
 export const NowPlaying: React.FC<NowPlayingProps> = ({stream}) => {
     const {currentTrack, progress} = stream;
@@ -19,12 +44,10 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream}) => {
                     className="w-48 h-48 md:w-56 md:h-56 rounded-lg shadow-lg object-cover transition-transform duration-300 hover:scale-105"
                 />
             </div>
-            <div className="flex-1 text-center md:text-left w-full">
-                <h2 className="text-3xl font-bold truncate" title={currentTrack.title}>{currentTrack.title}</h2>
-                <p className="text-lg text-[var(--text-secondary)] mt-1 truncate"
-                   title={currentTrack.artist}>{currentTrack.artist}</p>
-                <p className="text-md text-[var(--text-muted)] mt-1 truncate"
-                   title={currentTrack.album}>{currentTrack.album}</p>
+            <div className="flex-1 text-center md:text-left w-full md:max-w-[calc(100%-14rem)]">
+                <ScrollingText text={currentTrack.title} className="text-3xl font-bold" />
+                <ScrollingText text={currentTrack.artist} className="text-lg text-[var(--text-secondary)] mt-1" />
+                <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-muted)] mt-1" />
 
                 <div className="mt-6 w-full">
                     <div className="bg-[var(--border-color)] rounded-full h-2 w-full">

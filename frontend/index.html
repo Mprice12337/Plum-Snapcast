@@ -48,6 +48,11 @@
             -webkit-appearance: none;
             appearance: none;
             background-color: transparent;
+            height: 1rem; /* Set input height to thumb height for proper vertical centering */
+        }
+        .volume-slider::-webkit-slider-runnable-track {
+            height: 0.5rem;
+            border-radius: 0.25rem;
         }
         .volume-slider::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -57,7 +62,11 @@
             background: var(--text-primary);
             border-radius: 50%;
             cursor: pointer;
-            margin-top: -0.25rem; /* Center thumb on h-2 (0.5rem) track */
+            margin-top: -3.5px; /* Fine-tune vertical centering */
+        }
+        .volume-slider::-moz-range-track {
+            height: 0.5rem;
+            border-radius: 0.25rem;
         }
         .volume-slider::-moz-range-thumb {
             width: 1rem;
@@ -66,6 +75,32 @@
             border: none;
             border-radius: 50%;
             cursor: pointer;
+        }
+
+        /* Scrolling text animation */
+        @keyframes scroll-text {
+            0% {
+                transform: translateX(0);
+            }
+            20% {
+                transform: translateX(0);
+            }
+            70% {
+                transform: translateX(calc(-1 * var(--scroll-width) + 100%));
+            }
+            90% {
+                transform: translateX(calc(-1 * var(--scroll-width) + 100%));
+            }
+            100% {
+                transform: translateX(0);
+            }
+        }
+
+        .scrolling-text {
+            display: inline-block;
+            white-space: nowrap;
+            animation: scroll-text 12s ease-in-out infinite;
+            animation-delay: 2s;
         }
     </style>
 <link rel="stylesheet" href="/index.css">
