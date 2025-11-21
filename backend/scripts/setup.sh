@@ -37,6 +37,12 @@ if [ ! -p /tmp/bluetooth-fifo ]; then
     chmod 666 /tmp/bluetooth-fifo
 fi
 
+if [ ! -p /tmp/dlna-fifo ]; then
+    echo "Creating DLNA FIFO pipe..."
+    mkfifo /tmp/dlna-fifo
+    chmod 666 /tmp/dlna-fifo
+fi
+
 # Create artwork cache directory for shairport-sync
 echo "Creating artwork cache directory..."
 mkdir -p /tmp/shairport-sync/.cache/coverart
@@ -90,6 +96,14 @@ SNAPCONF
         # Insert source after [stream] line with control script for metadata
         # Bluetooth audio is typically 44.1kHz/16-bit stereo
         sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
+    fi
+
+    # Add DLNA source to [stream] section
+    if [ "${DLNA_ENABLED}" = "1" ]; then
+        echo "Adding DLNA/UPnP source..."
+        # Insert source after [stream] line with control script for metadata
+        # DLNA audio is typically 44.1kHz/16-bit stereo (can vary based on source)
+        sed -i '/^\[stream\]/a source = pipe:///tmp/dlna-fifo?name='"${DLNA_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/dlna-control-script.py' /app/config/snapserver.conf
     fi
 fi
 

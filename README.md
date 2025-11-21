@@ -1,15 +1,17 @@
 # Plum-Snapcast
 
-A comprehensive multi-room audio streaming solution combining Snapcast with a modern React frontend. Supports AirPlay, Bluetooth (A2DP), and Spotify Connect.
+A comprehensive multi-room audio streaming solution combining Snapcast with a modern React frontend. Supports AirPlay, Bluetooth (A2DP), Spotify Connect, and DLNA/UPnP.
 
 ## Features
 
 - **Multi-room Audio Synchronization**: Sample-accurate synchronized playback across multiple devices
 - **AirPlay Support**: Stream audio from iOS, macOS, and iTunes
 - **Spotify Connect**: Direct streaming from the Spotify app with metadata and album artwork
+- **DLNA/UPnP Support**: Stream from any DLNA/UPnP controller (phones, tablets, media servers)
+- **Bluetooth Support**: Pair and stream from Bluetooth devices (A2DP)
 - **Hardware Audio Output**: Integrated snapclient outputs to Raspberry Pi 3.5mm jack
 - **Modern Web Interface**: Real-time control of streams, clients, and volume
-- **Metadata Display**: Real-time track information and album artwork for AirPlay and Spotify
+- **Metadata Display**: Real-time track information and album artwork for all sources
 
 ## Project Structure
 
@@ -42,7 +44,9 @@ This project builds upon the foundational work of the Snapcast ecosystem:
 - **Snapcast**: https://github.com/badaix/snapcast by Johannes Pohl
 - **Docker Snapcast Container**: https://github.com/firefrei/docker-snapcast by Matthias Frei
 - **Shairport-Sync**: https://github.com/mikebrady/shairport-sync by Mike Brady
+- **Spotifyd**: https://github.com/Spotifyd/spotifyd
 - **Librespot**: https://github.com/librespot-org/librespot
+- **gmrender-resurrect**: https://github.com/hzeller/gmrender-resurrect by Henner Zeller
 
 ## Getting Started
 
@@ -113,6 +117,7 @@ After deployment:
 - **Web Interface**: http://raspberrypi.local:3000 or http://<pi-ip-address>:3000
 - **AirPlay Device**: Look for "Plum Audio" in AirPlay devices on iOS/macOS
 - **Spotify Connect**: Look for "Plum Audio" in Spotify's device list (enable by setting `SPOTIFY_CONFIG_ENABLED=1` in `.env`)
+- **DLNA/UPnP Renderer**: Look for "Plum Audio" in your DLNA controller app (BubbleUPnP, mConnect, etc.) (enable by setting `DLNA_ENABLED=1` in `.env`)
 - **Bluetooth Device**: Look for "Plum Audio" in Bluetooth settings on your phone/device (if enabled)
 
 ### Verification
@@ -126,6 +131,7 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 Expected output:
 ```
 avahi              RUNNING
+gmrender           RUNNING (if DLNA enabled)
 spotifyd           RUNNING (if Spotify enabled)
 shairport-sync     RUNNING
 snapclient         RUNNING
@@ -135,13 +141,27 @@ snapserver         RUNNING
 ### Configuration
 
 Edit `docker/.env` to customize:
+
+**AirPlay:**
 - `AIRPLAY_DEVICE_NAME`: Name shown in AirPlay device list (default: "Plum Audio")
+
+**Spotify Connect:**
 - `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (0=disabled, 1=enabled, default: 0)
 - `SPOTIFY_DEVICE_NAME`: Name shown in Spotify device list (default: "Plum Audio")
 - `SPOTIFY_BITRATE`: Audio quality for Spotify (96, 160, or 320 kbps, default: 320)
+
+**DLNA/UPnP:**
+- `DLNA_ENABLED`: Enable DLNA/UPnP renderer (0=disabled, 1=enabled, default: 0)
+- `DLNA_DEVICE_NAME`: Name shown in DLNA controller apps (default: "Plum Audio")
+- `DLNA_SOURCE_NAME`: Stream name in Snapcast web interface (default: "DLNA")
+- `DLNA_UUID`: Custom UPnP UUID (optional, auto-generated if not set)
+
+**Bluetooth:**
 - `BLUETOOTH_ENABLED`: Enable Bluetooth A2DP audio (default: 0, set to 1 to enable)
 - `BLUETOOTH_DEVICE_NAME`: Name shown in Bluetooth pairing list (default: "Plum Audio")
 - `BLUETOOTH_ADAPTER`: Bluetooth adapter to use (default: hci0)
+
+**General:**
 - `FRONTEND_PORT`: Web interface port (default: 3000)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device for audio output (default: hw:Headphones)
 
@@ -149,6 +169,11 @@ Edit `docker/.env` to customize:
 - Provides track metadata (title, artist, album) and media controls (play, pause, skip)
 - Album artwork is not currently available (requires BlueZ 5.81+; Alpine currently ships 5.70)
 - Auto-pairing mode only (modern devices use SSP, not PIN codes)
+
+**DLNA/UPnP Notes:**
+- Compatible with any DLNA/UPnP control point (BubbleUPnP, mConnect, Windows Media Player, etc.)
+- Supports metadata (title, artist, album, artwork) and basic playback control
+- Automatically discovered on the local network via Avahi
 
 For more details, see [CLAUDE.md](CLAUDE.md).
 
