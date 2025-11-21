@@ -153,9 +153,12 @@ RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
 # Download and install Plexamp headless
 # Plexamp requires Node.js 20+ and runs as a standalone application
 WORKDIR /tmp
-RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | sed -n 's/.*"latestVersion":"\([^"]*\)".*/\1/p') && \
+RUN apk add --no-cache jq && \
+    PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq -r '.latestVersion') && \
     echo "Detected Plexamp version: ${PLEXAMP_VERSION}" && \
-    if [ -z "${PLEXAMP_VERSION}" ]; then echo "ERROR: Failed to detect Plexamp version"; exit 1; fi && \
+    if [ -z "${PLEXAMP_VERSION}" ] || [ "${PLEXAMP_VERSION}" = "null" ]; then \
+        echo "ERROR: Failed to detect Plexamp version"; exit 1; \
+    fi && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         PLEXAMP_ARCH="arm64"; \
     else \
@@ -167,6 +170,7 @@ RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | se
     tar -xjf plexamp.tar.bz2 -C /opt/plexamp --strip-components=1 && \
     rm plexamp.tar.bz2 && \
     chmod +x /opt/plexamp/js/index.js && \
+    apk del jq && \
     echo "Plexamp v${PLEXAMP_VERSION} installed to /opt/plexamp"
 
 # Cleanup build dependencies and temporary files
