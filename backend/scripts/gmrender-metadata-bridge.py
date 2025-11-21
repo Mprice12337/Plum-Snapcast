@@ -50,8 +50,12 @@ def parse_didl_lite(didl_xml: str) -> Dict:
         # Unescape HTML entities if present
         didl_xml = html.unescape(didl_xml)
 
-        # Remove XML namespaces for easier parsing
+        # Remove XML namespace declarations
         didl_xml = re.sub(r' xmlns[^=]*="[^"]*"', '', didl_xml)
+
+        # Remove namespace prefixes from element names (dc:title → title, upnp:album → album)
+        # This fixes "unbound prefix" errors when parsing DIDL-Lite
+        didl_xml = re.sub(r'<(/?)(\w+):', r'<\1', didl_xml)
 
         # Parse XML
         root = ET.fromstring(didl_xml)
