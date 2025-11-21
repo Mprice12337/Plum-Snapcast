@@ -142,7 +142,7 @@ def get_gmrender_control_url() -> Optional[str]:
         if not _gmrender_host or not _gmrender_port:
             return None
 
-    _gmrender_control_url = f"http://{_gmrender_host}:{_gmrender_port}/upnp/control/AVTransport1"
+    _gmrender_control_url = f"http://{_gmrender_host}:{_gmrender_port}/upnp/control/rendertransport1"
     log(f"[Discovery] Using control URL: {_gmrender_control_url}")
     return _gmrender_control_url
 
