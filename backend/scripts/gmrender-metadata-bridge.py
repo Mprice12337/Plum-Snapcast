@@ -1,208 +1,262 @@
 #!/usr/bin/env python3
 """
-gmrender-resurrect Metadata Bridge
-Monitors gmrender's UPnP AVTransport service for metadata changes
-and writes them to /tmp/dlna-metadata.json for the control script
+gmrender-resurrect Metadata Bridge (stdout parser)
+Reads gmrender's stdout logs and extracts DLNA/UPnP metadata
 
-This bridges the gap between gmrender's internal UPnP metadata
-and Snapcast's control script interface.
+Based on HiFiBerry's dlna-mpris approach:
+- Tails gmrender's log output
+- Parses CurrentTrackMetaData (DIDL-Lite XML)
+- Extracts title, artist, album, artwork
+- Writes to /tmp/dlna-metadata.json for control script
+
+Architecture:
+  gmrender logs → this script → JSON file → control script → Snapcast
 """
 
 import json
-import time
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import Optional, Dict
-import urllib.request
-import urllib.error
+from typing import Dict, Optional
+import subprocess
+import html
 
 METADATA_FILE = "/tmp/dlna-metadata.json"
-GMRENDER_PORT = 49494  # Default gmrender port (may change)
-POLL_INTERVAL = 2  # Poll every 2 seconds
+LOG_FILE = "/var/log/supervisord/gmrender.log"
 
 def log(message: str):
     """Log to stderr"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"{timestamp} [MetadataBridge] {message}", file=sys.stderr, flush=True)
 
-def find_gmrender_port() -> Optional[int]:
-    """Find gmrender's actual port by reading from logs"""
-    try:
-        # Try to read from gmrender log
-        with open("/var/log/supervisord/gmrender.log", "r") as f:
-            for line in f:
-                # Look for: Registered IPv4 192.168.x.x:PORT
-                match = re.search(r'Registered IPv4 [\d.]+:(\d+)', line)
-                if match:
-                    port = int(match.group(1))
-                    log(f"Found gmrender port: {port}")
-                    return port
-    except Exception as e:
-        log(f"Could not find gmrender port from logs: {e}")
+def parse_didl_lite(didl_xml: str) -> Dict:
+    """
+    Parse DIDL-Lite XML metadata from UPnP AVTransport
 
-    return 49494  # Default fallback
-
-def get_transport_info(port: int) -> Optional[str]:
-    """Query gmrender's AVTransport service for current URI metadata"""
-    try:
-        # SOAP request to get AVTransport URI
-        soap_request = '''<?xml version="1.0"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-<s:Body>
-<u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-<InstanceID>0</InstanceID>
-</u:GetTransportInfo>
-</s:Body>
-</s:Envelope>'''
-
-        url = f"http://127.0.0.1:{port}/upnp/control/rendertransport1"
-        headers = {
-            'Content-Type': 'text/xml; charset="utf-8"',
-            'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"'
-        }
-
-        req = urllib.request.Request(url, data=soap_request.encode('utf-8'), headers=headers)
-        with urllib.request.urlopen(req, timeout=2) as response:
-            return response.read().decode('utf-8')
-
-    except Exception as e:
-        # Don't spam logs - gmrender might not be playing
-        return None
-
-def get_position_info(port: int) -> Optional[str]:
-    """Query gmrender for current track metadata"""
-    try:
-        soap_request = '''<?xml version="1.0"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-<s:Body>
-<u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-<InstanceID>0</InstanceID>
-</u:GetPositionInfo>
-</s:Body>
-</s:Envelope>'''
-
-        url = f"http://127.0.0.1:{port}/upnp/control/rendertransport1"
-        headers = {
-            'Content-Type': 'text/xml; charset="utf-8"',
-            'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo"'
-        }
-
-        req = urllib.request.Request(url, data=soap_request.encode('utf-8'), headers=headers)
-        with urllib.request.urlopen(req, timeout=2) as response:
-            return response.read().decode('utf-8')
-
-    except Exception as e:
-        return None
-
-def parse_didl_metadata(didl_xml: str) -> Dict:
-    """Parse DIDL-Lite XML metadata"""
+    DIDL-Lite structure:
+    <DIDL-Lite>
+      <item>
+        <dc:title>Track Name</dc:title>
+        <dc:creator>Artist Name</dc:creator> or <upnp:artist>Artist</upnp:artist>
+        <upnp:album>Album Name</upnp:album>
+        <upnp:albumArtURI>http://...</upnp:albumArtURI>
+      </item>
+    </DIDL-Lite>
+    """
     metadata = {}
 
     try:
+        # Unescape HTML entities if present
+        didl_xml = html.unescape(didl_xml)
+
         # Remove XML namespaces for easier parsing
         didl_xml = re.sub(r' xmlns[^=]*="[^"]*"', '', didl_xml)
 
+        # Parse XML
         root = ET.fromstring(didl_xml)
 
-        # Extract title
+        # Extract title (required)
         title_elem = root.find('.//title')
         if title_elem is not None and title_elem.text:
-            metadata['title'] = title_elem.text
+            metadata['title'] = title_elem.text.strip()
 
-        # Extract artist
+        # Extract artist (try multiple tags)
         artist_elem = root.find('.//artist') or root.find('.//creator')
         if artist_elem is not None and artist_elem.text:
-            metadata['artist'] = artist_elem.text
+            metadata['artist'] = artist_elem.text.strip()
 
         # Extract album
         album_elem = root.find('.//album')
         if album_elem is not None and album_elem.text:
-            metadata['album'] = album_elem.text
+            metadata['album'] = album_elem.text.strip()
 
-        # Extract album art
+        # Extract album art URI
         art_elem = root.find('.//albumArtURI')
         if art_elem is not None and art_elem.text:
-            metadata['artUrl'] = art_elem.text
+            metadata['artUrl'] = art_elem.text.strip()
 
-    except Exception as e:
-        log(f"Error parsing DIDL: {e}")
-
-    return metadata
-
-def extract_metadata_from_position_info(xml_response: str) -> Dict:
-    """Extract metadata from GetPositionInfo SOAP response"""
-    metadata = {}
-
-    try:
-        # Parse SOAP response
-        root = ET.fromstring(xml_response)
-
-        # Find TrackMetaData element
-        # It contains DIDL-Lite XML with metadata
-        for elem in root.iter():
-            if 'TrackMetaData' in elem.tag:
-                didl = elem.text
-                if didl:
-                    metadata = parse_didl_metadata(didl)
-                break
-
-        # Also get transport state
-        for elem in root.iter():
-            if 'CurrentTransportState' in elem.tag:
-                state = elem.text
-                if state == 'PLAYING':
-                    metadata['status'] = 'Playing'
-                elif state == 'PAUSED_PLAYBACK':
-                    metadata['status'] = 'Paused'
+        # Extract duration if available
+        duration_elem = root.find('.//duration')
+        if duration_elem is not None and duration_elem.text:
+            # Duration might be in HH:MM:SS format or milliseconds
+            duration_str = duration_elem.text.strip()
+            try:
+                # Try parsing as HH:MM:SS
+                if ':' in duration_str:
+                    parts = duration_str.split(':')
+                    if len(parts) == 3:
+                        h, m, s = parts
+                        duration_ms = (int(h) * 3600 + int(m) * 60 + int(s)) * 1000
+                        metadata['duration'] = duration_ms
                 else:
-                    metadata['status'] = 'Stopped'
-                break
+                    # Assume it's already in milliseconds
+                    metadata['duration'] = int(duration_str)
+            except:
+                pass
 
     except Exception as e:
-        log(f"Error extracting metadata: {e}")
+        log(f"Error parsing DIDL-Lite: {e}")
 
     return metadata
 
-def write_metadata(metadata: Dict):
+def write_metadata(metadata: Dict, status: str = "Playing"):
     """Write metadata to JSON file for control script"""
     try:
+        # Add playback status
+        metadata['status'] = status
+
         with open(METADATA_FILE, 'w') as f:
             json.dump(metadata, f, indent=2)
 
         if metadata.get('title'):
-            log(f"Updated metadata: {metadata.get('title')} - {metadata.get('artist', 'Unknown')}")
+            log(f"Metadata: {metadata.get('title')} - {metadata.get('artist', 'Unknown')} [{status}]")
     except Exception as e:
         log(f"Error writing metadata: {e}")
 
-def main():
-    """Main monitoring loop"""
-    log("Starting gmrender metadata bridge...")
+def tail_follow_log():
+    """
+    Tail gmrender log and parse metadata events
 
-    # Find gmrender port
-    port = find_gmrender_port()
+    Uses subprocess to tail -F (follow with retry) the log file
+    Parses these log lines:
+    - INFO [...] TransportState: PLAYING/PAUSED/STOPPED
+    - INFO [...] CurrentTrackMetaData: <DIDL-Lite>...</DIDL-Lite>
+    """
+    log("Starting gmrender log parser...")
 
-    last_metadata = {}
+    # Start tailing the log file
+    try:
+        process = subprocess.Popen(
+            ['tail', '-F', '-n', '0', LOG_FILE],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+    except Exception as e:
+        log(f"Error starting tail: {e}")
+        log("Falling back to polling mode...")
+        return tail_poll_log()
+
+    current_status = "Stopped"
+    current_metadata = {}
+
+    log(f"Monitoring: {LOG_FILE}")
+
+    try:
+        for line in iter(process.stdout.readline, ''):
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Parse TransportState changes
+            if 'TransportState:' in line:
+                match = re.search(r'TransportState:\s*(\w+)', line)
+                if match:
+                    state = match.group(1)
+                    if state == 'PLAYING':
+                        current_status = 'Playing'
+                    elif state == 'PAUSED_PLAYBACK' or state == 'PAUSED':
+                        current_status = 'Paused'
+                    elif state == 'STOPPED':
+                        current_status = 'Stopped'
+                        # Clear metadata when stopped
+                        current_metadata = {}
+                        write_metadata({}, current_status)
+
+                    log(f"State: {current_status}")
+
+            # Parse CurrentTrackMetaData (contains DIDL-Lite XML)
+            elif 'CurrentTrackMetaData:' in line:
+                # Extract DIDL-Lite XML (everything after "CurrentTrackMetaData: ")
+                match = re.search(r'CurrentTrackMetaData:\s*(.+)', line)
+                if match:
+                    didl_xml = match.group(1)
+
+                    # Parse metadata from DIDL-Lite
+                    metadata = parse_didl_lite(didl_xml)
+
+                    if metadata:
+                        current_metadata = metadata
+                        write_metadata(current_metadata, current_status)
+
+    except KeyboardInterrupt:
+        log("Shutting down...")
+    except Exception as e:
+        log(f"Error reading log: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        process.terminate()
+
+def tail_poll_log():
+    """
+    Fallback: Poll log file for changes (if tail command fails)
+    """
+    log("Using polling mode to read log file...")
+
+    last_position = 0
+    current_status = "Stopped"
+    current_metadata = {}
 
     while True:
         try:
-            # Query gmrender for position info (includes metadata)
-            position_xml = get_position_info(port)
+            with open(LOG_FILE, 'r') as f:
+                # Seek to last position
+                f.seek(last_position)
 
-            if position_xml:
-                # Extract metadata from response
-                metadata = extract_metadata_from_position_info(position_xml)
+                # Read new lines
+                for line in f:
+                    line = line.strip()
 
-                # Only update if metadata changed
-                if metadata != last_metadata:
-                    write_metadata(metadata)
-                    last_metadata = metadata
+                    if not line:
+                        continue
 
+                    # Parse TransportState
+                    if 'TransportState:' in line:
+                        match = re.search(r'TransportState:\s*(\w+)', line)
+                        if match:
+                            state = match.group(1)
+                            if state == 'PLAYING':
+                                current_status = 'Playing'
+                            elif state in ['PAUSED_PLAYBACK', 'PAUSED']:
+                                current_status = 'Paused'
+                            elif state == 'STOPPED':
+                                current_status = 'Stopped'
+                                current_metadata = {}
+                                write_metadata({}, current_status)
+
+                    # Parse CurrentTrackMetaData
+                    elif 'CurrentTrackMetaData:' in line:
+                        match = re.search(r'CurrentTrackMetaData:\s*(.+)', line)
+                        if match:
+                            didl_xml = match.group(1)
+                            metadata = parse_didl_lite(didl_xml)
+
+                            if metadata:
+                                current_metadata = metadata
+                                write_metadata(current_metadata, current_status)
+
+                # Save current position
+                last_position = f.tell()
+
+        except FileNotFoundError:
+            log(f"Log file not found: {LOG_FILE}")
+            time.sleep(5)
         except Exception as e:
-            log(f"Error in monitoring loop: {e}")
+            log(f"Error reading log: {e}")
+            time.sleep(1)
 
-        time.sleep(POLL_INTERVAL)
+        # Poll every 0.5 seconds
+        time.sleep(0.5)
+
+def main():
+    """Main entry point"""
+    log("Starting gmrender metadata bridge (stdout parser)...")
+
+    # Try tail -F first (better), fall back to polling
+    tail_follow_log()
 
 if __name__ == "__main__":
     try:
