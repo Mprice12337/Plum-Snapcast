@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import socket
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -36,6 +37,8 @@ LOG_FILE = "/tmp/dlna-control-script.log"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 METADATA_FILE = "/tmp/dlna-metadata.json"
+GMRENDER_UPNP_PORT = 49152  # Default gmrender UPnP port
+GMRENDER_CONTROL_URL = f"http://127.0.0.1:{GMRENDER_UPNP_PORT}/upnp/control/AVTransport1"
 
 # Set up logging to file
 def log(message: str):
@@ -48,6 +51,56 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def send_upnp_control(action: str) -> bool:
+    """
+    Send UPnP AVTransport control command to gmrender-resurrect
+
+    Args:
+        action: UPnP action (Play, Pause, Stop, etc.)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        soap_body = f'''<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:{action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+      <Speed>1</Speed>
+    </u:{action}>
+  </s:Body>
+</s:Envelope>'''
+
+        headers = {
+            'Content-Type': 'text/xml; charset="utf-8"',
+            'SOAPAction': f'"urn:schemas-upnp-org:service:AVTransport:1#{action}"',
+            'Content-Length': str(len(soap_body))
+        }
+
+        request = urllib.request.Request(
+            GMRENDER_CONTROL_URL,
+            data=soap_body.encode('utf-8'),
+            headers=headers,
+            method='POST'
+        )
+
+        with urllib.request.urlopen(request, timeout=2) as response:
+            status = response.getcode()
+            if status == 200:
+                log(f"[UPnP] {action} command sent successfully")
+                return True
+            else:
+                log(f"[UPnP] {action} command failed with status {status}")
+                return False
+
+    except urllib.error.URLError as e:
+        log(f"[UPnP] {action} command failed: {e}")
+        return False
+    except Exception as e:
+        log(f"[UPnP] {action} command error: {e}")
+        return False
 
 # Try to import D-Bus - graceful fallback if not available
 try:
@@ -295,8 +348,9 @@ class SnapcastControlScript:
         playback_status = state_data.get("playback_status", "Stopped")
         position = state_data.get("position", 0)
 
-        # DLNA/UPnP supports basic playback controls
-        can_control = playback_status != "Stopped"
+        # DLNA/UPnP supports basic playback controls when content is loaded
+        # We can control if we have metadata (track is loaded) or not stopped
+        has_content = bool(meta_obj) or playback_status != "Stopped"
 
         # Notification params: include stream ID and all properties
         params = {
@@ -311,13 +365,13 @@ class SnapcastControlScript:
             "rate": 1.0,
             "position": position,
 
-            # Control capabilities (limited for DLNA)
-            "canGoNext": False,  # DLNA doesn't typically support skip
+            # Control capabilities - DLNA supports Play/Pause via UPnP AVTransport
+            "canGoNext": False,  # Skip not supported in UPnP renderer
             "canGoPrevious": False,
-            "canPlay": can_control,
-            "canPause": can_control,
+            "canPlay": has_content,
+            "canPause": has_content,
             "canSeek": False,
-            "canControl": can_control,
+            "canControl": has_content,
 
             # Metadata (simple field names)
             "metadata": meta_obj
@@ -351,7 +405,7 @@ class SnapcastControlScript:
                 state_data = self.store.get_all()
                 playback_status = state_data.get("playback_status", "Stopped")
                 position = state_data.get("position", 0)
-                can_control = playback_status != "Stopped"
+                has_content = bool(meta_obj) or playback_status != "Stopped"
 
                 # Build complete properties response per Snapcast Stream Plugin API
                 properties = {
@@ -364,13 +418,13 @@ class SnapcastControlScript:
                     "rate": 1.0,
                     "position": position,
 
-                    # Control capabilities
+                    # Control capabilities - DLNA supports Play/Pause via UPnP AVTransport
                     "canGoNext": False,
                     "canGoPrevious": False,
-                    "canPlay": can_control,
-                    "canPause": can_control,
+                    "canPlay": has_content,
+                    "canPause": has_content,
                     "canSeek": False,
-                    "canControl": can_control,
+                    "canControl": has_content,
 
                     # Metadata
                     "metadata": meta_obj
@@ -389,14 +443,22 @@ class SnapcastControlScript:
                 command = params.get("command", "")
                 log(f"[Control] Received control command: {command} (params={params})")
 
-                # DLNA control is handled by the controller, not the renderer
-                # We can only report status changes, not actively control playback
+                # Send UPnP AVTransport control command to gmrender
+                success = False
+                if command == "play":
+                    success = send_upnp_control("Play")
+                elif command == "pause":
+                    success = send_upnp_control("Pause")
+                elif command == "stop":
+                    success = send_upnp_control("Stop")
+                else:
+                    log(f"[Control] Unsupported command: {command}")
 
-                # Send success response
+                # Send response
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {}
+                    "result": {"success": success}
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
 
