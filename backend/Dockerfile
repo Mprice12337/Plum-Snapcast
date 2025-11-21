@@ -39,6 +39,7 @@ RUN apk add --no-cache \
     util-linux \
     nodejs \
     npm \
+    gcompat \
     gstreamer \
     gst-plugins-base \
     gst-plugins-good \
