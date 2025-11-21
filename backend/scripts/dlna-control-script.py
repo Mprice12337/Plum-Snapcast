@@ -38,7 +38,8 @@ SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 METADATA_FILE = "/tmp/dlna-metadata.json"
 
-# Global for dynamically discovered gmrender port
+# Global for dynamically discovered gmrender port and host
+_gmrender_host = None
 _gmrender_port = None
 _gmrender_control_url = None
 
@@ -54,23 +55,34 @@ def log(message: str):
     except:
         pass
 
-def discover_gmrender_port() -> Optional[int]:
+def discover_gmrender_endpoint() -> tuple:
     """
-    Discover the dynamically allocated port gmrender is listening on.
+    Discover the dynamically allocated host and port gmrender is listening on.
 
     Returns:
-        Port number if found, None otherwise
+        Tuple of (host, port) if found, (None, None) otherwise
     """
     try:
-        # Try to find gmrender's listening port via netstat
+        # Try to find gmrender's listening endpoint via netstat
         # Use head -1 to get only the first match (IPv4 address)
-        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | head -1 | awk '{print $4}' | cut -d: -f2").read().strip()
-        if result and result.isdigit():
-            port = int(result)
-            log(f"[Discovery] Found gmrender on port {port} via netstat")
-            return port
+        # Extract the full "host:port" from column 4
+        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | head -1 | awk '{print $4}'").read().strip()
+        if result and ':' in result:
+            # Parse host:port
+            parts = result.rsplit(':', 1)  # rsplit to handle IPv6 [::]:port format
+            if len(parts) == 2:
+                host = parts[0]
+                port_str = parts[1]
 
-        # Fallback: try common UPnP ports
+                if port_str.isdigit():
+                    port = int(port_str)
+
+                    # Keep the IP as-is from netstat
+                    # With host networking mode, we can reach gmrender at whatever IP it binds to
+                    log(f"[Discovery] Found gmrender on {host}:{port} via netstat")
+                    return (host, port)
+
+        # Fallback: try common UPnP ports on localhost
         log("[Discovery] netstat didn't find gmrender, trying common ports...")
         for port in [49494, 49152, 49153, 49154]:
             try:
@@ -85,34 +97,34 @@ def discover_gmrender_port() -> Optional[int]:
                         with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=1) as response:
                             data = response.read().decode('utf-8')
                             if 'GMediaRender' in data or 'gmediarender' in data or 'AVTransport' in data:
-                                log(f"[Discovery] Confirmed gmrender on port {port}")
-                                return port
+                                log(f"[Discovery] Confirmed gmrender on 127.0.0.1:{port}")
+                                return ('127.0.0.1', port)
                     except:
                         pass
             except Exception as scan_error:
                 log(f"[Discovery] Error scanning port {port}: {scan_error}")
 
-        log("[Discovery] Could not discover gmrender port")
-        return None
+        log("[Discovery] Could not discover gmrender endpoint")
+        return (None, None)
     except Exception as e:
-        log(f"[Discovery] Error discovering port: {e}")
+        log(f"[Discovery] Error discovering endpoint: {e}")
         import traceback
         log(traceback.format_exc())
-        return None
+        return (None, None)
 
 def get_gmrender_control_url() -> Optional[str]:
-    """Get gmrender control URL, discovering port if needed"""
-    global _gmrender_port, _gmrender_control_url
+    """Get gmrender control URL, discovering endpoint if needed"""
+    global _gmrender_host, _gmrender_port, _gmrender_control_url
 
     if _gmrender_control_url:
         return _gmrender_control_url
 
-    if not _gmrender_port:
-        _gmrender_port = discover_gmrender_port()
-        if not _gmrender_port:
+    if not _gmrender_host or not _gmrender_port:
+        _gmrender_host, _gmrender_port = discover_gmrender_endpoint()
+        if not _gmrender_host or not _gmrender_port:
             return None
 
-    _gmrender_control_url = f"http://127.0.0.1:{_gmrender_port}/upnp/control/AVTransport1"
+    _gmrender_control_url = f"http://{_gmrender_host}:{_gmrender_port}/upnp/control/AVTransport1"
     log(f"[Discovery] Using control URL: {_gmrender_control_url}")
     return _gmrender_control_url
 
@@ -167,8 +179,9 @@ def send_upnp_control(action: str) -> bool:
 
     except urllib.error.URLError as e:
         log(f"[UPnP] {action} command failed: {e}")
-        # Reset cached URL on connection error (port may have changed)
-        global _gmrender_port, _gmrender_control_url
+        # Reset cached URL on connection error (endpoint may have changed)
+        global _gmrender_host, _gmrender_port, _gmrender_control_url
+        _gmrender_host = None
         _gmrender_port = None
         _gmrender_control_url = None
         return False
