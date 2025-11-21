@@ -43,6 +43,12 @@ if [ ! -p /tmp/dlna-fifo ]; then
     chmod 666 /tmp/dlna-fifo
 fi
 
+if [ ! -p /tmp/plexamp-fifo ]; then
+    echo "Creating Plexamp FIFO pipe..."
+    mkfifo /tmp/plexamp-fifo
+    chmod 666 /tmp/plexamp-fifo
+fi
+
 # Create artwork cache directory for shairport-sync
 echo "Creating artwork cache directory..."
 mkdir -p /tmp/shairport-sync/.cache/coverart
@@ -105,6 +111,33 @@ SNAPCONF
         # DLNA audio is typically 44.1kHz/16-bit stereo (can vary based on source)
         sed -i '/^\[stream\]/a source = pipe:///tmp/dlna-fifo?name='"${DLNA_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/dlna-control-script.py' /app/config/snapserver.conf
     fi
+
+    # Add Plexamp source to [stream] section
+    if [ "${PLEXAMP_ENABLED}" = "1" ]; then
+        echo "Adding Plexamp source..."
+        # Insert source after [stream] line with control script for metadata
+        # Plexamp outputs 44.1kHz/16-bit stereo (CD quality)
+        sed -i '/^\[stream\]/a source = pipe:///tmp/plexamp-fifo?name='"${PLEXAMP_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/plexamp-control-script.py' /app/config/snapserver.conf
+    fi
+fi
+
+# Configure ALSA for Plexamp audio output to FIFO
+if [ "${PLEXAMP_ENABLED}" = "1" ]; then
+    echo "Configuring ALSA for Plexamp..."
+    cat > /app/config/asound.conf << 'ALSA_CONF'
+pcm.!default {
+    type plug
+    slave.pcm plexamp_fifo
+}
+
+pcm.plexamp_fifo {
+    type file
+    slave.pcm null
+    file "/tmp/plexamp-fifo"
+    format "raw"
+}
+ALSA_CONF
+    echo "ALSA configured to output to /tmp/plexamp-fifo"
 fi
 
 # Generate SSL certificates if needed

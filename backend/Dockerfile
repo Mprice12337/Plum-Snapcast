@@ -5,9 +5,9 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
 LABEL maintainer="Plum-Snapcast"
-LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, and DLNA/UPnP support"
+LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, DLNA/UPnP, and Plexamp support"
 
-# Install runtime dependencies (ADDED python3 for metadata processor)
+# Install runtime dependencies (python3 for metadata, nodejs for Plexamp, GStreamer for DLNA)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -33,10 +33,12 @@ RUN apk add --no-cache \
     python3 \
     py3-dbus \
     py3-gobject3 \
+    py3-requests \
     bluez \
     bluez-alsa \
     util-linux \
-    # DLNA/UPnP runtime dependencies
+    nodejs \
+    npm \
     gstreamer \
     gst-plugins-base \
     gst-plugins-good \
@@ -148,6 +150,23 @@ RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
     cd .. && \
     rm -rf gmrender-resurrect
 
+# Download and install Plexamp headless
+# Plexamp requires Node.js 20+ and runs as a standalone application
+WORKDIR /tmp
+RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | grep -o '"latestVersion":"[^"]*' | cut -d'"' -f4) && \
+    echo "Downloading Plexamp v${PLEXAMP_VERSION}..." && \
+    if [ "$(uname -m)" = "aarch64" ]; then \
+        PLEXAMP_ARCH="arm64"; \
+    else \
+        PLEXAMP_ARCH="x64"; \
+    fi && \
+    curl -L "https://plexamp.plex.tv/headless/Plexamp-Linux-headless-v${PLEXAMP_VERSION}-${PLEXAMP_ARCH}.tar.bz2" -o plexamp.tar.bz2 && \
+    mkdir -p /opt/plexamp && \
+    tar -xjf plexamp.tar.bz2 -C /opt/plexamp --strip-components=1 && \
+    rm plexamp.tar.bz2 && \
+    chmod +x /opt/plexamp/js/index.js && \
+    echo "Plexamp installed to /opt/plexamp"
+
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
 RUN apk del --force-broken-world .build-deps && \
@@ -193,11 +212,13 @@ RUN mkdir -p \
     /app/certs \
     /app/scripts \
     /app/supervisord \
+    /app/plexamp \
     /var/run/dbus \
     /var/run/avahi-daemon \
     /var/log/supervisord \
     /usr/share/snapserver/snapweb/coverart \
     && chown -R snapcast:snapcast /app \
+    && chown -R snapcast:snapcast /opt/plexamp \
     && chmod 755 /var/run/dbus \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord \
@@ -214,8 +235,9 @@ RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
+# Plexamp: 32500 (HTTP API and web UI)
 # Metadata Debug Server: 8080 (HTTP)
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
+EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080 32500
 
 # Set working directory
 WORKDIR /app
@@ -241,6 +263,10 @@ ENV TZ=Etc/UTC \
     DLNA_SOURCE_NAME=DLNA \
     DLNA_DEVICE_NAME="Plum Audio" \
     DLNA_UUID="" \
+    PLEXAMP_ENABLED=0 \
+    PLEXAMP_SOURCE_NAME=Plexamp \
+    PLEXAMP_CLAIM_TOKEN="" \
+    PLEXAMP_SERVER_NAME="Plum Audio" \
     PIPE_CONFIG_ENABLED=0 \
     PIPE_SOURCE_NAME=Pipe \
     PIPE_PATH=/tmp/snapfifo \

@@ -4,14 +4,14 @@
 
 ## Project Overview
 
-**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, DLNA/UPnP, and direct streaming sources.
+**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, DLNA/UPnP, Plexamp (Plex music casting), and direct streaming sources.
 
 ### Key Features
 - Multi-room audio synchronization with sample-accurate playback
 - Hardware audio output via integrated snapclient (Raspberry Pi 3.5mm jack)
 - Modern React-based web interface for controlling streams and managing clients
 - Real-time WebSocket communication using JSON-RPC 2.0
-- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect (Spotifyd), DLNA/UPnP, FIFO pipes
+- Multiple audio sources: AirPlay (1 and 2), Bluetooth (A2DP), Spotify Connect (Spotifyd), DLNA/UPnP, Plexamp (Plex music casting), FIFO pipes
 - Real-time metadata display with album artwork
 - Individual and group volume control with mute functionality
 
@@ -54,6 +54,7 @@
   - **BlueZ + bluez-alsa**: Bluetooth A2DP audio reception
   - **Spotifyd**: Spotify Connect client with D-Bus MPRIS support
   - **gmrender-resurrect**: DLNA/UPnP media renderer with GStreamer
+  - **Plexamp**: Plex music player endpoint (Node.js, requires Plex Pass)
   - **FIFO Pipes**: Direct audio input support
 - **Process Management**: Supervisord for managing multiple processes
 - **Service Discovery**: Avahi daemon for mDNS/DNS-SD
@@ -88,6 +89,9 @@ Backend (via Docker):
 - `gmrender-resurrect` - DLNA/UPnP media renderer (built from source)
 - `gstreamer` - Multimedia framework for gmrender audio processing
 - `libupnp` - UPnP library for service discovery and control
+- `plexamp-headless` - Plex music player (Node.js 20+, requires Plex Pass)
+- `nodejs` - JavaScript runtime for Plexamp
+- `py3-requests` - Python HTTP client for Plexamp API communication
 - `avahi` - Service discovery for network audio (mDNS/DNS-SD)
 - `dbus` - Inter-process communication (container uses host's D-Bus socket)
 - `nqptp` - Network Time Protocol for AirPlay 2 (airplay2 builds only)
@@ -239,8 +243,10 @@ All services run in a single Docker container managed by supervisord for simplif
 - **Shairport-Sync**: Receives AirPlay audio streams and outputs to Snapcast via FIFO
 - **BlueZ + bluez-alsa**: Bluetooth stack for A2DP audio reception and ALSA integration
 - **Spotifyd**: Spotify Connect endpoint with D-Bus MPRIS for metadata and playback control
+- **gmrender-resurrect**: DLNA/UPnP media renderer with GStreamer for audio processing
+- **Plexamp Headless**: Plex music player endpoint (HTTP API for metadata and control)
 - **Supervisord**: Manages all services within the container with auto-restart
-- **Avahi Daemon**: Broadcasts AirPlay/Spotify services on the network via mDNS
+- **Avahi Daemon**: Broadcasts AirPlay/Spotify/DLNA/Plexamp services on the network via mDNS
 - **D-Bus**: Inter-process communication (system bus for MPRIS integration)
 
 **Frontend Components:**
@@ -275,7 +281,7 @@ All services run in a single Docker container managed by supervisord for simplif
 User action → React component → snapcastService (WebSocket JSON-RPC) → Snapcast server → Audio output via snapclient → Speakers
 
 **Metadata Flow:**
-AirPlay/Bluetooth/Spotify → Shairport-Sync/BlueZ D-Bus/Spotifyd MPRIS → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
+AirPlay/Bluetooth/Spotify/DLNA/Plexamp → Shairport-Sync/BlueZ D-Bus/Spotifyd MPRIS/gmrender-resurrect/Plexamp HTTP API → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
 
 ---
 
@@ -453,6 +459,24 @@ shellcheck backend/scripts/*.sh
 - **Album Artwork**: Downloaded from URLs in UPnP metadata and cached to `/usr/share/snapserver/snapweb/coverart/`
 - **Compatible Controllers**: Works with any DLNA/UPnP control point (BubbleUPnP, mConnect, Windows Media Player, etc.)
 
+#### Plexamp Configuration
+- `PLEXAMP_ENABLED`: Enable Plexamp headless (default: `0`)
+- `PLEXAMP_SOURCE_NAME`: Display name in Snapcast (default: `Plexamp`)
+- `PLEXAMP_CLAIM_TOKEN`: Plex claim token for initial setup (get from https://plex.tv/claim)
+- `PLEXAMP_SERVER_NAME`: Player name in Plex apps (default: `Plum Audio`)
+
+**Plexamp Implementation Notes:**
+- **Requirements**: Requires Plex Pass subscription and claim token for initial setup
+- **Runtime**: Node.js 20+ for Plexamp headless player
+- **Audio Output**: Configured via ALSA (asound.conf) to output to FIFO pipe
+- **HTTP API**: Control script polls Plexamp's HTTP API at http://127.0.0.1:32500 for metadata and playback state
+- **Timeline Polling**: Polls `/player/timeline/poll` endpoint every 2 seconds for track changes and playback state
+- **Metadata & Controls**: Full playback control (play/pause/next/previous) and metadata (title, artist, album, artwork) via HTTP API
+- **Album Artwork**: Downloaded from Plex server and cached to `/usr/share/snapserver/snapweb/coverart/`
+- **Network Discovery**: Appears as a cast target in Plex mobile apps (iOS/Android)
+- **Web UI**: Available at http://[host]:32500 for configuration and library selection
+- **Initial Setup**: Visit https://plex.tv/claim to get a claim token, then set `PLEXAMP_CLAIM_TOKEN` environment variable
+
 #### FIFO Pipe Configuration
 - `PIPE_CONFIG_ENABLED`: Enable FIFO pipe source (default: `0`)
 - `PIPE_SOURCE_NAME`: Display name in Snapcast (default: `Pipe`)
@@ -492,11 +516,14 @@ shellcheck backend/scripts/*.sh
 - `7000`: AirPlay 2 streaming (airplay2 builds only)
 - `319-320/udp`: NQPTP for AirPlay 2 (airplay2 builds only)
 
+**Plexamp:**
+- `32500`: Plexamp web UI and HTTP API (configuration and control)
+
 **Frontend:**
 - `3000`: Web interface (default, configurable via `FRONTEND_PORT`)
 
 ### Network Requirements
-- **Layer 2 network**: AirPlay and Spotify Connect require broadcast support (mDNS/Avahi)
+- **Layer 2 network**: AirPlay, Spotify Connect, DLNA/UPnP, and Plexamp require broadcast support (mDNS/Avahi)
 - **Routed networks**: May require mDNS repeater for cross-subnet discovery
 - **Host networking**: Backend uses `network_mode: host` for optimal service discovery
 - **No VLANs**: mDNS broadcasts don't cross VLAN boundaries without repeater
