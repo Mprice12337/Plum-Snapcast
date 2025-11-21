@@ -66,7 +66,7 @@ def discover_gmrender_endpoint() -> tuple:
         # Try to find gmrender's listening endpoint via netstat
         # Use head -1 to get only the first match (IPv4 address)
         # Extract the full "host:port" from column 4
-        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | head -1 | awk '{print $4}'").read().strip()
+        result = os.popen("netstat -tln 2>/dev/null | grep ':494' | head -1 | awk '{print $4}'").read().strip()
         if result and ':' in result:
             # Parse host:port
             parts = result.rsplit(':', 1)  # rsplit to handle IPv6 [::]:port format
@@ -76,33 +76,51 @@ def discover_gmrender_endpoint() -> tuple:
 
                 if port_str.isdigit():
                     port = int(port_str)
-
                     # Keep the IP as-is from netstat
                     # With host networking mode, we can reach gmrender at whatever IP it binds to
                     log(f"[Discovery] Found gmrender on {host}:{port} via netstat")
                     return (host, port)
 
-        # Fallback: try common UPnP ports on localhost
-        log("[Discovery] netstat didn't find gmrender, trying common ports...")
-        for port in [49494, 49152, 49153, 49154]:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(0.5)
-                result = sock.connect_ex(('127.0.0.1', port))
-                sock.close()
-                if result == 0:
-                    log(f"[Discovery] Found open port {port}, testing if it's gmrender...")
-                    # Try to fetch device description
-                    try:
-                        with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=1) as response:
-                            data = response.read().decode('utf-8')
-                            if 'GMediaRender' in data or 'gmediarender' in data or 'AVTransport' in data:
-                                log(f"[Discovery] Confirmed gmrender on 127.0.0.1:{port}")
-                                return ('127.0.0.1', port)
-                    except:
-                        pass
-            except Exception as scan_error:
-                log(f"[Discovery] Error scanning port {port}: {scan_error}")
+        # Fallback: Get the actual network interface IP and try common ports
+        log("[Discovery] netstat didn't find gmrender, trying fallback...")
+
+        # Try to get the machine's actual IP address
+        local_ip = None
+        try:
+            # Get IP by connecting to an external address (doesn't actually send data)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            log(f"[Discovery] Detected local IP: {local_ip}")
+        except:
+            pass
+
+        # Try both localhost and the actual network IP
+        hosts_to_try = ['127.0.0.1']
+        if local_ip and local_ip != '127.0.0.1':
+            hosts_to_try.append(local_ip)
+
+        for host in hosts_to_try:
+            for port in [49494, 49152, 49153, 49154]:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.5)
+                    result = sock.connect_ex((host, port))
+                    sock.close()
+                    if result == 0:
+                        log(f"[Discovery] Found open port {host}:{port}, testing if it's gmrender...")
+                        # Try to fetch device description
+                        try:
+                            with urllib.request.urlopen(f'http://{host}:{port}/', timeout=1) as response:
+                                data = response.read().decode('utf-8')
+                                if 'GMediaRender' in data or 'gmediarender' in data or 'AVTransport' in data:
+                                    log(f"[Discovery] Confirmed gmrender on {host}:{port}")
+                                    return (host, port)
+                        except Exception as http_err:
+                            log(f"[Discovery] HTTP check failed for {host}:{port}: {http_err}")
+                except Exception as scan_error:
+                    pass  # Don't log every failed connection attempt
 
         log("[Discovery] Could not discover gmrender endpoint")
         return (None, None)
