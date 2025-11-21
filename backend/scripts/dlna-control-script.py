@@ -62,15 +62,16 @@ def discover_gmrender_port() -> Optional[int]:
         Port number if found, None otherwise
     """
     try:
-        # Try to read /proc/net/tcp to find gmrender's listening port
-        # This is more reliable than netstat which may not be available
-        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | awk '{print $4}' | cut -d: -f2").read().strip()
-        if result:
+        # Try to find gmrender's listening port via netstat
+        # Use head -1 to get only the first match (IPv4 address)
+        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | head -1 | awk '{print $4}' | cut -d: -f2").read().strip()
+        if result and result.isdigit():
             port = int(result)
-            log(f"[Discovery] Found gmrender on port {port}")
+            log(f"[Discovery] Found gmrender on port {port} via netstat")
             return port
 
         # Fallback: try common UPnP ports
+        log("[Discovery] netstat didn't find gmrender, trying common ports...")
         for port in [49494, 49152, 49153, 49154]:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -88,13 +89,15 @@ def discover_gmrender_port() -> Optional[int]:
                                 return port
                     except:
                         pass
-            except:
-                pass
+            except Exception as scan_error:
+                log(f"[Discovery] Error scanning port {port}: {scan_error}")
 
         log("[Discovery] Could not discover gmrender port")
         return None
     except Exception as e:
         log(f"[Discovery] Error discovering port: {e}")
+        import traceback
+        log(traceback.format_exc())
         return None
 
 def get_gmrender_control_url() -> Optional[str]:
