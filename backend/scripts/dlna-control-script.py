@@ -37,8 +37,10 @@ LOG_FILE = "/tmp/dlna-control-script.log"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 METADATA_FILE = "/tmp/dlna-metadata.json"
-GMRENDER_UPNP_PORT = 49152  # Default gmrender UPnP port
-GMRENDER_CONTROL_URL = f"http://127.0.0.1:{GMRENDER_UPNP_PORT}/upnp/control/AVTransport1"
+
+# Global for dynamically discovered gmrender port
+_gmrender_port = None
+_gmrender_control_url = None
 
 # Set up logging to file
 def log(message: str):
@@ -52,6 +54,65 @@ def log(message: str):
     except:
         pass
 
+def discover_gmrender_port() -> Optional[int]:
+    """
+    Discover the dynamically allocated port gmrender is listening on.
+
+    Returns:
+        Port number if found, None otherwise
+    """
+    try:
+        # Try to read /proc/net/tcp to find gmrender's listening port
+        # This is more reliable than netstat which may not be available
+        result = os.popen("netstat -tlnp 2>/dev/null | grep gmediarender | awk '{print $4}' | cut -d: -f2").read().strip()
+        if result:
+            port = int(result)
+            log(f"[Discovery] Found gmrender on port {port}")
+            return port
+
+        # Fallback: try common UPnP ports
+        for port in [49494, 49152, 49153, 49154]:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.5)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                if result == 0:
+                    log(f"[Discovery] Found open port {port}, testing if it's gmrender...")
+                    # Try to fetch device description
+                    try:
+                        with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=1) as response:
+                            data = response.read().decode('utf-8')
+                            if 'GMediaRender' in data or 'gmediarender' in data or 'AVTransport' in data:
+                                log(f"[Discovery] Confirmed gmrender on port {port}")
+                                return port
+                    except:
+                        pass
+            except:
+                pass
+
+        log("[Discovery] Could not discover gmrender port")
+        return None
+    except Exception as e:
+        log(f"[Discovery] Error discovering port: {e}")
+        return None
+
+def get_gmrender_control_url() -> Optional[str]:
+    """Get gmrender control URL, discovering port if needed"""
+    global _gmrender_port, _gmrender_control_url
+
+    if _gmrender_control_url:
+        return _gmrender_control_url
+
+    if not _gmrender_port:
+        _gmrender_port = discover_gmrender_port()
+        if not _gmrender_port:
+            return None
+
+    _gmrender_control_url = f"http://127.0.0.1:{_gmrender_port}/upnp/control/AVTransport1"
+    log(f"[Discovery] Using control URL: {_gmrender_control_url}")
+    return _gmrender_control_url
+
 def send_upnp_control(action: str) -> bool:
     """
     Send UPnP AVTransport control command to gmrender-resurrect
@@ -63,6 +124,12 @@ def send_upnp_control(action: str) -> bool:
         True if successful, False otherwise
     """
     try:
+        # Get gmrender control URL (discovers port on first call)
+        control_url = get_gmrender_control_url()
+        if not control_url:
+            log(f"[UPnP] {action} command failed: gmrender port not found")
+            return False
+
         soap_body = f'''<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
@@ -80,7 +147,7 @@ def send_upnp_control(action: str) -> bool:
         }
 
         request = urllib.request.Request(
-            GMRENDER_CONTROL_URL,
+            control_url,
             data=soap_body.encode('utf-8'),
             headers=headers,
             method='POST'
@@ -97,6 +164,10 @@ def send_upnp_control(action: str) -> bool:
 
     except urllib.error.URLError as e:
         log(f"[UPnP] {action} command failed: {e}")
+        # Reset cached URL on connection error (port may have changed)
+        global _gmrender_port, _gmrender_control_url
+        _gmrender_port = None
+        _gmrender_control_url = None
         return False
     except Exception as e:
         log(f"[UPnP] {action} command error: {e}")
@@ -472,6 +543,14 @@ class SnapcastControlScript:
     def run(self):
         """Main event loop"""
         log("[Main] DLNA Control Script starting...")
+
+        # Discover gmrender control port at startup
+        log("[Main] Discovering gmrender UPnP control port...")
+        control_url = get_gmrender_control_url()
+        if control_url:
+            log(f"[Main] gmrender ready for control at {control_url}")
+        else:
+            log("[Main] Warning: Could not discover gmrender port - controls may not work")
 
         # Start metadata monitor
         self.dlna_monitor.start()
