@@ -152,6 +152,7 @@ RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
 
 # Download and install Plexamp headless
 # Plexamp requires Node.js 20+ and runs as a standalone application
+# Architecture-agnostic (Node.js handles platform differences)
 WORKDIR /tmp
 RUN apk add --no-cache jq && \
     PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq -r '.latestVersion') && \
@@ -159,13 +160,8 @@ RUN apk add --no-cache jq && \
     if [ -z "${PLEXAMP_VERSION}" ] || [ "${PLEXAMP_VERSION}" = "null" ]; then \
         echo "ERROR: Failed to detect Plexamp version"; exit 1; \
     fi && \
-    if [ "$(uname -m)" = "aarch64" ]; then \
-        PLEXAMP_ARCH="arm64"; \
-    else \
-        PLEXAMP_ARCH="x64"; \
-    fi && \
-    echo "Downloading Plexamp-Linux-headless-v${PLEXAMP_VERSION}-${PLEXAMP_ARCH}.tar.bz2..." && \
-    curl -fSL "https://plexamp.plex.tv/headless/Plexamp-Linux-headless-v${PLEXAMP_VERSION}-${PLEXAMP_ARCH}.tar.bz2" -o plexamp.tar.bz2 && \
+    echo "Downloading Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2..." && \
+    curl -fSL "https://plexamp.plex.tv/headless/Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2" -o plexamp.tar.bz2 && \
     mkdir -p /opt/plexamp && \
     tar -xjf plexamp.tar.bz2 -C /opt/plexamp --strip-components=1 && \
     rm plexamp.tar.bz2 && \
