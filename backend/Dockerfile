@@ -5,9 +5,9 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
 LABEL maintainer="Plum-Snapcast"
-LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, DLNA/UPnP, and Plexamp support"
+LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, and DLNA/UPnP support"
 
-# Install runtime dependencies (python3 for metadata, nodejs for Plexamp, GStreamer for DLNA)
+# Install runtime dependencies (python3 for metadata, GStreamer for DLNA)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -37,9 +37,6 @@ RUN apk add --no-cache \
     bluez \
     bluez-alsa \
     util-linux \
-    nodejs \
-    npm \
-    gcompat \
     gstreamer \
     gst-plugins-base \
     gst-plugins-good \
@@ -151,25 +148,6 @@ RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
     cd .. && \
     rm -rf gmrender-resurrect
 
-# Download and install Plexamp headless
-# Plexamp requires Node.js 20+ and runs as a standalone application
-# Architecture-agnostic (Node.js handles platform differences)
-WORKDIR /tmp
-RUN apk add --no-cache jq && \
-    PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq -r '.latestVersion') && \
-    echo "Detected Plexamp version: ${PLEXAMP_VERSION}" && \
-    if [ -z "${PLEXAMP_VERSION}" ] || [ "${PLEXAMP_VERSION}" = "null" ]; then \
-        echo "ERROR: Failed to detect Plexamp version"; exit 1; \
-    fi && \
-    echo "Downloading Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2..." && \
-    curl -fSL "https://plexamp.plex.tv/headless/Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2" -o plexamp.tar.bz2 && \
-    mkdir -p /opt/plexamp && \
-    tar -xjf plexamp.tar.bz2 -C /opt/plexamp --strip-components=1 && \
-    rm plexamp.tar.bz2 && \
-    chmod +x /opt/plexamp/js/index.js && \
-    apk del jq && \
-    echo "Plexamp v${PLEXAMP_VERSION} installed to /opt/plexamp"
-
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
 RUN apk del --force-broken-world .build-deps && \
@@ -215,13 +193,13 @@ RUN mkdir -p \
     /app/certs \
     /app/scripts \
     /app/supervisord \
-    /app/plexamp \
+    /tmp/snapcast-fifos \
     /var/run/dbus \
     /var/run/avahi-daemon \
     /var/log/supervisord \
     /usr/share/snapserver/snapweb/coverart \
     && chown -R snapcast:snapcast /app \
-    && chown -R snapcast:snapcast /opt/plexamp \
+    && chown -R snapcast:snapcast /tmp/snapcast-fifos \
     && chmod 755 /var/run/dbus \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord \
@@ -238,9 +216,9 @@ RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
-# Plexamp: 32500 (HTTP API and web UI)
 # Metadata Debug Server: 8080 (HTTP)
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080 32500
+# Note: Plexamp runs in separate container (port 32500)
+EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 
 # Set working directory
 WORKDIR /app

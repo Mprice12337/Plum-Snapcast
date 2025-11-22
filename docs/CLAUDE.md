@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, DLNA/UPnP, Plexamp (Plex music casting), and direct streaming sources.
+**Plum-Snapcast** is a comprehensive multi-room audio streaming solution that combines a Snapcast server backend with a modern React/TypeScript frontend. The application enables synchronized audio playback across multiple devices/rooms with support for AirPlay, Spotify Connect, DLNA/UPnP, Plexamp (Plex music casting via optional Debian sidecar), and direct streaming sources.
 
 ### Key Features
 - Multi-room audio synchronization with sample-accurate playback
@@ -466,16 +466,20 @@ shellcheck backend/scripts/*.sh
 - `PLEXAMP_SERVER_NAME`: Player name in Plex apps (default: `Plum Audio`)
 
 **Plexamp Implementation Notes:**
+- **Architecture**: Runs in separate Debian container (plum-plexamp) due to glibc requirements
+- **Why Debian?**: Plexamp's native Node.js modules are incompatible with Alpine's musl libc
 - **Requirements**: Requires Plex Pass subscription and claim token for initial setup
-- **Runtime**: Node.js 20+ for Plexamp headless player
-- **Audio Output**: Configured via ALSA (asound.conf) to output to FIFO pipe
-- **HTTP API**: Control script polls Plexamp's HTTP API at http://127.0.0.1:32500 for metadata and playback state
+- **Runtime**: Node.js 20+ (Debian package) for Plexamp headless player
+- **Audio Output**: ALSA (asound.conf) in Debian container redirects to shared FIFO pipe
+- **Shared Volume**: `/tmp/snapcast-fifos/plexamp-fifo` mounted in both containers
+- **HTTP API**: Control script (Alpine container) polls Plexamp's HTTP API at http://127.0.0.1:32500
 - **Timeline Polling**: Polls `/player/timeline/poll` endpoint every 2 seconds for track changes and playback state
 - **Metadata & Controls**: Full playback control (play/pause/next/previous) and metadata (title, artist, album, artwork) via HTTP API
 - **Album Artwork**: Downloaded from Plex server and cached to `/usr/share/snapserver/snapweb/coverart/`
-- **Network Discovery**: Appears as a cast target in Plex mobile apps (iOS/Android)
+- **Network Discovery**: Appears as a cast target in Plex mobile apps (iOS/Android) via host networking
 - **Web UI**: Available at http://[host]:32500 for configuration and library selection
 - **Initial Setup**: Visit https://plex.tv/claim to get a claim token, then set `PLEXAMP_CLAIM_TOKEN` environment variable
+- **Starting Plexamp**: Use `docker compose --profile plexamp up -d` to start with Plexamp enabled
 
 #### FIFO Pipe Configuration
 - `PIPE_CONFIG_ENABLED`: Enable FIFO pipe source (default: `0`)
@@ -539,36 +543,52 @@ shellcheck backend/scripts/*.sh
 
 ### Container Architecture Pattern
 
-**Critical Architecture: Self-Contained Container**
+**Hybrid Architecture: Alpine Primary + Debian Sidecar (Optional)**
 
-This project uses a fully self-contained container architecture:
+This project uses a two-container architecture:
 
-1. **Container**: Runs its own D-Bus daemon AND Avahi daemon
+1. **Alpine Container (plum-snapcast-server)**: Primary container with all core services
    - Container D-Bus: Managed by supervisord for internal IPC
-   - Container Avahi: Handles mDNS service discovery for AirPlay/Spotify/Bluetooth
-   - All services self-contained within container
+   - Container Avahi: Handles mDNS service discovery for AirPlay/Spotify/Bluetooth/DLNA
+   - All services self-contained within container (AirPlay, Spotify, Bluetooth, DLNA, Snapcast)
+   - Plexamp control script (Python, polls HTTP API at localhost:32500)
 
-2. **Host System**: Minimal requirements
-   - Docker engine
+2. **Debian Container (plum-plexamp)**: Optional sidecar for Plexamp
+   - **Why separate container?** Plexamp's native Node.js modules require glibc (incompatible with Alpine's musl libc)
+   - Only runs when `PLEXAMP_ENABLED=1` and started with `docker compose --profile plexamp up -d`
+   - Minimal footprint (~250MB total)
+   - Communicates via shared FIFO volume (`snapcast-fifos`)
+
+3. **Host System**: Minimal requirements
+   - Docker engine with Compose v2 plugin
    - Audio device access (/dev/snd)
    - Host Avahi must be disabled (container runs its own)
    - No host D-Bus configuration required
    - No host OS version dependencies
 
-3. **Why This Pattern**:
-   - Complete Docker isolation - truly portable container
-   - Works across different host OS versions (Debian 12, 13, etc.)
-   - Eliminates race conditions from host/container service interactions
-   - No host system modification required beyond Docker installation
-   - True "build once, run anywhere" Docker design
+4. **Why This Pattern**:
+   - Preserves Alpine benefits (size, security) for core services
+   - Adds glibc support only where needed (Plexamp)
+   - Maintains "build once, run anywhere" Docker design
+   - Optional sidecar: Users who don't need Plexamp never pull Debian image
+   - Clean separation of concerns
 
-### Volume Mounts (Backend)
+### Volume Mounts
+
+**Alpine Container (plum-snapcast-server):**
 ```yaml
 volumes:
-  - snapcast-config:/app/config       # Configuration files (persistent)
-  - snapcast-data:/app/data           # Runtime data (persistent)
-  - snapcast-certs:/app/certs         # TLS certificates (persistent)
-  # No host mounts required - container is self-contained
+  - snapcast-config:/app/config           # Configuration files (persistent)
+  - snapcast-data:/app/data               # Runtime data (persistent)
+  - snapcast-certs:/app/certs             # TLS certificates (persistent)
+  - snapcast-fifos:/tmp/snapcast-fifos    # Shared FIFO pipes (shared with Plexamp)
+```
+
+**Debian Container (plum-plexamp, optional):**
+```yaml
+volumes:
+  - plexamp-data:/app/plexamp             # Plexamp configuration and state
+  - snapcast-fifos:/tmp/snapcast-fifos    # Shared FIFO pipes (shared with Alpine)
 ```
 
 ### Docker Commands
