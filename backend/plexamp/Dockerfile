@@ -64,7 +64,12 @@ RUN mkdir -p /etc/alsa && \
     echo '' >> /etc/alsa/asound.conf && \
     echo 'pcm.plexamp_fifo {' >> /etc/alsa/asound.conf && \
     echo '    type file' >> /etc/alsa/asound.conf && \
-    echo '    slave.pcm null' >> /etc/alsa/asound.conf && \
+    echo '    slave {' >> /etc/alsa/asound.conf && \
+    echo '        pcm null' >> /etc/alsa/asound.conf && \
+    echo '        format S16_LE' >> /etc/alsa/asound.conf && \
+    echo '        rate 44100' >> /etc/alsa/asound.conf && \
+    echo '        channels 2' >> /etc/alsa/asound.conf && \
+    echo '    }' >> /etc/alsa/asound.conf && \
     echo '    file "/tmp/snapcast-fifos/plexamp-fifo"' >> /etc/alsa/asound.conf && \
     echo '    format raw' >> /etc/alsa/asound.conf && \
     echo '}' >> /etc/alsa/asound.conf
