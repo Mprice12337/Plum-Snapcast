@@ -106,6 +106,20 @@ docker buildx build \
 
 echo -e "${GREEN}✓ Frontend build and push complete${NC}"
 
+# Build and push Plexamp (Debian sidecar)
+echo ""
+echo -e "${GREEN}=== Building Plexamp (Debian Sidecar) ===${NC}"
+echo -e "${YELLOW}Platforms: linux/amd64, linux/arm64${NC}"
+docker buildx build \
+    $NO_CACHE_FLAG \
+    --platform linux/amd64,linux/arm64 \
+    --tag $DOCKER_USERNAME/plum-plexamp:latest \
+    --push \
+    ../backend/plexamp
+    #--tag $DOCKER_USERNAME/plum-plexamp:$(date +%Y%m%d) \
+
+echo -e "${GREEN}✓ Plexamp build and push complete${NC}"
+
 echo ""
 echo -e "${GREEN}=== Build Complete ===${NC}"
 echo ""
@@ -114,8 +128,11 @@ echo "  - $DOCKER_USERNAME/plum-snapcast-server:latest"
 #echo "  - $DOCKER_USERNAME/plum-snapcast-server:$(date +%Y%m%d)"
 echo "  - $DOCKER_USERNAME/plum-snapcast-frontend:latest"
 #echo "  - $DOCKER_USERNAME/plum-snapcast-frontend:$(date +%Y%m%d)"
+echo "  - $DOCKER_USERNAME/plum-plexamp:latest"
+#echo "  - $DOCKER_USERNAME/plum-plexamp:$(date +%Y%m%d)"
 echo ""
 echo "To deploy on your Raspberry Pi, run:"
 echo "  cd docker"
-echo "  docker-compose pull"
-echo "  docker-compose up -d"
+echo "  docker compose pull"
+echo "  docker compose up -d                     # Without Plexamp"
+echo "  docker compose --profile plexamp up -d   # With Plexamp (requires Plex Pass)"
