@@ -54,8 +54,7 @@ RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq
 # Configure ALSA to redirect audio to FIFO pipe (shared with Alpine container)
 RUN mkdir -p /etc/alsa && \
     echo 'pcm.null {' > /etc/alsa/asound.conf && \
-    echo '    type plug' >> /etc/alsa/asound.conf && \
-    echo '    slave.pcm "/dev/null"' >> /etc/alsa/asound.conf && \
+    echo '    type null' >> /etc/alsa/asound.conf && \
     echo '}' >> /etc/alsa/asound.conf && \
     echo '' >> /etc/alsa/asound.conf && \
     echo 'pcm.!default {' >> /etc/alsa/asound.conf && \
