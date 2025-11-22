@@ -85,6 +85,8 @@ echo -e "${YELLOW}Platforms: linux/amd64, linux/arm64${NC}"
 docker buildx build \
     $NO_CACHE_FLAG \
     --platform linux/amd64,linux/arm64 \
+    --provenance=false \
+    --sbom=false \
     --tag $DOCKER_USERNAME/plum-snapcast-server:latest \
     --push \
     ../backend
@@ -99,6 +101,8 @@ echo -e "${YELLOW}Platforms: linux/amd64, linux/arm64${NC}"
 docker buildx build \
     $NO_CACHE_FLAG \
     --platform linux/amd64,linux/arm64 \
+    --provenance=false \
+    --sbom=false \
     --tag $DOCKER_USERNAME/plum-snapcast-frontend:latest \
     --push \
     ../frontend
@@ -113,6 +117,8 @@ echo -e "${YELLOW}Platforms: linux/amd64, linux/arm64${NC}"
 docker buildx build \
     $NO_CACHE_FLAG \
     --platform linux/amd64,linux/arm64 \
+    --provenance=false \
+    --sbom=false \
     --tag $DOCKER_USERNAME/plum-plexamp:latest \
     --push \
     ../backend/plexamp
