@@ -13,12 +13,21 @@ RUN apt-get update && \
         ca-certificates \
         curl \
         bzip2 \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 LTS from NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends \
+        nodejs \
         alsa-utils \
         libasound2 \
-        nodejs \
-        npm \
-        jq \
     && rm -rf /var/lib/apt/lists/*
+
+# Install jq for version detection
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends jq && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create plexamp user (UID 1000 to match Alpine container)
 RUN useradd -u 1000 -m -s /bin/bash plexamp
