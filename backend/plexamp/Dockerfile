@@ -59,9 +59,8 @@ RUN mkdir -p /etc/alsa && \
     echo '}' >> /etc/alsa/asound.conf && \
     echo 'pcm.plexamp_fifo {' >> /etc/alsa/asound.conf && \
     echo '    type file' >> /etc/alsa/asound.conf && \
-    echo '    slave.pcm null' >> /etc/alsa/asound.conf && \
     echo '    file "/tmp/snapcast-fifos/plexamp-fifo"' >> /etc/alsa/asound.conf && \
-    echo '    format "raw"' >> /etc/alsa/asound.conf && \
+    echo '    format raw' >> /etc/alsa/asound.conf && \
     echo '}' >> /etc/alsa/asound.conf
 
 # Expose Plexamp web UI and API
