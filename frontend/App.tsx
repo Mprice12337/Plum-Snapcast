@@ -480,9 +480,10 @@ const App: React.FC = () => {
                         });
                     }
 
+                    console.log('[Init] Built client group mapping:', groupMap);
                     setClientGroupMap(groupMap);
                 } catch (error) {
-                    console.warn('Could not build client group mapping:', error);
+                    console.error('[Init] Could not build client group mapping:', error);
                 }
 
                 // Check if we got error data (connection failed)
@@ -613,6 +614,8 @@ const App: React.FC = () => {
     };
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
+        console.log('[StreamChange] Request:', {clientId, streamId, clientGroupMap, allClients: clients.map(c => c.id)});
+
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
@@ -621,14 +624,19 @@ const App: React.FC = () => {
         // Send to Snapcast server
         try {
             const groupId = clientGroupMap[clientId];
+            console.log('[StreamChange] Looked up groupId:', groupId, 'for client:', clientId);
+
             if (groupId && streamId) {
+                console.log('[StreamChange] Calling setGroupStream:', {groupId, streamId});
                 await snapcastService.setGroupStream(groupId, streamId);
+                console.log('[StreamChange] SUCCESS: Stream changed');
             } else if (groupId && streamId === null) {
                 // For setting to "no stream", we might need a different approach
                 // This depends on how Snapcast handles idle streams
                 // You might need to set it to a default idle stream instead
+                console.log('[StreamChange] Skipping: streamId is null');
             } else {
-                console.warn(`Could not find group for client ${clientId}`);
+                console.error(`[StreamChange] ERROR: Could not find group for client ${clientId}. ClientGroupMap:`, clientGroupMap);
             }
         } catch (error) {
             console.error(`Failed to change stream for client ${clientId}:`, error);
