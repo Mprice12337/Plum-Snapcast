@@ -131,7 +131,14 @@ class PlexampMetadataMonitor:
             url = f"{self.api_url}{path}"
             req = urllib.request.Request(url, headers={'Accept': 'application/xml'})
             with urllib.request.urlopen(req, timeout=5) as response:
-                return response.read().decode('utf-8')
+                data = response.read().decode('utf-8')
+                log(f"[HTTP] GET {path} → {response.status} ({len(data)} bytes)")
+                return data
+        except urllib.error.HTTPError as e:
+            log(f"[Error] HTTP GET {path} failed: {e.code} {e.reason}")
+            if e.code == 404:
+                log(f"[Error] Endpoint not found: {path} - Plexamp API may use different paths")
+            return None
         except Exception as e:
             log(f"[Error] HTTP GET {path} failed: {e}")
             return None
@@ -308,8 +315,8 @@ class PlexampMetadataMonitor:
 
         while self.running:
             try:
-                # Poll timeline endpoint
-                xml_data = self._http_get('/player/timeline/poll?wait=0')
+                # Poll timeline endpoint (without wait parameter - not supported by Plexamp)
+                xml_data = self._http_get('/player/timeline')
 
                 if xml_data:
                     timeline_data = self._parse_timeline(xml_data)
@@ -376,7 +383,7 @@ class PlexampMetadataMonitor:
     def is_available(self):
         """Check if Plexamp is available"""
         # Try to get timeline to check if Plexamp is running
-        xml_data = self._http_get('/player/timeline/poll?wait=0')
+        xml_data = self._http_get('/player/timeline')
         return xml_data is not None
 
 
