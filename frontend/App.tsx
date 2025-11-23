@@ -10,7 +10,6 @@ import {snapcastService} from './services/snapcastService';
 import type {Client, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 
-const MY_CLIENT_ID = 'client-1';
 const VOLUME_STEP = 5;
 
 const App: React.FC = () => {
@@ -66,8 +65,9 @@ const App: React.FC = () => {
         };
     }, [settings.theme]);
 
-    // Find the client that represents "you" - first try client-1, then first available
-    const myClient = clients.find(c => c.id === MY_CLIENT_ID) || clients[0];
+    // Find the primary client to control
+    // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
+    const myClient = clients.find(c => /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)) || clients[0];
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
     const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
