@@ -28,6 +28,7 @@ from xml.etree import ElementTree as ET
 # Configuration
 LOG_FILE = "/tmp/plexamp-control-script.log"
 PLEXAMP_STATE_FILE = "/tmp/plexamp-state/.local/share/Plexamp/PlayQueue.json"
+PLEXAMP_RESOURCES_FILE = "/tmp/plexamp-state/.local/share/Plexamp/Settings/%40Plexamp%3Aresources"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 POLL_INTERVAL = 2.0  # Poll PlayQueue.json every 2 seconds
@@ -120,11 +121,44 @@ class PlexampMetadataMonitor:
         self.store = store
         self.on_update = on_update_callback
         self.state_file = PLEXAMP_STATE_FILE
+        self.resources_file = PLEXAMP_RESOURCES_FILE
         self.running = False
         self.poll_thread = None
         self.last_track_id = None
         self.last_mtime = 0
+        self.plex_server_uri = None
         log(f"[Plexamp] Monitor initialized, watching: {self.state_file}")
+
+    def _get_plex_server_uri(self) -> Optional[str]:
+        """Extract Plex server URI from resources file"""
+        if self.plex_server_uri:
+            return self.plex_server_uri
+
+        try:
+            import os
+            if not os.path.exists(self.resources_file):
+                log(f"[Error] Resources file not found: {self.resources_file}")
+                return None
+
+            with open(self.resources_file, 'r') as f:
+                resources = json.load(f)
+
+            # Find the first server with a URI
+            if isinstance(resources, list):
+                for resource in resources:
+                    if resource.get('provides') == 'server' and 'connections' in resource:
+                        for conn in resource['connections']:
+                            if 'uri' in conn:
+                                self.plex_server_uri = conn['uri']
+                                log(f"[Plex] Found server URI: {self.plex_server_uri}")
+                                return self.plex_server_uri
+
+            log("[Error] Could not find Plex server URI in resources")
+            return None
+
+        except Exception as e:
+            log(f"[Error] Failed to read Plex server URI: {e}")
+            return None
 
     def _read_playqueue(self) -> Optional[Dict]:
         """Read and parse PlayQueue.json file"""
@@ -158,12 +192,15 @@ class PlexampMetadataMonitor:
             return None
 
         try:
+            # Get Plex server URI
+            server_uri = self._get_plex_server_uri()
+            if not server_uri:
+                log("[Error] Cannot download artwork: no Plex server URI")
+                return None
+
             # Handle relative URLs (add Plex server URL prefix)
             if cover_url.startswith('/'):
-                # For now, we'll store the relative path
-                # The frontend can construct the full URL using the Plex server address
-                # Or we can download from localhost if Plexamp has access
-                full_url = f"{self.api_url}{cover_url}"
+                full_url = f"{server_uri}{cover_url}"
             else:
                 full_url = cover_url
 
@@ -181,10 +218,12 @@ class PlexampMetadataMonitor:
                 log(f"[Artwork] Cached: {filename}")
                 return f"/coverart/{filename}"
 
-            # Download cover art
+            # Download cover art (disable SSL verification for self-signed Plex certs)
             log(f"[Artwork] Downloading from: {full_url[:100]}")
+            import ssl
+            ssl_context = ssl._create_unverified_context()
             req = urllib.request.Request(full_url, headers={'User-Agent': 'Snapcast/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
                 cover_data = response.read()
 
             # Save to web root
@@ -256,12 +295,10 @@ class PlexampMetadataMonitor:
                 thumb = track.get('thumb') or track.get('parentThumb') or track.get('grandparentThumb')
                 if thumb:
                     log(f"[Metadata] Album Art URL: {thumb}")
-                    # Note: Plexamp thumb URLs are relative to Plex server
-                    # For now, we'll skip downloading and just log
-                    # TODO: Download artwork if we can determine Plex server URL
-                    # local_art_url = self._download_cover_art(thumb)
-                    # if local_art_url:
-                    #     result['artUrl'] = local_art_url
+                    # Download artwork from Plex server
+                    local_art_url = self._download_cover_art(thumb)
+                    if local_art_url:
+                        result['artUrl'] = local_art_url
 
             # Plexamp doesn't expose playback state in PlayQueue.json
             # We'll assume if there's a track, it's playing
