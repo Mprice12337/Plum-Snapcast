@@ -52,7 +52,7 @@ RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq
     echo "Plexamp v${PLEXAMP_VERSION} installed to /opt/plexamp"
 
 # Configure ALSA to redirect audio to FIFO pipe (shared with Alpine container)
-# Simple configuration: plug handles all format conversion automatically
+# Explicitly force S16_LE format to match Snapcast expectations
 RUN mkdir -p /etc/alsa && \
     echo 'pcm.null {' > /etc/alsa/asound.conf && \
     echo '    type null' >> /etc/alsa/asound.conf && \
@@ -60,7 +60,20 @@ RUN mkdir -p /etc/alsa && \
     echo '' >> /etc/alsa/asound.conf && \
     echo 'pcm.!default {' >> /etc/alsa/asound.conf && \
     echo '    type plug' >> /etc/alsa/asound.conf && \
-    echo '    slave.pcm plexamp_file' >> /etc/alsa/asound.conf && \
+    echo '    slave {' >> /etc/alsa/asound.conf && \
+    echo '        pcm "plexamp_convert"' >> /etc/alsa/asound.conf && \
+    echo '    }' >> /etc/alsa/asound.conf && \
+    echo '}' >> /etc/alsa/asound.conf && \
+    echo '' >> /etc/alsa/asound.conf && \
+    echo '# Force exact format before writing to file' >> /etc/alsa/asound.conf && \
+    echo 'pcm.plexamp_convert {' >> /etc/alsa/asound.conf && \
+    echo '    type plug' >> /etc/alsa/asound.conf && \
+    echo '    slave {' >> /etc/alsa/asound.conf && \
+    echo '        pcm "plexamp_file"' >> /etc/alsa/asound.conf && \
+    echo '        format S16_LE' >> /etc/alsa/asound.conf && \
+    echo '        rate 44100' >> /etc/alsa/asound.conf && \
+    echo '        channels 2' >> /etc/alsa/asound.conf && \
+    echo '    }' >> /etc/alsa/asound.conf && \
     echo '}' >> /etc/alsa/asound.conf && \
     echo '' >> /etc/alsa/asound.conf && \
     echo 'pcm.plexamp_file {' >> /etc/alsa/asound.conf && \
