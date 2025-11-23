@@ -27,10 +27,10 @@ from xml.etree import ElementTree as ET
 
 # Configuration
 LOG_FILE = "/tmp/plexamp-control-script.log"
-PLEXAMP_API_URL = "http://127.0.0.1:32500"
+PLEXAMP_STATE_FILE = "/tmp/plexamp-state/.local/share/Plexamp/PlayQueue.json"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
-POLL_INTERVAL = 2.0  # Poll Plexamp API every 2 seconds
+POLL_INTERVAL = 2.0  # Poll PlayQueue.json every 2 seconds
 
 # Set up logging to file
 def log(message: str):
@@ -114,45 +114,43 @@ class MetadataStore:
 
 
 class PlexampMetadataMonitor:
-    """Monitor Plexamp HTTP API for metadata and playback state"""
+    """Monitor Plexamp PlayQueue.json file for metadata and playback state"""
 
     def __init__(self, store: MetadataStore, on_update_callback):
         self.store = store
         self.on_update = on_update_callback
-        self.api_url = PLEXAMP_API_URL
+        self.state_file = PLEXAMP_STATE_FILE
         self.running = False
         self.poll_thread = None
-        self.last_track_key = None
-        log("[Plexamp] Monitor initialized")
+        self.last_track_id = None
+        self.last_mtime = 0
+        log(f"[Plexamp] Monitor initialized, watching: {self.state_file}")
 
-    def _http_get(self, path: str) -> Optional[str]:
-        """Make HTTP GET request to Plexamp API"""
+    def _read_playqueue(self) -> Optional[Dict]:
+        """Read and parse PlayQueue.json file"""
         try:
-            url = f"{self.api_url}{path}"
-            req = urllib.request.Request(url, headers={'Accept': 'application/xml'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = response.read().decode('utf-8')
-                log(f"[HTTP] GET {path} → {response.status} ({len(data)} bytes)")
-                return data
-        except urllib.error.HTTPError as e:
-            log(f"[Error] HTTP GET {path} failed: {e.code} {e.reason}")
-            if e.code == 404:
-                log(f"[Error] Endpoint not found: {path} - Plexamp API may use different paths")
+            import os
+            if not os.path.exists(self.state_file):
+                return None
+
+            # Check if file has changed
+            mtime = os.path.getmtime(self.state_file)
+
+            with open(self.state_file, 'r') as f:
+                data = json.load(f)
+
+            # Update last modification time
+            self.last_mtime = mtime
+            return data
+        except FileNotFoundError:
+            log(f"[Error] PlayQueue file not found: {self.state_file}")
+            return None
+        except json.JSONDecodeError as e:
+            log(f"[Error] Failed to parse PlayQueue JSON: {e}")
             return None
         except Exception as e:
-            log(f"[Error] HTTP GET {path} failed: {e}")
+            log(f"[Error] Failed to read PlayQueue: {e}")
             return None
-
-    def _http_post(self, path: str) -> bool:
-        """Make HTTP POST request to Plexamp API"""
-        try:
-            url = f"{self.api_url}{path}"
-            req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return response.status == 200
-        except Exception as e:
-            log(f"[Error] HTTP POST {path} failed: {e}")
-            return False
 
     def _download_cover_art(self, cover_url: str) -> Optional[str]:
         """Download cover art from Plex server and save to web root"""
@@ -204,126 +202,97 @@ class PlexampMetadataMonitor:
             # Return the original URL as fallback
             return cover_url if not cover_url.startswith('/') else None
 
-    def _parse_timeline(self, xml_data: str) -> Optional[Dict]:
-        """Parse Plexamp timeline XML and extract metadata"""
+    def _parse_playqueue(self, playqueue_data: Dict) -> Optional[Dict]:
+        """Parse PlayQueue.json and extract current track metadata"""
         try:
-            root = ET.fromstring(xml_data)
-
-            # Look for Timeline elements (music type)
-            for timeline in root.findall('Timeline'):
-                if timeline.get('type') == 'music':
-                    state = timeline.get('state', 'stopped').lower()
-
-                    # Map Plex states to our format
-                    state_map = {
-                        'playing': 'Playing',
-                        'paused': 'Paused',
-                        'stopped': 'Stopped'
-                    }
-                    playback_status = state_map.get(state, 'Stopped')
-
-                    # Get position (in milliseconds)
-                    position = int(timeline.get('time', 0))
-
-                    # Get track key to detect track changes
-                    track_key = timeline.get('key')
-
-                    result = {
-                        'playback_status': playback_status,
-                        'position': position,
-                        'track_key': track_key
-                    }
-
-                    # Check if this is a new track
-                    if track_key and track_key != self.last_track_key:
-                        self.last_track_key = track_key
-                        log(f"[Timeline] New track detected: {track_key}")
-
-                        # Fetch full track metadata
-                        metadata = self._fetch_track_metadata(track_key)
-                        if metadata:
-                            result.update(metadata)
-
-                    return result
-
-            log("[Timeline] No music timeline found")
-            return None
-
-        except Exception as e:
-            log(f"[Error] Timeline parsing failed: {e}")
-            return None
-
-    def _fetch_track_metadata(self, track_key: str) -> Optional[Dict]:
-        """Fetch full track metadata from Plex API"""
-        try:
-            # Fetch track details
-            xml_data = self._http_get(track_key)
-            if not xml_data:
+            # Navigate the nested structure
+            if 'data' not in playqueue_data or 'MediaContainer' not in playqueue_data['data']:
+                log("[PlayQueue] Invalid structure: missing data.MediaContainer")
                 return None
 
-            root = ET.fromstring(xml_data)
+            container = playqueue_data['data']['MediaContainer']
 
-            # Find Track element
-            track = root.find('.//Track')
-            if track is None:
-                log("[Metadata] No Track element found")
+            # Get currently selected track
+            if 'Metadata' not in container or not container['Metadata']:
+                log("[PlayQueue] No tracks in queue")
                 return None
 
-            metadata = {}
+            # Currently playing track is the first in the Metadata array
+            track = container['Metadata'][0]
+            track_id = track.get('playQueueItemID')
 
-            # Extract metadata from Track element
-            title = track.get('title')
-            if title:
-                metadata['title'] = title
-                log(f"[Metadata] Title: {title}")
+            result = {}
 
-            # Artist (grandparentTitle in Plex music hierarchy)
-            artist = track.get('grandparentTitle') or track.get('originalTitle')
-            if artist:
-                metadata['artist'] = artist
-                log(f"[Metadata] Artist: {artist}")
+            # Check if this is a new track
+            if track_id and track_id != self.last_track_id:
+                self.last_track_id = track_id
+                log(f"[PlayQueue] New track detected: {track_id}")
 
-            # Album (parentTitle in Plex music hierarchy)
-            album = track.get('parentTitle')
-            if album:
-                metadata['album'] = album
-                log(f"[Metadata] Album: {album}")
+                # Extract metadata
+                title = track.get('title')
+                if title:
+                    result['title'] = title
+                    log(f"[Metadata] Title: {title}")
 
-            # Duration (in milliseconds)
-            duration = track.get('duration')
-            if duration:
-                metadata['duration'] = int(duration)
-                log(f"[Metadata] Duration: {duration}ms")
+                # Artist (grandparentTitle in Plex music hierarchy)
+                artist = track.get('grandparentTitle')
+                if artist:
+                    result['artist'] = artist
+                    log(f"[Metadata] Artist: {artist}")
 
-            # Album art (thumb attribute)
-            thumb = track.get('thumb') or track.get('parentThumb') or track.get('grandparentThumb')
-            if thumb:
-                log(f"[Metadata] Album Art URL: {thumb}")
-                local_art_url = self._download_cover_art(thumb)
-                if local_art_url:
-                    metadata['artUrl'] = local_art_url
+                # Album (parentTitle in Plex music hierarchy)
+                album = track.get('parentTitle')
+                if album:
+                    result['album'] = album
+                    log(f"[Metadata] Album: {album}")
 
-            return metadata
+                # Duration (in milliseconds)
+                duration = track.get('duration')
+                if duration:
+                    result['duration'] = int(duration)
+                    log(f"[Metadata] Duration: {duration}ms")
+
+                # Album art
+                thumb = track.get('thumb') or track.get('parentThumb') or track.get('grandparentThumb')
+                if thumb:
+                    log(f"[Metadata] Album Art URL: {thumb}")
+                    # Note: Plexamp thumb URLs are relative to Plex server
+                    # For now, we'll skip downloading and just log
+                    # TODO: Download artwork if we can determine Plex server URL
+                    # local_art_url = self._download_cover_art(thumb)
+                    # if local_art_url:
+                    #     result['artUrl'] = local_art_url
+
+            # Plexamp doesn't expose playback state in PlayQueue.json
+            # We'll assume if there's a track, it's playing
+            # TODO: Find a way to detect actual playback state
+            result['playback_status'] = 'Playing' if track_id else 'Stopped'
+            result['position'] = 0  # Position not available in PlayQueue.json
+
+            return result if result else None
 
         except Exception as e:
-            log(f"[Error] Metadata fetch failed: {e}")
+            log(f"[Error] PlayQueue parsing failed: {e}")
+            import traceback
+            log(traceback.format_exc())
             return None
 
     def _poll_loop(self):
-        """Background thread that polls Plexamp timeline"""
-        log("[Plexamp] Starting timeline polling...")
+        """Background thread that polls PlayQueue.json file"""
+        log("[Plexamp] Starting PlayQueue monitoring...")
 
         while self.running:
             try:
-                # Poll timeline endpoint (without wait parameter - not supported by Plexamp)
-                xml_data = self._http_get('/player/timeline')
+                # Read PlayQueue.json
+                playqueue_data = self._read_playqueue()
 
-                if xml_data:
-                    timeline_data = self._parse_timeline(xml_data)
+                if playqueue_data:
+                    # Parse and extract metadata
+                    metadata = self._parse_playqueue(playqueue_data)
 
-                    if timeline_data:
+                    if metadata:
                         # Update store with new data
-                        self.store.update(**timeline_data)
+                        self.store.update(**metadata)
 
                         # Notify parent
                         if self.on_update:
@@ -334,6 +303,8 @@ class PlexampMetadataMonitor:
 
             except Exception as e:
                 log(f"[Error] Poll loop error: {e}")
+                import traceback
+                log(traceback.format_exc())
                 time.sleep(POLL_INTERVAL)
 
     def start(self):
@@ -351,40 +322,30 @@ class PlexampMetadataMonitor:
             self.poll_thread.join(timeout=5)
 
     def play(self):
-        """Send play command"""
-        success = self._http_post('/player/playback/play')
-        if success:
-            log("[Control] Sent Play command")
-            self.store.update(playback_status="Playing")
-        return success
+        """Send play command (NOT SUPPORTED - Plexamp has no control API)"""
+        log("[Control] Play requested but not supported (no control API)")
+        return False
 
     def pause(self):
-        """Send pause command"""
-        success = self._http_post('/player/playback/pause')
-        if success:
-            log("[Control] Sent Pause command")
-            self.store.update(playback_status="Paused")
-        return success
+        """Send pause command (NOT SUPPORTED - Plexamp has no control API)"""
+        log("[Control] Pause requested but not supported (no control API)")
+        return False
 
     def next_track(self):
-        """Skip to next track"""
-        success = self._http_post('/player/playback/skipNext')
-        if success:
-            log("[Control] Sent Next command")
-        return success
+        """Skip to next track (NOT SUPPORTED - Plexamp has no control API)"""
+        log("[Control] Next requested but not supported (no control API)")
+        return False
 
     def previous_track(self):
-        """Skip to previous track"""
-        success = self._http_post('/player/playback/skipPrevious')
-        if success:
-            log("[Control] Sent Previous command")
-        return success
+        """Skip to previous track (NOT SUPPORTED - Plexamp has no control API)"""
+        log("[Control] Previous requested but not supported (no control API)")
+        return False
 
     def is_available(self):
         """Check if Plexamp is available"""
-        # Try to get timeline to check if Plexamp is running
-        xml_data = self._http_get('/player/timeline')
-        return xml_data is not None
+        # Check if PlayQueue.json file exists
+        import os
+        return os.path.exists(self.state_file)
 
 
 class SnapcastControlScript:
@@ -427,13 +388,13 @@ class SnapcastControlScript:
             "rate": 1.0,
             "position": position,
 
-            # Control capabilities
-            "canGoNext": can_control,
-            "canGoPrevious": can_control,
-            "canPlay": can_control,
-            "canPause": can_control,
+            # Control capabilities (Plexamp has no control API)
+            "canGoNext": False,
+            "canGoPrevious": False,
+            "canPlay": False,
+            "canPause": False,
             "canSeek": False,
-            "canControl": can_control,
+            "canControl": False,
 
             # Metadata (simple field names)
             "metadata": meta_obj
@@ -480,13 +441,13 @@ class SnapcastControlScript:
                     "rate": 1.0,
                     "position": position,
 
-                    # Control capabilities
-                    "canGoNext": can_control,
-                    "canGoPrevious": can_control,
-                    "canPlay": can_control,
-                    "canPause": can_control,
+                    # Control capabilities (Plexamp has no control API)
+                    "canGoNext": False,
+                    "canGoPrevious": False,
+                    "canPlay": False,
+                    "canPause": False,
                     "canSeek": False,
-                    "canControl": can_control,
+                    "canControl": False,
 
                     # Metadata
                     "metadata": meta_obj

@@ -55,6 +55,7 @@ services:
       - snapcast-data:/app/data
       - snapcast-certs:/app/certs
       - snapcast-fifos:/tmp/snapcast-fifos
+      - plexamp-data:/tmp/plexamp-state:ro
     restart: unless-stopped
     healthcheck:
       # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
