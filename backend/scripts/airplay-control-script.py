@@ -895,12 +895,20 @@ class SnapcastControlScript:
                     self.dbus_monitor.next_track()
                     # State remains Playing after skip
                     self.store.update(playback_status="Playing")
+                    # Reset position to 0 for new track
+                    self.store.update(position=0)
                     self.send_playback_state_update()
+                    # Trigger metadata update (new metadata will arrive from pipe shortly)
+                    self.send_metadata_update()
                 elif command == "previous" or command == "prev":
                     self.dbus_monitor.previous_track()
                     # State remains Playing after skip
                     self.store.update(playback_status="Playing")
+                    # Reset position to 0 for new track
+                    self.store.update(position=0)
                     self.send_playback_state_update()
+                    # Trigger metadata update (new metadata will arrive from pipe shortly)
+                    self.send_metadata_update()
                 elif command == "seek":
                     # Seek to specific position (in milliseconds)
                     position = params.get("position", 0)
@@ -963,11 +971,17 @@ class SnapcastControlScript:
 
         # LINE-BY-LINE reading
         tmp = ""
+        line_count = 0
         try:
             while True:
                 with open(METADATA_PIPE, 'r') as pipe:
                     for line in pipe:
+                        line_count += 1
                         strip_line = line.strip()
+
+                        # Log every 100 lines to show pipe is active
+                        if line_count % 100 == 0:
+                            log(f"[Pipe] Processed {line_count} lines from metadata pipe")
 
                         if strip_line.endswith("</item>"):
                             # Complete item
@@ -976,6 +990,7 @@ class SnapcastControlScript:
 
                             # Send update to Snapcast if store was modified
                             if updated:
+                                log("[Pipe] Metadata changed, triggering Snapcast update")
                                 self.send_metadata_update()
 
                             tmp = ""
@@ -987,6 +1002,7 @@ class SnapcastControlScript:
                                 item_xml = tmp + "</item>"
                                 updated = self.metadata_parser.parse_item(item_xml)
                                 if updated:
+                                    log("[Pipe] Metadata changed (incomplete item), triggering Snapcast update")
                                     self.send_metadata_update()
 
                             tmp = strip_line
