@@ -674,7 +674,8 @@ class DBusMonitor:
         """Start background thread to poll progress updates from D-Bus"""
         def poll_progress():
             log("[DBus] Progress polling thread started")
-            last_position = -1
+            last_position = None
+            last_sent_position = None
             update_counter = 0
 
             while self.is_available():
@@ -691,17 +692,38 @@ class DBusMonitor:
                             # Always update store with latest position
                             self.store.update(position=position_ms, duration=duration_ms)
 
-                            # Send update to Snapcast every 5 seconds or on significant change
-                            update_counter += 1
-                            position_changed_significantly = abs(position_ms - last_position) > 5000  # 5 second jump
+                            # Check if position jumped (seek or initial connection)
+                            position_jumped = False
+                            if last_position is not None:
+                                # Expected position is last_position + 1 second (1000ms)
+                                expected_position = last_position + 1000
+                                # Position jumped if it's more than 2 seconds off from expected
+                                position_jumped = abs(position_ms - expected_position) > 2000
 
-                            if update_counter >= 5 or position_changed_significantly:
+                            # Send update if:
+                            # 1. Every 5 seconds (counter >= 5)
+                            # 2. Position jumped (seek or initial connection)
+                            # 3. First update (last_sent_position is None)
+                            update_counter += 1
+                            should_send = (
+                                update_counter >= 5 or
+                                position_jumped or
+                                last_sent_position is None
+                            )
+
+                            if should_send:
                                 # Trigger metadata update to push to Snapcast
+                                reason = "periodic" if update_counter >= 5 else ("jumped" if position_jumped else "initial")
+                                log(f"[DBus] Position update: {position_ms}ms ({reason})")
                                 if self.on_metadata_update:
                                     self.on_metadata_update()
+                                else:
+                                    log("[DBus] ERROR: No metadata update callback set!")
 
-                                last_position = position_ms
+                                last_sent_position = position_ms
                                 update_counter = 0
+
+                            last_position = position_ms
 
                     # Poll every second
                     time.sleep(1)
