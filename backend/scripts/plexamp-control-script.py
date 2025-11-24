@@ -143,8 +143,18 @@ class PlexampMetadataMonitor:
             with open(self.resources_file, 'r') as f:
                 resources = json.load(f)
 
-            # Find the first server with a URI
-            if isinstance(resources, list):
+            # Resources is a dict with server IDs as keys
+            if isinstance(resources, dict):
+                for server_id, resource in resources.items():
+                    if resource.get('provides') == 'server' and 'connections' in resource:
+                        for conn in resource['connections']:
+                            if 'uri' in conn:
+                                self.plex_server_uri = conn['uri']
+                                log(f"[Plex] Found server URI: {self.plex_server_uri}")
+                                return self.plex_server_uri
+
+            # Fallback: also handle list format (in case structure changes)
+            elif isinstance(resources, list):
                 for resource in resources:
                     if resource.get('provides') == 'server' and 'connections' in resource:
                         for conn in resource['connections']:
