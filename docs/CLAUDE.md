@@ -281,7 +281,7 @@ All services run in a single Docker container managed by supervisord for simplif
 User action → React component → snapcastService (WebSocket JSON-RPC) → Snapcast server → Audio output via snapclient → Speakers
 
 **Metadata Flow:**
-AirPlay/Bluetooth/Spotify/DLNA/Plexamp → Shairport-Sync/BlueZ D-Bus/Spotifyd MPRIS/gmrender-resurrect/Plexamp HTTP API → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
+AirPlay/Bluetooth/Spotify/DLNA/Plexamp → Shairport-Sync/BlueZ D-Bus/Spotifyd MPRIS/gmrender-resurrect/Plexamp JSON files → Custom control script → Snapcast stream properties → WebSocket → Frontend → UI display
 
 ---
 
@@ -470,12 +470,14 @@ shellcheck backend/scripts/*.sh
 - **Why Debian?**: Plexamp's native Node.js modules are incompatible with Alpine's musl libc
 - **Requirements**: Requires Plex Pass subscription and claim token for initial setup
 - **Runtime**: Node.js 20+ (Debian package) for Plexamp headless player
-- **Audio Output**: ALSA (asound.conf) in Debian container redirects to shared FIFO pipe
-- **Shared Volume**: `/tmp/snapcast-fifos/plexamp-fifo` mounted in both containers
-- **HTTP API**: Control script (Alpine container) polls Plexamp's HTTP API at http://127.0.0.1:32500
-- **Timeline Polling**: Polls `/player/timeline/poll` endpoint every 2 seconds for track changes and playback state
-- **Metadata & Controls**: Full playback control (play/pause/next/previous) and metadata (title, artist, album, artwork) via HTTP API
-- **Album Artwork**: Downloaded from Plex server and cached to `/usr/share/snapserver/snapweb/coverart/`
+- **Audio Output**: ALSA (asound.conf) in Debian container redirects to shared FIFO pipe with explicit S16_LE/44.1kHz/stereo conversion
+- **Shared Volumes**:
+  - `/tmp/snapcast-fifos/plexamp-fifo` - Audio FIFO (mounted in both containers)
+  - `plexamp-data:/tmp/plexamp-state:ro` - State files (read-only mount in Alpine for metadata)
+- **Metadata Monitoring**: Control script monitors `PlayQueue.json` state file (every 2 seconds) for track changes
+- **Playback Controls**: HTTP API endpoints at http://127.0.0.1:32500/player/playback/{play,pause,skipNext,skipPrevious}
+- **Metadata**: Full metadata (title, artist, album) extracted from PlayQueue.json
+- **Album Artwork**: Downloaded from Plex server using URI from resources file, cached to `/usr/share/snapserver/snapweb/coverart/`
 - **Network Discovery**: Appears as a cast target in Plex mobile apps (iOS/Android) via host networking
 - **Web UI**: Available at http://[host]:32500 for configuration and library selection
 - **Initial Setup**: Visit https://plex.tv/claim to get a claim token, then set `PLEXAMP_CLAIM_TOKEN` environment variable
