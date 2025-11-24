@@ -369,24 +369,48 @@ class PlexampMetadataMonitor:
             self.poll_thread.join(timeout=5)
 
     def play(self):
-        """Send play command (NOT SUPPORTED - Plexamp has no control API)"""
-        log("[Control] Play requested but not supported (no control API)")
-        return False
+        """Send play command via Plexamp HTTP API"""
+        try:
+            req = urllib.request.Request('http://127.0.0.1:32500/player/playback/play')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                log(f"[Control] Play command sent (status={response.status})")
+                return response.status == 200
+        except Exception as e:
+            log(f"[Control] Play command failed: {e}")
+            return False
 
     def pause(self):
-        """Send pause command (NOT SUPPORTED - Plexamp has no control API)"""
-        log("[Control] Pause requested but not supported (no control API)")
-        return False
+        """Send pause command via Plexamp HTTP API"""
+        try:
+            req = urllib.request.Request('http://127.0.0.1:32500/player/playback/pause')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                log(f"[Control] Pause command sent (status={response.status})")
+                return response.status == 200
+        except Exception as e:
+            log(f"[Control] Pause command failed: {e}")
+            return False
 
     def next_track(self):
-        """Skip to next track (NOT SUPPORTED - Plexamp has no control API)"""
-        log("[Control] Next requested but not supported (no control API)")
-        return False
+        """Skip to next track via Plexamp HTTP API"""
+        try:
+            req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipNext')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                log(f"[Control] Next command sent (status={response.status})")
+                return response.status == 200
+        except Exception as e:
+            log(f"[Control] Next command failed: {e}")
+            return False
 
     def previous_track(self):
-        """Skip to previous track (NOT SUPPORTED - Plexamp has no control API)"""
-        log("[Control] Previous requested but not supported (no control API)")
-        return False
+        """Skip to previous track via Plexamp HTTP API"""
+        try:
+            req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipPrevious')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                log(f"[Control] Previous command sent (status={response.status})")
+                return response.status == 200
+        except Exception as e:
+            log(f"[Control] Previous command failed: {e}")
+            return False
 
     def is_available(self):
         """Check if Plexamp is available"""
@@ -488,13 +512,13 @@ class SnapcastControlScript:
                     "rate": 1.0,
                     "position": position,
 
-                    # Control capabilities (Plexamp has no control API)
-                    "canGoNext": False,
-                    "canGoPrevious": False,
-                    "canPlay": False,
-                    "canPause": False,
-                    "canSeek": False,
-                    "canControl": False,
+                    # Control capabilities (via Plexamp HTTP API)
+                    "canGoNext": can_control,
+                    "canGoPrevious": can_control,
+                    "canPlay": can_control,
+                    "canPause": can_control,
+                    "canSeek": False,  # Seek not supported
+                    "canControl": can_control,
 
                     # Metadata
                     "metadata": meta_obj
