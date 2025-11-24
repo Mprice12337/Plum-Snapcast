@@ -400,6 +400,7 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
             // Position and duration come in milliseconds from backend, convert to seconds
             const progressInSeconds = Math.floor(position / 1000);
+            console.log(`[App] Position update received: stream=${streamId}, progress=${progressInSeconds}s`);
 
             // Update stream progress
             updateStreamProgress(streamId, progressInSeconds);

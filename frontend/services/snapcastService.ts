@@ -201,6 +201,7 @@ export class SnapcastService {
             if (params && params.position !== undefined) {
                 const position = params.position || 0;  // milliseconds
                 const duration = params.metadata?.duration || 0;  // milliseconds
+                console.log(`[SnapcastService] Position update: stream=${streamId}, position=${position}ms (${Math.floor(position/1000)}s), duration=${duration}ms`);
                 this.positionUpdateListeners.forEach(listener => {
                     listener(streamId, position, duration);
                 });
