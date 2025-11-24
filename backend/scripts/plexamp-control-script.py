@@ -459,13 +459,13 @@ class SnapcastControlScript:
             "rate": 1.0,
             "position": position,
 
-            # Control capabilities (Plexamp has no control API)
-            "canGoNext": False,
-            "canGoPrevious": False,
-            "canPlay": False,
-            "canPause": False,
-            "canSeek": False,
-            "canControl": False,
+            # Control capabilities (via Plexamp HTTP API)
+            "canGoNext": can_control,
+            "canGoPrevious": can_control,
+            "canPlay": can_control,
+            "canPause": can_control,
+            "canSeek": False,  # Seek not supported
+            "canControl": can_control,
 
             # Metadata (simple field names)
             "metadata": meta_obj
@@ -530,7 +530,7 @@ class SnapcastControlScript:
                     "result": properties
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, canControl={can_control}, canPlay={can_control}, canPause={can_control}, metadata keys: {list(meta_obj.keys())}")
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
