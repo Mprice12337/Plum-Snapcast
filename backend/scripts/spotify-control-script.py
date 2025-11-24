@@ -272,8 +272,11 @@ class SpotifyMetadataMonitor:
             if 'Position' in changed:
                 position_us = int(changed['Position'])
                 position_ms = position_us // 1000
+                log(f"[DBus] Position changed: {position_ms}ms")
                 self.store.update(position=position_ms)
-                # Don't trigger update for position changes alone
+                # Trigger update for position changes to keep frontend in sync
+                if self.on_update:
+                    self.on_update()
 
             # Notify parent if anything changed
             if updated and self.on_update:
@@ -395,6 +398,24 @@ class SpotifyMetadataMonitor:
             except Exception as e:
                 log(f"[Error] Previous failed: {e}")
 
+    def seek(self, position_ms: int):
+        """Seek to a specific position in milliseconds"""
+        if self.player_interface:
+            try:
+                # MPRIS SetPosition takes track ID and position in microseconds
+                # We'll use Seek with relative offset instead for simplicity
+                current_position = self.store.get_all().get("position", 0)
+                offset_ms = position_ms - current_position
+                offset_us = offset_ms * 1000
+
+                self.player_interface.Seek(dbus.Int64(offset_us))
+                log(f"[Control] Seek to {position_ms}ms (offset: {offset_ms}ms)")
+
+                # Update store with new position
+                self.store.update(position=position_ms)
+            except Exception as e:
+                log(f"[Error] Seek failed: {e}")
+
     def is_available(self):
         """Check if control is available"""
         return self.player_interface is not None
@@ -449,7 +470,7 @@ class SnapcastControlScript:
             "canGoPrevious": can_control,
             "canPlay": can_control,
             "canPause": can_control,
-            "canSeek": False,
+            "canSeek": can_control,  # Spotify supports seeking via MPRIS
             "canControl": can_control,
 
             # Metadata (simple field names)
@@ -502,7 +523,7 @@ class SnapcastControlScript:
                     "canGoPrevious": can_control,
                     "canPlay": can_control,
                     "canPause": can_control,
-                    "canSeek": False,
+                    "canSeek": can_control,  # Spotify supports seeking via MPRIS
                     "canControl": can_control,
 
                     # Metadata
@@ -555,6 +576,12 @@ class SnapcastControlScript:
                     self.send_update()
                 elif command == "previous" or command == "prev":
                     self.spotify_monitor.previous_track()
+                    self.send_update()
+                elif command == "seek":
+                    # Seek to specific position (in milliseconds)
+                    position = params.get("position", 0)
+                    log(f"[Control] Seeking to position: {position}ms")
+                    self.spotify_monitor.seek(position)
                     self.send_update()
                 else:
                     log(f"[Warning] Unknown control command: {command}")

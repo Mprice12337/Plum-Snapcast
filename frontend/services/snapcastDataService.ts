@@ -140,7 +140,8 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         artist: formatArtist(metadata.artist),
         album: metadata.album || 'Unknown Album',
         albumArtUrl: albumArtUrl,
-        duration: metadata.duration || 0,
+        // Duration comes from backend in milliseconds, convert to seconds
+        duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0,
     };
 
     // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
@@ -153,13 +154,19 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         isPlaying = snapStream.status === 'playing';
     }
 
+    // Extract position from properties (comes from backend in milliseconds, convert to seconds)
+    let progress = 0;
+    if (snapStream.properties?.position !== undefined && snapStream.properties.position !== null) {
+        progress = Math.floor(snapStream.properties.position / 1000);
+    }
+
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
         currentTrack: track,
         isPlaying: isPlaying,
-        progress: 0, // Snapcast doesn't provide current position in the status
+        progress: progress,
     };
 };
 

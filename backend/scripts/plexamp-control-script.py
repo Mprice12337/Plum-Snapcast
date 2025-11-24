@@ -310,11 +310,8 @@ class PlexampMetadataMonitor:
                     if local_art_url:
                         result['artUrl'] = local_art_url
 
-            # Plexamp doesn't expose playback state in PlayQueue.json
-            # We'll assume if there's a track, it's playing
-            # TODO: Find a way to detect actual playback state
-            result['playback_status'] = 'Playing' if track_id else 'Stopped'
-            result['position'] = 0  # Position not available in PlayQueue.json
+            # Note: Playback state and position are now retrieved separately via timeline API
+            # Don't set them here to avoid overwriting timeline data
 
             return result if result else None
 
@@ -325,12 +322,14 @@ class PlexampMetadataMonitor:
             return None
 
     def _poll_loop(self):
-        """Background thread that polls PlayQueue.json file"""
+        """Background thread that polls PlayQueue.json file and timeline API"""
         log("[Plexamp] Starting PlayQueue monitoring...")
 
         while self.running:
             try:
-                # Read PlayQueue.json
+                updated = False
+
+                # Read PlayQueue.json for metadata
                 playqueue_data = self._read_playqueue()
 
                 if playqueue_data:
@@ -340,10 +339,17 @@ class PlexampMetadataMonitor:
                     if metadata:
                         # Update store with new data
                         self.store.update(**metadata)
+                        updated = True
 
-                        # Notify parent
-                        if self.on_update:
-                            self.on_update()
+                # Query timeline API for position and playback state
+                timeline = self.get_timeline()
+                if timeline:
+                    self.store.update(**timeline)
+                    updated = True
+
+                # Notify parent if anything changed
+                if updated and self.on_update:
+                    self.on_update()
 
                 # Sleep before next poll
                 time.sleep(POLL_INTERVAL)
@@ -412,6 +418,60 @@ class PlexampMetadataMonitor:
             log(f"[Control] Previous command failed: {e}")
             return False
 
+    def get_timeline(self) -> Optional[Dict]:
+        """Query Plexamp HTTP API for current timeline (position and state)"""
+        try:
+            req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?wait=0')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                data = response.read().decode('utf-8')
+                timeline = ET.fromstring(data)
+
+                # Parse timeline XML
+                # <MediaContainer>
+                #   <Timeline ... time="12345" duration="234567" state="playing" />
+                # </MediaContainer>
+                for elem in timeline.findall('.//Timeline[@type="music"]'):
+                    state = elem.get('state', 'stopped')  # playing, paused, stopped
+                    time_ms = elem.get('time')  # Current position in milliseconds
+                    duration_ms = elem.get('duration')  # Track duration in milliseconds
+
+                    result = {}
+
+                    # Map state to our format
+                    state_map = {
+                        'playing': 'Playing',
+                        'paused': 'Paused',
+                        'stopped': 'Stopped'
+                    }
+                    result['playback_status'] = state_map.get(state.lower(), 'Stopped')
+
+                    # Position
+                    if time_ms:
+                        result['position'] = int(time_ms)
+                        log(f"[Timeline] Position: {time_ms}ms, State: {result['playback_status']}")
+
+                    return result
+
+                return None
+
+        except Exception as e:
+            # Don't log every failed poll (keeps logs clean)
+            return None
+
+    def seek(self, position_ms: int):
+        """Seek to specific position via Plexamp HTTP API"""
+        try:
+            # Plexamp seek API expects offset in milliseconds
+            req = urllib.request.Request(f'http://127.0.0.1:32500/player/playback/seekTo?offset={position_ms}')
+            with urllib.request.urlopen(req, timeout=2) as response:
+                log(f"[Control] Seek to {position_ms}ms (status={response.status})")
+                # Update position in store
+                self.store.update(position=position_ms)
+                return response.status == 200
+        except Exception as e:
+            log(f"[Control] Seek command failed: {e}")
+            return False
+
     def is_available(self):
         """Check if Plexamp is available"""
         # Check if PlayQueue.json file exists
@@ -464,7 +524,7 @@ class SnapcastControlScript:
             "canGoPrevious": can_control,
             "canPlay": can_control,
             "canPause": can_control,
-            "canSeek": False,  # Seek not supported
+            "canSeek": can_control,  # Plexamp supports seeking via HTTP API
             "canControl": can_control,
 
             # Metadata (simple field names)
@@ -517,7 +577,7 @@ class SnapcastControlScript:
                     "canGoPrevious": can_control,
                     "canPlay": can_control,
                     "canPause": can_control,
-                    "canSeek": False,  # Seek not supported
+                    "canSeek": can_control,  # Plexamp supports seeking via HTTP API
                     "canControl": can_control,
 
                     # Metadata
@@ -567,6 +627,11 @@ class SnapcastControlScript:
                     success = self.plexamp_monitor.next_track()
                 elif command == "previous" or command == "prev":
                     success = self.plexamp_monitor.previous_track()
+                elif command == "seek":
+                    # Seek to specific position (in milliseconds)
+                    position = params.get("position", 0)
+                    log(f"[Control] Seeking to position: {position}ms")
+                    success = self.plexamp_monitor.seek(position)
                 else:
                     log(f"[Warning] Unknown control command: {command}")
 

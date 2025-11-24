@@ -93,6 +93,7 @@ export class SnapcastService {
     private isConnected = false;
     private metadataUpdateListeners: Set<(streamId: string, metadata: any) => void> = new Set();
     private playbackStateListeners: Set<(streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void> = new Set();
+    private positionUpdateListeners: Set<(streamId: string, position: number, duration: number) => void> = new Set();
 
     constructor() {
         this.host =
@@ -115,6 +116,15 @@ export class SnapcastService {
         // Return unsubscribe function
         return () => {
             this.playbackStateListeners.delete(listener);
+        };
+    }
+
+    // Subscribe to position updates (for timeline/scrub bar)
+    onPositionUpdate(listener: (streamId: string, position: number, duration: number) => void): () => void {
+        this.positionUpdateListeners.add(listener);
+        // Return unsubscribe function
+        return () => {
+            this.positionUpdateListeners.delete(listener);
         };
     }
 
@@ -183,6 +193,16 @@ export class SnapcastService {
             if (params && params.playbackStatus !== undefined) {
                 this.playbackStateListeners.forEach(listener => {
                     listener(streamId, params.playbackStatus, params);
+                });
+            }
+
+            // Notify position listeners if position changed
+            // Position comes from backend in milliseconds, duration too
+            if (params && params.position !== undefined) {
+                const position = params.position || 0;  // milliseconds
+                const duration = params.metadata?.duration || 0;  // milliseconds
+                this.positionUpdateListeners.forEach(listener => {
+                    listener(streamId, position, duration);
                 });
             }
         }

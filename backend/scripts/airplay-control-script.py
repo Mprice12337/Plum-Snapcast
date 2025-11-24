@@ -65,6 +65,8 @@ class MetadataStore:
             "artwork_url": None,
             "last_updated": None,
             "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
+            "duration": None,  # Track duration in milliseconds
+            "position": 0,  # Current position in milliseconds
         }
 
     def update(self, **kwargs):
@@ -107,6 +109,9 @@ class MetadataStore:
 
                 if self.data.get("artwork_url"):
                     meta["artUrl"] = self.data["artwork_url"]
+
+                if self.data.get("duration"):
+                    meta["duration"] = self.data["duration"]
 
                 return meta
             return None
@@ -250,6 +255,29 @@ class MetadataParser:
                         self.store.update(playback_status="Stopped")
                         log(f"[State] Playback state → Stopped (stream end)")
                         return True  # Signal update
+                    return False
+
+                elif code == "prgr":
+                    # Progress information: "start_rtp/current_rtp/end_rtp"
+                    # RTP timestamps at 44.1kHz sample rate
+                    if data_text:
+                        try:
+                            parts = data_text.split("/")
+                            if len(parts) == 3:
+                                start_rtp = int(parts[0])
+                                current_rtp = int(parts[1])
+                                end_rtp = int(parts[2])
+
+                                # Convert RTP frames to milliseconds (44.1kHz = 44100 samples/sec)
+                                duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
+                                position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
+
+                                # Update store with position and duration
+                                self.store.update(duration=duration_ms, position=position_ms)
+                                # Don't log every progress update (too verbose)
+                                return True  # Signal update
+                        except (ValueError, ZeroDivisionError) as e:
+                            log(f"[Progress] Failed to parse prgr: {data_text} - {e}")
                     return False
 
                 elif code == "paus":
@@ -457,6 +485,7 @@ class DBusMonitor:
         self.on_state_change = on_state_change_callback
         self.dbus_interface = None
         self.dbus_properties = None
+        self.mpris_interface = None  # MPRIS interface for seeking
         self.bus = None
 
         if not DBUS_AVAILABLE:
@@ -486,6 +515,16 @@ class DBusMonitor:
                 shairport = self.bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
                 self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
                 self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
+
+                # Try to get MPRIS interface for seeking (may not be available)
+                try:
+                    mpris_obj = self.bus.get_object('org.mpris.MediaPlayer2.ShairportSync', '/org/mpris/MediaPlayer2')
+                    self.mpris_interface = dbus.Interface(mpris_obj, 'org.mpris.MediaPlayer2.Player')
+                    log("[DBus] ✓ MPRIS interface available - seeking enabled")
+                except dbus.exceptions.DBusException:
+                    log("[DBus] ℹ MPRIS interface not available - seeking disabled")
+                    log("[DBus] (To enable: rebuild shairport-sync with --with-mpris-interface)")
+                    self.mpris_interface = None
 
                 # Note: ShairportSync doesn't expose playback state via D-Bus
                 # We'll track state based on metadata events instead
@@ -570,9 +609,34 @@ class DBusMonitor:
             except Exception as e:
                 log(f"[DBus] Previous failed: {e}")
 
+    def seek(self, position_ms: int):
+        """Seek to specific position via MPRIS interface (if available)"""
+        if self.mpris_interface:
+            try:
+                # MPRIS SetPosition takes track ID and position in microseconds
+                # We'll use Seek with relative offset instead
+                # First get current position from store
+                current_position = self.store.get_all().get("position", 0)
+                offset_ms = position_ms - current_position
+                offset_us = offset_ms * 1000
+
+                self.mpris_interface.Seek(dbus.Int64(offset_us))
+                log(f"[DBus] Seek to {position_ms}ms (offset: {offset_ms}ms)")
+
+                # Update store with new position
+                self.store.update(position=position_ms)
+            except Exception as e:
+                log(f"[DBus] Seek failed: {e}")
+        else:
+            log("[DBus] Seek not available - MPRIS interface not enabled")
+
     def is_available(self):
         """Check if D-Bus control is available"""
         return self.dbus_interface is not None
+
+    def can_seek(self):
+        """Check if seek is available via MPRIS"""
+        return self.mpris_interface is not None
 
 
 class SnapcastControlScript:
@@ -617,8 +681,10 @@ class SnapcastControlScript:
         meta_obj = self.store.get_metadata_for_snapcast()
 
         if meta_obj:
-            # Get current playback state from store
-            playback_status = self.store.get_all().get("playback_status", "Stopped")
+            # Get current playback state and position from store
+            state_data = self.store.get_all()
+            playback_status = state_data.get("playback_status", "Stopped")
+            position = state_data.get("position", 0)
             can_control = self.dbus_monitor.is_available()
 
             # Notification params: include stream ID and all properties
@@ -632,14 +698,14 @@ class SnapcastControlScript:
                 "volume": 100,
                 "mute": False,
                 "rate": 1.0,
-                "position": 0,
+                "position": position,
 
                 # Control capabilities (enable if D-Bus is available)
                 "canGoNext": can_control,
                 "canGoPrevious": can_control,
                 "canPlay": can_control,
                 "canPause": can_control,
-                "canSeek": False,
+                "canSeek": self.dbus_monitor.can_seek() if can_control else False,
                 "canControl": can_control,
 
                 # Metadata (simple field names)
@@ -669,7 +735,9 @@ class SnapcastControlScript:
                 # Return COMPLETE properties object (not just metadata)
                 # Snapcast requires all fields: playback state, control capabilities, AND metadata
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
-                playback_status = self.store.get_all().get("playback_status", "Stopped")
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "Stopped")
+                position = state_data.get("position", 0)
                 can_control = self.dbus_monitor.is_available()
 
                 # Build complete properties response per Snapcast Stream Plugin API
@@ -681,14 +749,14 @@ class SnapcastControlScript:
                     "volume": 100,
                     "mute": False,
                     "rate": 1.0,
-                    "position": 0,
+                    "position": position,
 
                     # Control capabilities (enable if D-Bus available)
                     "canGoNext": can_control,
                     "canGoPrevious": can_control,
                     "canPlay": can_control,
                     "canPause": can_control,
-                    "canSeek": False,
+                    "canSeek": self.dbus_monitor.can_seek() if can_control else False,
                     "canControl": can_control,
 
                     # Metadata (MPRIS format)
@@ -747,6 +815,12 @@ class SnapcastControlScript:
                     # State remains Playing after skip
                     self.store.update(playback_status="Playing")
                     self.send_playback_state_update()
+                elif command == "seek":
+                    # Seek to specific position (in milliseconds)
+                    position = params.get("position", 0)
+                    log(f"[Control] Seeking to position: {position}ms")
+                    self.dbus_monitor.seek(position)
+                    self.send_metadata_update()
                 else:
                     log(f"[Snapcast] Unknown control command: {command}")
 
