@@ -140,6 +140,8 @@ const App: React.FC = () => {
                             title: metadata.title || stream.currentTrack.title,
                             artist: metadata.artist || stream.currentTrack.artist,
                             album: metadata.album || stream.currentTrack.album,
+                            // Update duration when it changes (convert from ms to seconds)
+                            duration: metadata.duration ? Math.floor(metadata.duration / 1000) : stream.currentTrack.duration,
                         };
 
                         // Handle artwork updates:
@@ -183,7 +185,9 @@ const App: React.FC = () => {
                         return {
                             ...stream,
                             currentTrack: updatedTrack,
-                            isPlaying: finalPlayingState
+                            isPlaying: finalPlayingState,
+                            // Reset progress to 0 when new track starts
+                            progress: isNewTrack ? 0 : stream.progress
                         };
                     }
                     return stream;
@@ -371,7 +375,9 @@ const App: React.FC = () => {
                             title: meta.title || meta.name,
                             artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
                             album: meta.album,
-                            albumArtUrl: albumArtUrl
+                            albumArtUrl: albumArtUrl,
+                            // Convert duration from milliseconds to seconds
+                            duration: meta.duration ? Math.floor(meta.duration / 1000) : undefined
                         };
 
                         // Debug: Log what we got from server
@@ -447,6 +453,8 @@ const App: React.FC = () => {
                                         title: updatedMetadata.title || s.currentTrack.title,
                                         artist: updatedMetadata.artist || s.currentTrack.artist,
                                         album: updatedMetadata.album || s.currentTrack.album,
+                                        // Update duration when it changes (already in seconds from metadata extraction)
+                                        duration: updatedMetadata.duration !== undefined ? updatedMetadata.duration : s.currentTrack.duration,
                                     };
 
                                     // Handle artwork updates:
@@ -466,6 +474,11 @@ const App: React.FC = () => {
                                     } else {
                                         console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
+                                    }
+
+                                    // Reset progress to 0 when new track starts
+                                    if (isNewTrack) {
+                                        updatedStream.progress = 0;
                                     }
                                 }
 
