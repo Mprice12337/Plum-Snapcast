@@ -697,8 +697,12 @@ class DBusMonitor:
 
                             if update_counter >= 5 or position_changed_significantly:
                                 # Trigger metadata update to push to Snapcast
+                                log(f"[DBus] Triggering metadata update (counter={update_counter}, pos={position_ms}ms, callback={'set' if self.on_metadata_update else 'NOT SET'})")
                                 if self.on_metadata_update:
                                     self.on_metadata_update()
+                                    log("[DBus] Metadata update callback executed")
+                                else:
+                                    log("[DBus] ERROR: No metadata update callback set!")
 
                                 last_position = position_ms
                                 update_counter = 0
