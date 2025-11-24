@@ -17,6 +17,7 @@ const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
     const [serverName, setServerName] = useState<string>('Snapcast Server');
+    const [streamCapabilities, setStreamCapabilities] = useState<{canSeek?: boolean}>({});
     const [isLoading, setIsLoading] = useState(true);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
@@ -387,6 +388,43 @@ const App: React.FC = () => {
 
         return () => unsubscribe();
     }, []);
+
+    // Listen for real-time position updates from Snapcast (for sources that support it)
+    useEffect(() => {
+        if (!snapcastService) return;
+
+        const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
+            // Position and duration come in milliseconds from backend, convert to seconds
+            const progressInSeconds = Math.floor(position / 1000);
+
+            // Update stream progress
+            updateStreamProgress(streamId, progressInSeconds);
+        });
+
+        return () => unsubscribe();
+    }, [updateStreamProgress]);
+
+    // Fetch stream capabilities when current stream changes
+    useEffect(() => {
+        if (!currentStream || !snapcastService) {
+            setStreamCapabilities({});
+            return;
+        }
+
+        const fetchCapabilities = async () => {
+            try {
+                const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+                setStreamCapabilities({
+                    canSeek: capabilities.canSeek || false
+                });
+            } catch (error) {
+                console.error('Failed to fetch stream capabilities:', error);
+                setStreamCapabilities({canSeek: false});
+            }
+        };
+
+        fetchCapabilities();
+    }, [currentStream?.id]);
 
     // Periodically retry fetching artwork when showing placeholder
     // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
@@ -895,6 +933,32 @@ const App: React.FC = () => {
         }
     };
 
+    const handleSeek = async (positionInSeconds: number) => {
+        if (!currentStream) return;
+
+        try {
+            // Check stream capabilities
+            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+
+            if (capabilities.canSeek) {
+                // Convert position to milliseconds for backend
+                const positionInMs = positionInSeconds * 1000;
+
+                // Optimistically update progress locally
+                updateStreamProgress(currentStream.id, positionInSeconds);
+
+                // Send seek command to backend
+                await snapcastService.seekTo(currentStream.id, positionInMs);
+
+                console.log(`Seek to ${positionInSeconds}s (${positionInMs}ms) for stream ${currentStream.id}`);
+            } else {
+                console.warn(`Stream ${currentStream.id} does not support seek`);
+            }
+        } catch (error) {
+            console.error(`Seek failed for stream ${currentStream.id}:`, error);
+        }
+    };
+
     if (isLoading) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-[var(--bg-primary)]">
@@ -952,7 +1016,11 @@ const App: React.FC = () => {
                     {currentStream ? (
                         <div className="flex-grow flex flex-col">
                             <div className="space-y-6">
-                                <NowPlaying stream={currentStream}/>
+                                <NowPlaying
+                                    stream={currentStream}
+                                    canSeek={streamCapabilities.canSeek}
+                                    onSeek={handleSeek}
+                                />
                                 <PlayerControls
                                     stream={currentStream}
                                     volume={myClient.volume}

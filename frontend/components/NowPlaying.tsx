@@ -4,6 +4,8 @@ import {formatTime} from '../utils/time';
 
 interface NowPlayingProps {
     stream: Stream;
+    canSeek?: boolean;
+    onSeek?: (position: number) => void;
 }
 
 const ScrollingText: React.FC<{ text: string; className: string }> = ({text, className}) => {
@@ -31,9 +33,23 @@ const ScrollingText: React.FC<{ text: string; className: string }> = ({text, cla
     );
 };
 
-export const NowPlaying: React.FC<NowPlayingProps> = ({stream}) => {
+export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, onSeek}) => {
     const {currentTrack, progress} = stream;
     const progressPercent = (progress / currentTrack.duration) * 100;
+    const progressBarRef = useRef<HTMLDivElement>(null);
+
+    const handleProgressBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!canSeek || !onSeek || !progressBarRef.current || currentTrack.duration === 0) {
+            return;
+        }
+
+        const rect = progressBarRef.current.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const percentClicked = Math.max(0, Math.min(1, clickX / rect.width));
+        const newPosition = Math.floor(percentClicked * currentTrack.duration);
+
+        onSeek(newPosition);
+    };
 
     return (
         <div className="flex flex-col md:flex-row items-center gap-6 p-4">
@@ -50,9 +66,14 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream}) => {
                 <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-muted)] mt-1" />
 
                 <div className="mt-6 w-full">
-                    <div className="bg-[var(--border-color)] rounded-full h-2 w-full">
+                    <div
+                        ref={progressBarRef}
+                        className={`bg-[var(--border-color)] rounded-full h-2 w-full ${canSeek ? 'cursor-pointer hover:h-3 transition-all' : ''}`}
+                        onClick={handleProgressBarClick}
+                        title={canSeek ? 'Click to seek' : undefined}
+                    >
                         <div
-                            className="bg-[var(--accent-color)] h-2 rounded-full transition-all duration-1000 ease-linear"
+                            className="bg-[var(--accent-color)] h-full rounded-full transition-all duration-1000 ease-linear"
                             style={{width: `${progressPercent}%`}}
                         ></div>
                     </div>

@@ -56,6 +56,8 @@ class MetadataStore:
             "artist": None,
             "album": None,
             "artUrl": None,
+            "duration": None,  # Track duration in milliseconds
+            "position": 0,  # Current position in milliseconds
             "last_updated": None,
             "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
         }
@@ -101,6 +103,9 @@ class MetadataStore:
 
                 if self.data.get("artUrl"):
                     meta["artUrl"] = self.data["artUrl"]
+
+                if self.data.get("duration"):
+                    meta["duration"] = self.data["duration"]
 
                 return meta
             return None
@@ -218,6 +223,24 @@ class BluetoothMetadataMonitor:
                 log(f"[DBus] Status changed: {status}")
                 self.store.update(playback_status=status)
                 updated = True
+
+            # Check if position changed (AVRCP 1.3+)
+            if 'Position' in changed:
+                # Position is in milliseconds
+                position_ms = int(changed['Position'])
+                log(f"[DBus] Position changed: {position_ms}ms")
+                self.store.update(position=position_ms)
+                updated = True
+
+            # Check if duration is available in Track metadata
+            if 'Track' in changed:
+                track_dict = changed['Track']
+                if 'Duration' in track_dict:
+                    # Duration is in milliseconds
+                    duration_ms = int(track_dict['Duration'])
+                    log(f"[DBus] Duration: {duration_ms}ms")
+                    self.store.update(duration=duration_ms)
+                    updated = True
 
             # Notify parent if anything changed
             if updated and self.on_update:
@@ -369,7 +392,9 @@ class SnapcastControlScript:
     def send_update(self):
         """Send Plugin.Stream.Player.Properties with current state and metadata"""
         meta_obj = self.store.get_metadata_for_snapcast() or {}
-        playback_status = self.store.get_all().get("playback_status", "Stopped")
+        state_data = self.store.get_all()
+        playback_status = state_data.get("playback_status", "Stopped")
+        position = state_data.get("position", 0)
         can_control = self.bt_monitor.is_available()
 
         # Notification params: include stream ID and all properties
@@ -383,7 +408,7 @@ class SnapcastControlScript:
             "volume": 100,
             "mute": False,
             "rate": 1.0,
-            "position": 0,
+            "position": position,
 
             # Control capabilities (enable if D-Bus is available)
             "canGoNext": can_control,
@@ -422,7 +447,9 @@ class SnapcastControlScript:
             if method == "Plugin.Stream.Player.GetProperties":
                 # Return COMPLETE properties object
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
-                playback_status = self.store.get_all().get("playback_status", "Stopped")
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "Stopped")
+                position = state_data.get("position", 0)
                 can_control = self.bt_monitor.is_available()
 
                 # Build complete properties response per Snapcast Stream Plugin API
@@ -434,7 +461,7 @@ class SnapcastControlScript:
                     "volume": 100,
                     "mute": False,
                     "rate": 1.0,
-                    "position": 0,
+                    "position": position,
 
                     # Control capabilities
                     "canGoNext": can_control,
