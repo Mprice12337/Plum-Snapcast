@@ -10,7 +10,6 @@ import {snapcastService} from './services/snapcastService';
 import type {Client, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 
-const MY_CLIENT_ID = 'client-1';
 const VOLUME_STEP = 5;
 
 const App: React.FC = () => {
@@ -66,8 +65,9 @@ const App: React.FC = () => {
         };
     }, [settings.theme]);
 
-    // Find the client that represents "you" - first try client-1, then first available
-    const myClient = clients.find(c => c.id === MY_CLIENT_ID) || clients[0];
+    // Find the primary client to control
+    // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
+    const myClient = clients.find(c => /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)) || clients[0];
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
     const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
@@ -480,9 +480,10 @@ const App: React.FC = () => {
                         });
                     }
 
+                    console.log('[Init] Built client group mapping:', groupMap);
                     setClientGroupMap(groupMap);
                 } catch (error) {
-                    console.warn('Could not build client group mapping:', error);
+                    console.error('[Init] Could not build client group mapping:', error);
                 }
 
                 // Check if we got error data (connection failed)
@@ -613,6 +614,8 @@ const App: React.FC = () => {
     };
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
+        console.log('[StreamChange] Request:', {clientId, streamId, clientGroupMap, allClients: clients.map(c => c.id)});
+
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
@@ -621,14 +624,19 @@ const App: React.FC = () => {
         // Send to Snapcast server
         try {
             const groupId = clientGroupMap[clientId];
+            console.log('[StreamChange] Looked up groupId:', groupId, 'for client:', clientId);
+
             if (groupId && streamId) {
+                console.log('[StreamChange] Calling setGroupStream:', {groupId, streamId});
                 await snapcastService.setGroupStream(groupId, streamId);
+                console.log('[StreamChange] SUCCESS: Stream changed');
             } else if (groupId && streamId === null) {
                 // For setting to "no stream", we might need a different approach
                 // This depends on how Snapcast handles idle streams
                 // You might need to set it to a default idle stream instead
+                console.log('[StreamChange] Skipping: streamId is null');
             } else {
-                console.warn(`Could not find group for client ${clientId}`);
+                console.error(`[StreamChange] ERROR: Could not find group for client ${clientId}. ClientGroupMap:`, clientGroupMap);
             }
         } catch (error) {
             console.error(`Failed to change stream for client ${clientId}:`, error);

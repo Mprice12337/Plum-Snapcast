@@ -36,6 +36,10 @@ services:
       - DLNA_SOURCE_NAME=${DLNA_SOURCE_NAME:-DLNA}
       - DLNA_DEVICE_NAME=${DLNA_DEVICE_NAME:-Plum Audio}
       - DLNA_UUID=${DLNA_UUID:-}
+      - PLEXAMP_ENABLED=${PLEXAMP_ENABLED:-0}
+      - PLEXAMP_SOURCE_NAME=${PLEXAMP_SOURCE_NAME:-Plexamp}
+      - PLEXAMP_CLAIM_TOKEN=${PLEXAMP_CLAIM_TOKEN:-}
+      - PLEXAMP_SERVER_NAME=${PLEXAMP_SERVER_NAME:-Plum Audio}
       - PIPE_CONFIG_ENABLED=0
       - META_CONFIG_ENABLED=0
       - HTTPS_ENABLED=1
@@ -50,6 +54,8 @@ services:
       - snapcast-config:/app/config
       - snapcast-data:/app/data
       - snapcast-certs:/app/certs
+      - snapcast-fifos:/tmp/snapcast-fifos
+      - plexamp-data:/tmp/plexamp-state:ro
     restart: unless-stopped
     healthcheck:
       # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
@@ -82,10 +88,39 @@ services:
       retries: 3
       start_period: 20s
 
+  plexamp:
+    build:
+      context: ../backend/plexamp
+      dockerfile: Dockerfile
+    image: ${DOCKER_USERNAME}/plum-plexamp:latest
+    container_name: plum-plexamp
+    hostname: plexamp
+    network_mode: host
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+      - PLEXAMP_CLAIM_TOKEN=${PLEXAMP_CLAIM_TOKEN:-}
+      - PLEXAMP_PLAYER_NAME=${PLEXAMP_SERVER_NAME:-Plum Audio}
+    volumes:
+      - plexamp-data:/app/plexamp
+      - snapcast-fifos:/tmp/snapcast-fifos
+    restart: unless-stopped
+    profiles:
+      - plexamp
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:32500/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
 volumes:
   snapcast-config:
     driver: local
   snapcast-data:
     driver: local
   snapcast-certs:
+    driver: local
+  snapcast-fifos:
+    driver: local
+  plexamp-data:
     driver: local

@@ -43,6 +43,12 @@ if [ ! -p /tmp/dlna-fifo ]; then
     chmod 666 /tmp/dlna-fifo
 fi
 
+if [ ! -p /tmp/snapcast-fifos/plexamp-fifo ]; then
+    echo "Creating Plexamp FIFO pipe in shared volume..."
+    mkfifo /tmp/snapcast-fifos/plexamp-fifo
+    chmod 666 /tmp/snapcast-fifos/plexamp-fifo
+fi
+
 # Create artwork cache directory for shairport-sync
 echo "Creating artwork cache directory..."
 mkdir -p /tmp/shairport-sync/.cache/coverart
@@ -105,7 +111,18 @@ SNAPCONF
         # DLNA audio is typically 44.1kHz/16-bit stereo (can vary based on source)
         sed -i '/^\[stream\]/a source = pipe:///tmp/dlna-fifo?name='"${DLNA_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/dlna-control-script.py' /app/config/snapserver.conf
     fi
+
+    # Add Plexamp source to [stream] section
+    # Note: Plexamp runs in separate Debian container, outputs to shared FIFO volume
+    if [ "${PLEXAMP_ENABLED}" = "1" ]; then
+        echo "Adding Plexamp source (sidecar container)..."
+        # Insert source after [stream] line with control script for metadata
+        # Plexamp outputs 44.1kHz/16-bit stereo (CD quality)
+        sed -i '/^\[stream\]/a source = pipe:///tmp/snapcast-fifos/plexamp-fifo?name='"${PLEXAMP_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/plexamp-control-script.py' /app/config/snapserver.conf
+    fi
 fi
+
+# Note: ALSA configuration for Plexamp is handled in the separate Debian container
 
 # Generate SSL certificates if needed
 if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then

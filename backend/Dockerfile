@@ -7,7 +7,7 @@ ARG BUILDPLATFORM
 LABEL maintainer="Plum-Snapcast"
 LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, and DLNA/UPnP support"
 
-# Install runtime dependencies (ADDED python3 for metadata processor)
+# Install runtime dependencies (python3 for metadata, GStreamer for DLNA)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -33,10 +33,10 @@ RUN apk add --no-cache \
     python3 \
     py3-dbus \
     py3-gobject3 \
+    py3-requests \
     bluez \
     bluez-alsa \
     util-linux \
-    # DLNA/UPnP runtime dependencies
     gstreamer \
     gst-plugins-base \
     gst-plugins-good \
@@ -193,11 +193,13 @@ RUN mkdir -p \
     /app/certs \
     /app/scripts \
     /app/supervisord \
+    /tmp/snapcast-fifos \
     /var/run/dbus \
     /var/run/avahi-daemon \
     /var/log/supervisord \
     /usr/share/snapserver/snapweb/coverart \
     && chown -R snapcast:snapcast /app \
+    && chown -R snapcast:snapcast /tmp/snapcast-fifos \
     && chmod 755 /var/run/dbus \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord \
@@ -215,6 +217,7 @@ RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
 # Metadata Debug Server: 8080 (HTTP)
+# Note: Plexamp runs in separate container (port 32500)
 EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 
 # Set working directory
@@ -241,6 +244,10 @@ ENV TZ=Etc/UTC \
     DLNA_SOURCE_NAME=DLNA \
     DLNA_DEVICE_NAME="Plum Audio" \
     DLNA_UUID="" \
+    PLEXAMP_ENABLED=0 \
+    PLEXAMP_SOURCE_NAME=Plexamp \
+    PLEXAMP_CLAIM_TOKEN="" \
+    PLEXAMP_SERVER_NAME="Plum Audio" \
     PIPE_CONFIG_ENABLED=0 \
     PIPE_SOURCE_NAME=Pipe \
     PIPE_PATH=/tmp/snapfifo \
