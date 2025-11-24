@@ -480,9 +480,10 @@ class DBusMonitor:
     Provides remote control capabilities (play, pause, next, previous).
     """
 
-    def __init__(self, store: MetadataStore, on_state_change_callback):
+    def __init__(self, store: MetadataStore, on_state_change_callback, on_metadata_update_callback=None):
         self.store = store
         self.on_state_change = on_state_change_callback
+        self.on_metadata_update = on_metadata_update_callback
         self.dbus_interface = None
         self.dbus_properties = None
         self.mpris_interface = None  # MPRIS interface for seeking
@@ -538,6 +539,9 @@ class DBusMonitor:
                 # Notify parent that we're ready
                 if self.on_state_change:
                     self.on_state_change()
+
+                # Start progress polling thread
+                self.start_progress_polling()
 
                 return  # Success!
 
@@ -630,6 +634,88 @@ class DBusMonitor:
         else:
             log("[DBus] Seek not available - MPRIS interface not enabled")
 
+    def get_progress(self):
+        """
+        Get progress from D-Bus ProgressString property.
+        Returns (position_ms, duration_ms) tuple or None if not available.
+        """
+        if not self.dbus_properties:
+            return None
+
+        try:
+            # Get ProgressString property from RemoteControl interface
+            # Format: "start_rtp/current_rtp/end_rtp"
+            progress_str = self.dbus_properties.Get(
+                'org.gnome.ShairportSync.RemoteControl',
+                'ProgressString'
+            )
+
+            if progress_str:
+                # Parse RTP timestamps
+                parts = str(progress_str).split("/")
+                if len(parts) == 3:
+                    start_rtp = int(parts[0])
+                    current_rtp = int(parts[1])
+                    end_rtp = int(parts[2])
+
+                    # Convert RTP frames to milliseconds (44.1kHz = 44100 samples/sec)
+                    duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
+                    position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
+
+                    return (position_ms, duration_ms)
+        except Exception as e:
+            # Property may not be available when stream is not playing
+            # This is normal - don't log spam
+            pass
+
+        return None
+
+    def start_progress_polling(self):
+        """Start background thread to poll progress updates from D-Bus"""
+        def poll_progress():
+            log("[DBus] Progress polling thread started")
+            last_position = -1
+            update_counter = 0
+
+            while self.is_available():
+                try:
+                    # Only poll when playing
+                    playback_status = self.store.get_all().get("playback_status", "Stopped")
+
+                    if playback_status == "Playing":
+                        progress = self.get_progress()
+
+                        if progress:
+                            position_ms, duration_ms = progress
+
+                            # Always update store with latest position
+                            self.store.update(position=position_ms, duration=duration_ms)
+
+                            # Send update to Snapcast every 5 seconds or on significant change
+                            update_counter += 1
+                            position_changed_significantly = abs(position_ms - last_position) > 5000  # 5 second jump
+
+                            if update_counter >= 5 or position_changed_significantly:
+                                # Trigger metadata update to push to Snapcast
+                                if self.on_metadata_update:
+                                    self.on_metadata_update()
+
+                                last_position = position_ms
+                                update_counter = 0
+
+                    # Poll every second
+                    time.sleep(1)
+
+                except Exception as e:
+                    log(f"[DBus] Progress polling error: {e}")
+                    time.sleep(1)
+
+            log("[DBus] Progress polling thread stopped")
+
+        # Start polling in background thread
+        poll_thread = threading.Thread(target=poll_progress, daemon=True)
+        poll_thread.start()
+
     def is_available(self):
         """Check if D-Bus control is available"""
         return self.dbus_interface is not None
@@ -646,7 +732,7 @@ class SnapcastControlScript:
         self.stream_id = stream_id
         self.store = MetadataStore()
         self.metadata_parser = MetadataParser(self.store)
-        self.dbus_monitor = DBusMonitor(self.store, self.send_playback_state_update)
+        self.dbus_monitor = DBusMonitor(self.store, self.send_playback_state_update, self.send_metadata_update)
         log(f"[Init] Initialized for stream: {stream_id}")
 
     def send_notification(self, method: str, params: Dict):
