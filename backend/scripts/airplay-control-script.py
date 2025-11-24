@@ -768,48 +768,48 @@ class SnapcastControlScript:
 
     def send_metadata_update(self):
         """Send Plugin.Stream.Player.Properties with current metadata from store"""
-        meta_obj = self.store.get_metadata_for_snapcast()
+        # Always send update - position/duration is important even without metadata
+        meta_obj = self.store.get_metadata_for_snapcast() or {}
 
-        if meta_obj:
-            # Get current playback state and position from store
-            state_data = self.store.get_all()
-            playback_status = state_data.get("playback_status", "Stopped")
-            position = state_data.get("position", 0)
-            can_control = self.dbus_monitor.is_available()
+        # Get current playback state and position from store
+        state_data = self.store.get_all()
+        playback_status = state_data.get("playback_status", "Stopped")
+        position = state_data.get("position", 0)
+        can_control = self.dbus_monitor.is_available()
 
-            # Notification params: include stream ID and all properties
-            params = {
-                "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
+        # Notification params: include stream ID and all properties
+        params = {
+            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
 
-                # Playback state (same fields as GetProperties)
-                "playbackStatus": playback_status,
-                "loopStatus": "none",
-                "shuffle": False,
-                "volume": 100,
-                "mute": False,
-                "rate": 1.0,
-                "position": position,
+            # Playback state (same fields as GetProperties)
+            "playbackStatus": playback_status,
+            "loopStatus": "none",
+            "shuffle": False,
+            "volume": 100,
+            "mute": False,
+            "rate": 1.0,
+            "position": position,
 
-                # Control capabilities (enable if D-Bus is available)
-                "canGoNext": can_control,
-                "canGoPrevious": can_control,
-                "canPlay": can_control,
-                "canPause": can_control,
-                "canSeek": self.dbus_monitor.can_seek() if can_control else False,
-                "canControl": can_control,
+            # Control capabilities (enable if D-Bus is available)
+            "canGoNext": can_control,
+            "canGoPrevious": can_control,
+            "canPlay": can_control,
+            "canPause": can_control,
+            "canSeek": self.dbus_monitor.can_seek() if can_control else False,
+            "canControl": can_control,
 
-                # Metadata (simple field names)
-                "metadata": meta_obj
-            }
-            self.send_notification("Plugin.Stream.Player.Properties", params)
+            # Metadata (simple field names)
+            "metadata": meta_obj
+        }
+        self.send_notification("Plugin.Stream.Player.Properties", params)
 
-            # Log what we sent (check simple format keys)
-            title = meta_obj.get('title', 'N/A')
-            artist = meta_obj.get('artist', ['N/A'])
-            artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
-            if "artUrl" in meta_obj:
-                log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
+        # Log what we sent (check simple format keys)
+        title = meta_obj.get('title', 'N/A')
+        artist = meta_obj.get('artist', ['N/A'])
+        artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
+        log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
+        if "artUrl" in meta_obj:
+            log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
