@@ -129,8 +129,6 @@ class SpotifyMetadataMonitor:
         self.player_interface = None
         self.player_properties = None
         self.bus = None
-        self.position_poll_thread = None
-        self.position_poll_running = False
 
         if not DBUS_AVAILABLE:
             log("[Spotify] D-Bus not available - monitoring disabled")
@@ -218,11 +216,6 @@ class SpotifyMetadataMonitor:
                 length_us = int(metadata_dict['mpris:length'])
                 result['duration'] = length_us // 1000  # Convert to milliseconds
                 log(f"[Metadata] Duration: {result['duration']}ms")
-
-            if 'mpris:trackid' in metadata_dict:
-                # Track ID needed for SetPosition
-                result['track_id'] = str(metadata_dict['mpris:trackid'])
-                log(f"[Metadata] Track ID: {result['track_id']}")
 
         except Exception as e:
             log(f"[Error] Metadata extraction failed: {e}")
@@ -344,32 +337,69 @@ class SpotifyMetadataMonitor:
             log(f"[Error] Player scan failed: {e}")
 
     def _poll_position(self):
-        """Poll MPRIS Position property in background thread"""
-        log("[Spotify] Position polling thread started")
-        last_position = 0
+        """Background thread that polls position updates from D-Bus
 
-        while self.position_poll_running:
+        Note: We send position updates when the D-Bus Position property changes,
+        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
+        to increment position smoothly between server updates.
+
+        Position changes occur when:
+        - Track starts (position resets to 0 or start offset)
+        - User seeks/scrubs from Spotify app
+        - Track ends and next track begins
+        """
+        log("[DBus] Position polling thread started")
+        last_position_value = None
+
+        while True:
             try:
-                if self.player_properties:
-                    # Get current position from MPRIS (in microseconds)
-                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
-                    position_ms = int(position_us) // 1000
+                # Only poll when we have a player and it's playing
+                playback_status = self.store.get_all().get("playback_status", "Stopped")
 
-                    # Only update if position changed significantly (avoid spam)
-                    if abs(position_ms - last_position) > 500:  # 500ms threshold
-                        log(f"[DBus] Position: {position_ms}ms")
+                if self.player_properties and playback_status == "Playing":
+                    try:
+                        # Get current position from MPRIS
+                        position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                        position_ms = int(position_us) // 1000
+
+                        # Always update store with latest position
                         self.store.update(position=position_ms)
-                        self.on_update()
-                        last_position = position_ms
+
+                        # Only send update if position actually changed from last poll
+                        # This detects seeks, track changes, and initial connection
+                        if last_position_value is None:
+                            # Initial connection
+                            log(f"[DBus] Position changed: {position_ms}ms (initial)")
+                            if self.on_update:
+                                self.on_update()
+                            last_position_value = position_ms
+                        elif abs(position_ms - last_position_value) > 1500:
+                            # Position changed significantly (seek, track change, or mid-track start)
+                            # Allow 1.5s tolerance for polling delay
+                            if position_ms < 5000:
+                                reason = "track_change"
+                            else:
+                                reason = "seek"
+                            log(f"[DBus] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                            if self.on_update:
+                                self.on_update()
+                            last_position_value = position_ms
+                        else:
+                            # Position progressing normally, just track it
+                            last_position_value = position_ms
+
+                    except Exception:
+                        # Player might not be ready yet
+                        pass
+
+                # Poll every second
+                time.sleep(1)
 
             except Exception as e:
-                # Player might have disconnected
-                pass
+                log(f"[DBus] Position polling error: {e}")
+                time.sleep(1)
 
-            # Poll every 500ms for smooth updates
-            time.sleep(0.5)
-
-        log("[Spotify] Position polling thread stopped")
+        log("[DBus] Position polling thread stopped")
 
     def start(self):
         """Start monitoring D-Bus for Spotify metadata"""
@@ -392,11 +422,10 @@ class SpotifyMetadataMonitor:
             # Try to find existing player
             self._scan_for_players()
 
-            # Start position polling thread
-            if not self.position_poll_thread or not self.position_poll_thread.is_alive():
-                self.position_poll_running = True
-                self.position_poll_thread = threading.Thread(target=self._poll_position, daemon=True)
-                self.position_poll_thread.start()
+            # Start background position polling
+            poll_thread = threading.Thread(target=self._poll_position, daemon=True)
+            poll_thread.start()
+            log("[Spotify] Started position polling thread")
 
         except Exception as e:
             log(f"[Error] Failed to start monitoring: {e}")
@@ -427,6 +456,17 @@ class SpotifyMetadataMonitor:
             try:
                 self.player_interface.Next()
                 log("[Control] Sent Next command")
+
+                # Immediately poll position to update after track change
+                time.sleep(0.1)  # Brief delay for Spotify to process command
+                try:
+                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                    position_ms = int(position_us) // 1000
+                    self.store.update(position=position_ms)
+                    log(f"[Control] Updated position after next track: {position_ms}ms")
+                except Exception:
+                    pass
+
             except Exception as e:
                 log(f"[Error] Next failed: {e}")
 
@@ -436,6 +476,17 @@ class SpotifyMetadataMonitor:
             try:
                 self.player_interface.Previous()
                 log("[Control] Sent Previous command")
+
+                # Immediately poll position to update after track change
+                time.sleep(0.1)  # Brief delay for Spotify to process command
+                try:
+                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                    position_ms = int(position_us) // 1000
+                    self.store.update(position=position_ms)
+                    log(f"[Control] Updated position after previous track: {position_ms}ms")
+                except Exception:
+                    pass
+
             except Exception as e:
                 log(f"[Error] Previous failed: {e}")
 
@@ -444,16 +495,13 @@ class SpotifyMetadataMonitor:
         if self.player_interface:
             try:
                 # MPRIS SetPosition takes track ID and position in microseconds
-                # Get current track ID from metadata
-                metadata = self.store.get_all()
-                track_id = metadata.get("track_id", "/")
+                # We'll use Seek with relative offset instead for simplicity
+                current_position = self.store.get_all().get("position", 0)
+                offset_ms = position_ms - current_position
+                offset_us = offset_ms * 1000
 
-                # Convert position to microseconds
-                position_us = position_ms * 1000
-
-                # Use SetPosition for absolute positioning (more reliable than Seek offset)
-                self.player_interface.SetPosition(dbus.ObjectPath(track_id), dbus.Int64(position_us))
-                log(f"[Control] SetPosition to {position_ms}ms ({position_us}us) for track {track_id}")
+                self.player_interface.Seek(dbus.Int64(offset_us))
+                log(f"[Control] Seek to {position_ms}ms (offset: {offset_ms}ms)")
 
                 # Update store with new position
                 self.store.update(position=position_ms)

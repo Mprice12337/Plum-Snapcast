@@ -322,12 +322,24 @@ class PlexampMetadataMonitor:
             return None
 
     def _poll_loop(self):
-        """Background thread that polls PlayQueue.json file and timeline API"""
+        """Background thread that polls PlayQueue.json file and timeline API
+
+        Note: We send position updates when the timeline position changes significantly,
+        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
+        to increment position smoothly between server updates.
+
+        Position changes occur when:
+        - Track starts (position resets to 0 or start offset)
+        - User seeks/scrubs from Plexamp app or Plex client
+        - Previous/next button pressed
+        """
         log("[Plexamp] Starting PlayQueue monitoring...")
+
+        last_position_value = None
 
         while self.running:
             try:
-                updated = False
+                metadata_updated = False
 
                 # Read PlayQueue.json for metadata
                 playqueue_data = self._read_playqueue()
@@ -339,17 +351,51 @@ class PlexampMetadataMonitor:
                     if metadata:
                         # Update store with new data
                         self.store.update(**metadata)
-                        updated = True
+                        metadata_updated = True
 
                 # Query timeline API for position and playback state
                 timeline = self.get_timeline()
                 if timeline:
-                    self.store.update(**timeline)
-                    updated = True
+                    position_ms = timeline.get('position')
+                    playback_status = timeline.get('playback_status', 'Stopped')
 
-                # Notify parent if anything changed
-                if updated and self.on_update:
-                    self.on_update()
+                    # Always update store with latest position
+                    self.store.update(**timeline)
+
+                    # Only send update if position changed significantly from last poll
+                    # This detects seeks, track changes, previous/next button, and initial connection
+                    send_update = False
+                    if last_position_value is None:
+                        # Initial connection
+                        log(f"[Timeline] Position changed: {position_ms}ms (initial)")
+                        send_update = True
+                        last_position_value = position_ms
+                    elif metadata_updated:
+                        # New track detected via PlayQueue
+                        log(f"[Timeline] Position changed: {position_ms}ms (track_change)")
+                        send_update = True
+                        last_position_value = position_ms
+                    elif position_ms and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
+                        # Position changed significantly (seek, previous/next, or mid-track start)
+                        # Allow tolerance of POLL_INTERVAL + 1s for polling delay and playback time
+                        if position_ms < 5000:
+                            reason = "track_change"
+                        else:
+                            reason = "seek"
+                        log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                        send_update = True
+                        last_position_value = position_ms
+                    else:
+                        # Position progressing normally, just track it
+                        last_position_value = position_ms
+
+                    if send_update and playback_status != 'Stopped':
+                        if self.on_update:
+                            self.on_update()
+                elif metadata_updated:
+                    # Send update for metadata even without timeline
+                    if self.on_update:
+                        self.on_update()
 
                 # Sleep before next poll
                 time.sleep(POLL_INTERVAL)
