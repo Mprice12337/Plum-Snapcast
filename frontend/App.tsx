@@ -25,20 +25,33 @@ const App: React.FC = () => {
     // Track recent user-initiated playback changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
 
-    const [settings, setSettings] = useState<Settings>({
-        integrations: {
-            airplay: true,
-            spotifyConnect: false,
-            snapcast: true,
-            visualizer: false,
-        },
-        theme: {
-            mode: 'dark',
-            accent: 'purple',
-        },
-        display: {
-            showOfflineDevices: true,
+    // Load settings from localStorage or use defaults
+    const [settings, setSettings] = useState<Settings>(() => {
+        try {
+            const saved = localStorage.getItem('snapcast-settings');
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (error) {
+            console.error('Failed to load settings from localStorage:', error);
         }
+
+        // Default settings
+        return {
+            integrations: {
+                airplay: true,
+                spotifyConnect: false,
+                snapcast: true,
+                visualizer: false,
+            },
+            theme: {
+                mode: 'dark',
+                accent: 'purple',
+            },
+            display: {
+                showOfflineDevices: true,
+            }
+        };
     });
 
     // Store group mappings for clients
@@ -46,6 +59,15 @@ const App: React.FC = () => {
 
     // Browser audio client for "Listen in Browser" functionality
     const browserAudio = useBrowserAudioClient(window.location.hostname);
+
+    // Persist settings to localStorage whenever they change
+    useEffect(() => {
+        try {
+            localStorage.setItem('snapcast-settings', JSON.stringify(settings));
+        } catch (error) {
+            console.error('Failed to save settings to localStorage:', error);
+        }
+    }, [settings]);
 
     useEffect(() => {
         const root = document.documentElement;
