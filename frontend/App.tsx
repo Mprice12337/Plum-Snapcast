@@ -117,11 +117,12 @@ const App: React.FC = () => {
             return;
         }
 
-        // Check if browser client is connected to server
-        const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
+        // Check if browser client exists in client list (server has recognized it)
+        // Note: Browser audio client might not report as connected immediately, but if it exists, we can assign it
+        const browserClient = clients.find(c => c.id === browserAudio.state.clientId);
         if (!browserClient) {
-            console.log(`[Auto-Assign] Browser client not connected yet (clientId: ${browserAudio.state.clientId})`);
-            return; // Not connected yet
+            console.log(`[Auto-Assign] Browser client not in server list yet (clientId: ${browserAudio.state.clientId})`);
+            return; // Server hasn't reported it yet
         }
 
         // Use the captured target stream (from when button was clicked)
