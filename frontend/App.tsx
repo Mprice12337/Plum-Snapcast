@@ -166,23 +166,26 @@ const App: React.FC = () => {
     // Helper function to detect if a client should be hidden
     // Hide snapweb clients that aren't our active browser audio client
     const shouldHideClient = (client: Client): boolean => {
-        const browserIndicators = ['snapweb', 'browser'];
-        const clientName = client.name.toLowerCase();
-        const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
-
-        // If this is our active browser audio client, never hide it
+        // If this is our active browser audio client, NEVER hide it (check ID first!)
         if (client.id === browserAudio.state.clientId && browserAudio.state.isActive) {
             return false;
         }
 
         // Hide other snapweb/browser clients (auto-created by server)
+        const browserIndicators = ['snapweb', 'browser'];
+        const clientName = client.name.toLowerCase();
+        const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
+
         return isSnapwebClient;
     };
 
     // Filter clients based on settings
+    // Always show browser audio client when active, regardless of offline device setting
     const filteredClients = settings.display.showOfflineDevices
         ? allClients
-        : allClients.filter(c => c.connected);
+        : allClients.filter(c =>
+            c.connected || (c.id === browserAudio.state.clientId && browserAudio.state.isActive)
+        );
 
     // Exclude: 1) myClient, 2) snapweb clients (except our active browser audio)
     const otherClients = filteredClients.filter(c =>
