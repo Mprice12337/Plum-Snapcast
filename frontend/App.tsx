@@ -106,8 +106,6 @@ const App: React.FC = () => {
     ) || clients.find(c => c.id !== browserAudio.state.clientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
-    const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
-
     // Auto-assign browser audio client to user's current stream when it connects
     useEffect(() => {
         if (!browserAudio.state.isActive) {
@@ -154,19 +152,20 @@ const App: React.FC = () => {
         }
     }
 
-    // Check if server has a connected browser audio client (for Listen button visibility)
-    // This must check the raw client list before filtering, otherwise disconnected clients break the logic
-    const serverHasConnectedBrowserClient = clients.some(c =>
-        c.id === browserAudio.state.clientId && c.connected
-    );
-
-    // Helper function to detect if a client is a browser-based client
-    // These should be hidden from the device list since they're controlled via the Listen button
-    const isBrowserClient = (client: Client): boolean => {
+    // Helper function to detect if a client should be hidden
+    // Hide snapweb clients that aren't our active browser audio client
+    const shouldHideClient = (client: Client): boolean => {
         const browserIndicators = ['snapweb', 'browser'];
         const clientName = client.name.toLowerCase();
-        return browserIndicators.some(indicator => clientName.includes(indicator)) ||
-               client.id === browserAudio.state.clientId;
+        const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
+
+        // If this is our active browser audio client, never hide it
+        if (client.id === browserAudio.state.clientId && browserAudio.state.isActive) {
+            return false;
+        }
+
+        // Hide other snapweb/browser clients (auto-created by server)
+        return isSnapwebClient;
     };
 
     // Filter clients based on settings
@@ -174,9 +173,16 @@ const App: React.FC = () => {
         ? allClients
         : allClients.filter(c => c.connected);
 
-    // Exclude: 1) myClient, 2) ALL browser-based clients (Snapweb, browser audio, etc.)
+    // Exclude: 1) myClient, 2) snapweb clients (except our active browser audio)
     const otherClients = filteredClients.filter(c =>
-        c.id !== myClient?.id && !isBrowserClient(c)
+        c.id !== myClient?.id && !shouldHideClient(c)
+    );
+
+    // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
+    const syncedClients = filteredClients.filter(c =>
+        c.id !== myClient?.id &&
+        c.currentStreamId === myClient?.currentStreamId &&
+        !shouldHideClient(c)
     );
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
@@ -1001,7 +1007,7 @@ const App: React.FC = () => {
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={browserAudio.start}
-                            browserAudioActive={serverHasConnectedBrowserClient}
+                            browserAudioActive={browserAudio.state.isActive}
                         />
                     </div>
                 </div>
