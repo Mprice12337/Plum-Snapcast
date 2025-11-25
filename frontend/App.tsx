@@ -86,8 +86,8 @@ const App: React.FC = () => {
     // Create browser client when active and add to clients list
     const allClients = [...clients];
     if (browserAudio.state.isActive) {
-        // Check if server has already reported this client
-        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId);
+        // Check if server has already reported this client (and connected)
+        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId && c.connected);
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet (takes a moment after connection)
@@ -103,6 +103,12 @@ const App: React.FC = () => {
         }
     }
 
+    // Check if server has a connected browser audio client (for Listen button visibility)
+    // This must check the raw client list before filtering, otherwise disconnected clients break the logic
+    const serverHasConnectedBrowserClient = clients.some(c =>
+        c.id === browserAudio.state.clientId && c.connected
+    );
+
     // Filter clients based on settings
     const filteredClients = settings.display.showOfflineDevices
         ? allClients
@@ -110,7 +116,7 @@ const App: React.FC = () => {
 
     const otherClients = filteredClients.filter(c =>
         c.id !== myClient?.id &&
-        (browserAudio.state.isActive ? true : c.id !== browserAudio.state.clientId)
+        (serverHasConnectedBrowserClient ? c.id !== browserAudio.state.clientId : true)
     );
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
@@ -935,7 +941,7 @@ const App: React.FC = () => {
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={browserAudio.start}
-                            browserAudioActive={browserAudio.state.isActive}
+                            browserAudioActive={serverHasConnectedBrowserClient}
                         />
                     </div>
                 </div>
