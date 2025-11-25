@@ -132,15 +132,17 @@ const App: React.FC = () => {
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned]);
 
-    // Update browser client name if server has reported it
-    // This ensures we show the correct name and state from server
+    // Update browser client name and volume if server has reported it
+    // Volume is managed locally (not synced to server), so override with local state
     const allClients = clients.map(c => {
-        // If this is our browser audio client, ensure proper naming
+        // If this is our browser audio client, ensure proper naming and local volume
         if (browserAudio.state.isActive && c.id === browserAudio.state.clientId) {
             return {
                 ...c,
                 // Use a friendly name instead of "snapweb"
-                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name
+                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name,
+                // Override volume with local state (browser audio volume is local only)
+                volume: browserAudio.state.volume
             };
         }
         return c;
