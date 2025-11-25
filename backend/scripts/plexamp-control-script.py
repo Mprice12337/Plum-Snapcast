@@ -356,7 +356,7 @@ class PlexampMetadataMonitor:
                 # Query timeline API for position and playback state
                 timeline = self.get_timeline()
                 if timeline:
-                    position_ms = timeline.get('position')
+                    position_ms = timeline.get('position', 0)
                     playback_status = timeline.get('playback_status', 'Stopped')
 
                     # Always update store with latest position
@@ -367,15 +367,15 @@ class PlexampMetadataMonitor:
                     send_update = False
                     if last_position_value is None:
                         # Initial connection
-                        log(f"[Timeline] Position changed: {position_ms}ms (initial)")
+                        log(f"[Timeline] Position changed: None → {position_ms}ms (initial)")
                         send_update = True
                         last_position_value = position_ms
                     elif metadata_updated:
                         # New track detected via PlayQueue
-                        log(f"[Timeline] Position changed: {position_ms}ms (track_change)")
+                        log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms (track_change)")
                         send_update = True
                         last_position_value = position_ms
-                    elif position_ms and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
+                    elif position_ms is not None and last_position_value is not None and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
                         # Position changed significantly (seek, previous/next, or mid-track start)
                         # Allow tolerance of POLL_INTERVAL + 1s for polling delay and playback time
                         if position_ms < 5000:
@@ -491,10 +491,14 @@ class PlexampMetadataMonitor:
                     }
                     result['playback_status'] = state_map.get(state.lower(), 'Stopped')
 
-                    # Position
-                    if time_ms:
+                    # Position - always include position, even if 0
+                    # time_ms can be '0', None, or a string number
+                    if time_ms is not None:
                         result['position'] = int(time_ms)
-                        log(f"[Timeline] Position: {time_ms}ms, State: {result['playback_status']}")
+                    else:
+                        result['position'] = 0
+
+                    log(f"[Timeline] Position: {result['position']}ms, State: {result['playback_status']}")
 
                     return result
 
