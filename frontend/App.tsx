@@ -117,9 +117,6 @@ const App: React.FC = () => {
             return;
         }
 
-        // Skip if already auto-assigned
-        if (browserClientAutoAssigned) return;
-
         // Check if browser client is connected to server
         const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
         if (!browserClient) {
@@ -134,24 +131,32 @@ const App: React.FC = () => {
         console.log(`[Auto-Assign] Browser client connected:`, {
             browserClientId: browserClient.id,
             browserClientCurrentStream: browserClient.currentStreamId,
+            browserClientStreamName: streams.find(s => s.id === browserClient.currentStreamId)?.name,
             targetStreamFromButton: targetStreamForBrowserAudio,
             myClientCurrentStream: myClient?.currentStreamId,
             finalTargetStream: targetStream,
             targetStreamName: streams.find(s => s.id === targetStream)?.name,
+            alreadyAssigned: browserClientAutoAssigned,
             needsAssignment: targetStream && browserClient.currentStreamId !== targetStream
         });
 
+        // Skip if already auto-assigned
+        if (browserClientAutoAssigned) {
+            console.log(`[Auto-Assign] Skipping - already auto-assigned`);
+            return;
+        }
+
         // Check if needs to be assigned to target stream
         if (targetStream && browserClient.currentStreamId !== targetStream) {
-            console.log(`[Auto-Assign] Assigning browser client to target stream: ${targetStream} (${streams.find(s => s.id === targetStream)?.name})`);
+            console.log(`[Auto-Assign] ⚡ Assigning browser client from ${streams.find(s => s.id === browserClient.currentStreamId)?.name} to ${streams.find(s => s.id === targetStream)?.name}`);
             handleStreamChange(browserAudio.state.clientId, targetStream);
             setBrowserClientAutoAssigned(true);
         } else if (browserClient.currentStreamId === targetStream) {
             // Already on correct stream
-            console.log(`[Auto-Assign] Browser client already on target stream: ${targetStream}`);
+            console.log(`[Auto-Assign] ✓ Browser client already on target stream: ${streams.find(s => s.id === targetStream)?.name}`);
             setBrowserClientAutoAssigned(true);
         }
-    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio]);
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, handleStreamChange]);
 
     // Update browser client name and volume if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
