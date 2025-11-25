@@ -129,6 +129,8 @@ class SpotifyMetadataMonitor:
         self.player_interface = None
         self.player_properties = None
         self.bus = None
+        self.position_poll_thread = None
+        self.position_poll_running = False
 
         if not DBUS_AVAILABLE:
             log("[Spotify] D-Bus not available - monitoring disabled")
@@ -216,6 +218,11 @@ class SpotifyMetadataMonitor:
                 length_us = int(metadata_dict['mpris:length'])
                 result['duration'] = length_us // 1000  # Convert to milliseconds
                 log(f"[Metadata] Duration: {result['duration']}ms")
+
+            if 'mpris:trackid' in metadata_dict:
+                # Track ID needed for SetPosition
+                result['track_id'] = str(metadata_dict['mpris:trackid'])
+                log(f"[Metadata] Track ID: {result['track_id']}")
 
         except Exception as e:
             log(f"[Error] Metadata extraction failed: {e}")
@@ -336,6 +343,34 @@ class SpotifyMetadataMonitor:
         except Exception as e:
             log(f"[Error] Player scan failed: {e}")
 
+    def _poll_position(self):
+        """Poll MPRIS Position property in background thread"""
+        log("[Spotify] Position polling thread started")
+        last_position = 0
+
+        while self.position_poll_running:
+            try:
+                if self.player_properties:
+                    # Get current position from MPRIS (in microseconds)
+                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                    position_ms = int(position_us) // 1000
+
+                    # Only update if position changed significantly (avoid spam)
+                    if abs(position_ms - last_position) > 500:  # 500ms threshold
+                        log(f"[DBus] Position: {position_ms}ms")
+                        self.store.update(position=position_ms)
+                        self.on_update()
+                        last_position = position_ms
+
+            except Exception as e:
+                # Player might have disconnected
+                pass
+
+            # Poll every 500ms for smooth updates
+            time.sleep(0.5)
+
+        log("[Spotify] Position polling thread stopped")
+
     def start(self):
         """Start monitoring D-Bus for Spotify metadata"""
         if not DBUS_AVAILABLE:
@@ -356,6 +391,12 @@ class SpotifyMetadataMonitor:
 
             # Try to find existing player
             self._scan_for_players()
+
+            # Start position polling thread
+            if not self.position_poll_thread or not self.position_poll_thread.is_alive():
+                self.position_poll_running = True
+                self.position_poll_thread = threading.Thread(target=self._poll_position, daemon=True)
+                self.position_poll_thread.start()
 
         except Exception as e:
             log(f"[Error] Failed to start monitoring: {e}")
@@ -403,13 +444,16 @@ class SpotifyMetadataMonitor:
         if self.player_interface:
             try:
                 # MPRIS SetPosition takes track ID and position in microseconds
-                # We'll use Seek with relative offset instead for simplicity
-                current_position = self.store.get_all().get("position", 0)
-                offset_ms = position_ms - current_position
-                offset_us = offset_ms * 1000
+                # Get current track ID from metadata
+                metadata = self.store.get_all()
+                track_id = metadata.get("track_id", "/")
 
-                self.player_interface.Seek(dbus.Int64(offset_us))
-                log(f"[Control] Seek to {position_ms}ms (offset: {offset_ms}ms)")
+                # Convert position to microseconds
+                position_us = position_ms * 1000
+
+                # Use SetPosition for absolute positioning (more reliable than Seek offset)
+                self.player_interface.SetPosition(dbus.ObjectPath(track_id), dbus.Int64(position_us))
+                log(f"[Control] SetPosition to {position_ms}ms ({position_us}us) for track {track_id}")
 
                 # Update store with new position
                 self.store.update(position=position_ms)
@@ -492,12 +536,13 @@ class SnapcastControlScript:
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
         try:
+            log(f"[Command] Raw request: {line[:200]}")  # Log first 200 chars of request
             request = json.loads(line)
             method = request.get("method", "")
             request_id = request.get("id")
             params = request.get("params", {})
 
-            log(f"[Command] Received: {method} (id={request_id})")
+            log(f"[Command] Received: {method} (id={request_id}, params={params})")
 
             if method == "Plugin.Stream.Player.GetProperties":
                 # Return COMPLETE properties object

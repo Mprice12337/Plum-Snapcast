@@ -9,6 +9,7 @@ import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import type {Client, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
+import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 
 const VOLUME_STEP = 5;
 
@@ -16,7 +17,6 @@ const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
     const [serverName, setServerName] = useState<string>('Snapcast Server');
-    const [streamCapabilities, setStreamCapabilities] = useState<{canSeek?: boolean}>({});
     const [isLoading, setIsLoading] = useState(true);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
@@ -40,6 +40,9 @@ const App: React.FC = () => {
 
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
+
+    // Browser audio client for "Listen in Browser" functionality
+    const browserAudio = useBrowserAudioClient(window.location.hostname);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -68,11 +71,38 @@ const App: React.FC = () => {
 
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
-    const myClient = clients.find(c => /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)) || clients[0];
+    // Exclude browser audio client from being selected as primary
+    const myClient = clients.find(c =>
+        c.id !== browserAudio.state.clientId &&
+        /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
+    ) || clients.find(c => c.id !== browserAudio.state.clientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
     const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
-    const otherClients = clients.filter(c => c.currentStreamId !== myClient?.currentStreamId);
+
+    // Create browser client when active and add to clients list
+    const allClients = [...clients];
+    if (browserAudio.state.isActive) {
+        // Check if server has already reported this client
+        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId);
+
+        if (!serverHasClient) {
+            // Server hasn't seen the client yet (takes a moment after connection)
+            // Add a temporary placeholder that will be replaced by server data
+            const browserClient: Client = {
+                id: browserAudio.state.clientId,
+                name: 'Browser Audio (Connecting...)',
+                currentStreamId: null,
+                volume: browserAudio.state.volume
+            };
+            allClients.push(browserClient);
+        }
+    }
+
+    const otherClients = allClients.filter(c =>
+        c.id !== myClient?.id &&
+        (browserAudio.state.isActive ? true : c.id !== browserAudio.state.clientId)
+    );
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
         setStreams(prevStreams =>
@@ -267,27 +297,6 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, [updateStreamProgress]);
 
-    // Fetch stream capabilities when current stream changes
-    useEffect(() => {
-        if (!currentStream || !snapcastService) {
-            setStreamCapabilities({});
-            return;
-        }
-
-        const fetchCapabilities = async () => {
-            try {
-                const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-                setStreamCapabilities({
-                    canSeek: capabilities.canSeek || false
-                });
-            } catch (error) {
-                console.error('Failed to fetch stream capabilities:', error);
-                setStreamCapabilities({canSeek: false});
-            }
-        };
-
-        fetchCapabilities();
-    }, [currentStream?.id]);
 
     // Periodically retry fetching artwork when showing placeholder
     // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
@@ -351,6 +360,10 @@ const App: React.FC = () => {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
+
+                    // Extract position from stream properties (in milliseconds from backend, convert to seconds)
+                    const positionMs = serverStream.properties?.position || 0;
+                    const positionSeconds = Math.floor(positionMs / 1000);
 
                     // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
@@ -483,6 +496,13 @@ const App: React.FC = () => {
                                     }
                                 }
 
+                                // Update progress from server position (if playing and position is valid)
+                                // This handles mid-track connections
+                                if (isPlaying && positionSeconds >= 0) {
+                                    console.log(`[Polling] Position update: ${positionSeconds}s (from ${positionMs}ms)`);
+                                    updatedStream.progress = positionSeconds;
+                                }
+
                                 return updatedStream;
                             }
                             return s;
@@ -571,6 +591,12 @@ const App: React.FC = () => {
     }, []); // Empty dependency array - only run once
 
     const handleVolumeChange = async (clientId: string, volume: number) => {
+        // Handle browser audio client volume changes locally
+        if (clientId === browserAudio.state.clientId) {
+            browserAudio.setVolume(volume);
+            return;
+        }
+
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
@@ -667,6 +693,12 @@ const App: React.FC = () => {
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
         console.log('[StreamChange] Request:', {clientId, streamId, clientGroupMap, allClients: clients.map(c => c.id)});
+
+        // Handle browser audio client - stop it when stream set to null
+        if (clientId === browserAudio.state.clientId && streamId === null) {
+            browserAudio.stop();
+            return;
+        }
 
         // Update local state immediately for responsiveness
         setClients(prevClients =>
@@ -793,31 +825,6 @@ const App: React.FC = () => {
         }
     };
 
-    const handleSeek = async (positionInSeconds: number) => {
-        if (!currentStream) return;
-
-        try {
-            // Check stream capabilities
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
-
-            if (capabilities.canSeek) {
-                // Convert position to milliseconds for backend
-                const positionInMs = positionInSeconds * 1000;
-
-                // Optimistically update progress locally
-                updateStreamProgress(currentStream.id, positionInSeconds);
-
-                // Send seek command to backend
-                await snapcastService.seekTo(currentStream.id, positionInMs);
-
-                console.log(`Seek to ${positionInSeconds}s (${positionInMs}ms) for stream ${currentStream.id}`);
-            } else {
-                console.warn(`Stream ${currentStream.id} does not support seek`);
-            }
-        } catch (error) {
-            console.error(`Seek failed for stream ${currentStream.id}:`, error);
-        }
-    };
 
     if (isLoading) {
         return (
@@ -878,8 +885,6 @@ const App: React.FC = () => {
                             <div className="space-y-6">
                                 <NowPlaying
                                     stream={currentStream}
-                                    canSeek={streamCapabilities.canSeek}
-                                    onSeek={handleSeek}
                                 />
                                 <PlayerControls
                                     stream={currentStream}
@@ -920,6 +925,8 @@ const App: React.FC = () => {
                             onStreamChange={handleStreamChange}
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
+                            onStartBrowserAudio={browserAudio.start}
+                            browserAudioActive={browserAudio.state.isActive}
                         />
                     </div>
                 </div>

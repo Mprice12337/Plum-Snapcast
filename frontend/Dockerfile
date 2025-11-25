@@ -17,8 +17,8 @@ RUN npm run build
 # Serve the built app
 FROM nginx:alpine
 
-# Copy built app to nginx
-COPY --from=0 /app/dist /usr/share/nginx/html
+# Copy built app to a temporary location
+COPY --from=0 /app/dist /tmp/dist
 
 # Create custom nginx config for React routing with Snapcast proxy
 RUN echo 'server { \
@@ -41,6 +41,12 @@ RUN echo 'server { \
     } \
 }' > /etc/nginx/conf.d/default.conf
 
+# Create startup script that copies files to volume and starts nginx
+RUN echo '#!/bin/sh' > /docker-entrypoint.sh && \
+    echo 'cp -r /tmp/dist/* /usr/share/nginx/html/' >> /docker-entrypoint.sh && \
+    echo 'exec nginx -g "daemon off;"' >> /docker-entrypoint.sh && \
+    chmod +x /docker-entrypoint.sh
+
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/docker-entrypoint.sh"]

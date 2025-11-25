@@ -441,15 +441,6 @@ export class SnapcastService {
         }
     }
 
-    async seekTo(streamId: string, position: number): Promise<any> {
-        const properties = await this.getStreamProperties(streamId);
-        if (!properties.canSeek) {
-            throw new Error(`Stream ${streamId} does not support seek control`);
-        }
-
-        // Use the seek command with position parameter
-        return this.sendStreamControl(streamId, 'seek', {position: position});
-    }
 
     // Toggle play/pause - more reliable for many stream plugins
     async togglePlayPause(streamId: string): Promise<any> {
@@ -470,7 +461,6 @@ export class SnapcastService {
     async getStreamCapabilities(streamId: string): Promise<{
         canPlay: boolean;
         canPause: boolean;
-        canSeek: boolean;
         canGoNext: boolean;
         canGoPrevious: boolean;
         playbackStatus?: string;
@@ -480,7 +470,6 @@ export class SnapcastService {
             return {
                 canPlay: properties.canPlay || false,
                 canPause: properties.canPause || false,
-                canSeek: properties.canSeek || false,
                 canGoNext: properties.canGoNext || false,
                 canGoPrevious: properties.canGoPrevious || false,
                 playbackStatus: properties.playbackStatus || 'Unknown'
@@ -490,7 +479,6 @@ export class SnapcastService {
             return {
                 canPlay: false,
                 canPause: false,
-                canSeek: false,
                 canGoNext: false,
                 canGoPrevious: false
             };

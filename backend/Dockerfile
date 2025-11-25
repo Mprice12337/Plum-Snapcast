@@ -45,8 +45,8 @@ RUN apk add --no-cache \
     gst-libav \
     libupnp
 
-# Add edge repository and install snapcast
-RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
+# Add edge repository and install snapcast (latest: 0.34.0 in community repo)
+RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
     apk update && \
     apk add --no-cache \
         snapcast-server@edge \
@@ -147,6 +147,9 @@ RUN git clone --depth 1 https://github.com/hzeller/gmrender-resurrect.git && \
     make install && \
     cd .. && \
     rm -rf gmrender-resurrect
+
+# Create snapweb directory (will be populated by custom React frontend via volume mount)
+RUN mkdir -p /usr/share/snapserver/snapweb
 
 # Cleanup build dependencies and temporary files
 # Use --force-broken-world because we have packages from @edge that aren't in the cache
