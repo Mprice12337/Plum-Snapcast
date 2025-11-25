@@ -673,16 +673,14 @@ class DBusMonitor:
     def start_progress_polling(self):
         """Start background thread to poll progress updates from D-Bus
 
-        Continuously polls position and sends updates to frontend:
-        - Every 5 seconds during normal playback
-        - Immediately when position jumps (seek/scrub detected)
-        - On initial connection
+        Note: shairport-sync's ProgressString only updates when metadata changes
+        (track start/end, not continuously during playback). We poll to detect
+        these changes and send updates to frontend, which then uses client-side
+        sync to increment position smoothly.
         """
         def poll_progress():
             log("[DBus] Progress polling thread started")
-            last_position = None
-            last_sent_position = None
-            update_counter = 0
+            last_progress_string = None
 
             while self.is_available():
                 try:
@@ -695,41 +693,38 @@ class DBusMonitor:
                         if progress:
                             position_ms, duration_ms = progress
 
-                            # Always update store with latest position
-                            self.store.update(position=position_ms, duration=duration_ms)
+                            # Get the raw ProgressString to detect actual changes
+                            try:
+                                progress_str = self.dbus_properties.Get(
+                                    'org.gnome.ShairportSync.RemoteControl',
+                                    'ProgressString'
+                                )
+                                current_progress_string = str(progress_str)
+                            except:
+                                current_progress_string = None
 
-                            # Check if position jumped (seek or initial connection)
-                            position_jumped = False
-                            if last_position is not None:
-                                # Expected position is last_position + 1 second (1000ms)
-                                expected_position = last_position + 1000
-                                # Position jumped if it's more than 2 seconds off from expected
-                                position_jumped = abs(position_ms - expected_position) > 2000
+                            # Only send update if ProgressString actually changed
+                            # This happens on: track change, seek, initial connection
+                            if current_progress_string and current_progress_string != last_progress_string:
+                                # Update store
+                                self.store.update(position=position_ms, duration=duration_ms)
 
-                            # Send update if:
-                            # 1. Every 5 seconds (counter >= 5)
-                            # 2. Position jumped (seek or initial connection)
-                            # 3. First update (last_sent_position is None)
-                            update_counter += 1
-                            should_send = (
-                                update_counter >= 5 or
-                                position_jumped or
-                                last_sent_position is None
-                            )
+                                # Determine reason for change
+                                if last_progress_string is None:
+                                    reason = "initial"
+                                elif position_ms < 5000:  # Position near start suggests new track
+                                    reason = "track_change"
+                                else:
+                                    reason = "seek"
 
-                            if should_send:
-                                # Trigger metadata update to push to Snapcast
-                                reason = "periodic" if update_counter >= 5 else ("jumped" if position_jumped else "initial")
-                                log(f"[DBus] Position update: {position_ms}ms ({reason})")
+                                log(f"[DBus] Position changed: {position_ms}ms ({reason})")
+
+                                # Send update to frontend
                                 if self.on_metadata_update:
                                     self.on_metadata_update()
-                                else:
-                                    log("[DBus] ERROR: No metadata update callback set!")
 
-                                last_sent_position = position_ms
-                                update_counter = 0
-
-                            last_position = position_ms
+                                # Track this ProgressString
+                                last_progress_string = current_progress_string
 
                     # Poll every second
                     time.sleep(1)
