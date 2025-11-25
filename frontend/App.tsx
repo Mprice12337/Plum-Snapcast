@@ -60,6 +60,9 @@ const App: React.FC = () => {
     // Browser audio client for "Listen in Browser" functionality
     const browserAudio = useBrowserAudioClient(window.location.hostname);
 
+    // Track if we've already auto-assigned the browser client to prevent loops
+    const [browserClientAutoAssigned, setBrowserClientAutoAssigned] = useState(false);
+
     // Persist settings to localStorage whenever they change
     useEffect(() => {
         try {
@@ -105,6 +108,32 @@ const App: React.FC = () => {
 
     const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
 
+    // Auto-assign browser audio client to user's current stream when it connects
+    useEffect(() => {
+        if (!browserAudio.state.isActive) {
+            // Reset flag when browser audio is stopped
+            setBrowserClientAutoAssigned(false);
+            return;
+        }
+
+        // Skip if already auto-assigned
+        if (browserClientAutoAssigned) return;
+
+        // Check if browser client is connected to server
+        const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
+        if (!browserClient) return; // Not connected yet
+
+        // Check if needs to be assigned to user's stream
+        if (myClient && browserClient.currentStreamId !== myClient.currentStreamId) {
+            console.log(`Auto-assigning browser client to user's stream: ${myClient.currentStreamId}`);
+            handleStreamChange(browserAudio.state.clientId, myClient.currentStreamId);
+            setBrowserClientAutoAssigned(true);
+        } else if (browserClient.currentStreamId === myClient?.currentStreamId) {
+            // Already on correct stream
+            setBrowserClientAutoAssigned(true);
+        }
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned]);
+
     // Create browser client when active and add to clients list
     const allClients = [...clients];
     if (browserAudio.state.isActive) {
@@ -130,15 +159,6 @@ const App: React.FC = () => {
     const serverHasConnectedBrowserClient = clients.some(c =>
         c.id === browserAudio.state.clientId && c.connected
     );
-
-    // Debug: Log the values to help diagnose Listen button visibility
-    console.log('[DEBUG] Listen Button Logic:', {
-        browserAudioClientId: browserAudio.state.clientId,
-        browserAudioIsActive: browserAudio.state.isActive,
-        serverHasConnectedBrowserClient,
-        clientsCount: clients.length,
-        clients: clients.map(c => ({ id: c.id, name: c.name, connected: c.connected }))
-    });
 
     // Helper function to detect if a client is a browser-based client
     // These should be hidden from the device list since they're controlled via the Listen button
