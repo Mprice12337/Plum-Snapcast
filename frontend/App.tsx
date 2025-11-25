@@ -156,7 +156,7 @@ const App: React.FC = () => {
             console.log(`[Auto-Assign] ✓ Browser client already on target stream: ${streams.find(s => s.id === targetStream)?.name}`);
             setBrowserClientAutoAssigned(true);
         }
-    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, handleStreamChange]);
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams]);
 
     // Update browser client name and volume if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
