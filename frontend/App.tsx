@@ -132,21 +132,32 @@ const App: React.FC = () => {
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned]);
 
-    // Create browser client when active and add to clients list
-    const allClients = [...clients];
+    // Update browser client name if server has reported it
+    // This ensures we show the correct name and state from server
+    const allClients = clients.map(c => {
+        // If this is our browser audio client, ensure proper naming
+        if (browserAudio.state.isActive && c.id === browserAudio.state.clientId) {
+            return {
+                ...c,
+                // Use a friendly name instead of "snapweb"
+                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name
+            };
+        }
+        return c;
+    });
+
+    // Add placeholder if browser audio is active but server hasn't reported it yet
     if (browserAudio.state.isActive) {
-        // Check if server has already reported this client (and connected)
-        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId && c.connected);
+        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId);
 
         if (!serverHasClient) {
-            // Server hasn't seen the client yet (takes a moment after connection)
-            // Add a temporary placeholder that will be replaced by server data
+            // Server hasn't seen the client yet - add temporary placeholder
             const browserClient: Client = {
                 id: browserAudio.state.clientId,
                 name: 'Browser Audio (Connecting...)',
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
-                connected: true
+                connected: false
             };
             allClients.push(browserClient);
         }
