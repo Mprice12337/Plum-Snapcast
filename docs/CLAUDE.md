@@ -6,7 +6,7 @@
 
 **Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with AirPlay, Spotify Connect, DLNA/UPnP, Plexamp, and Bluetooth sources.
 
-**Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control
+**Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), browser audio client, React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control
 
 **Project Context**: Production-ready, solo developer with AI assistance, built on firefrei/docker-snapcast foundation
 
@@ -273,6 +273,7 @@ git pull && docker compose pull && docker compose up -d
 8. **Audio Device Access**: Privileged mode + udev rule + GID 29 audio group
 9. **Multi-room**: Deploy additional snapclient-only containers, Layer 2 network required
 10. **Bluetooth Album Art**: Not available (needs BlueZ 5.81+, Alpine has 5.70)
+11. **Browser Audio**: Snapweb clients are hidden from UI; browser audio managed through useBrowserAudio hook. Auto-assigns to current stream on click, handles reconnection with stale server state. Always visible when active (ignores offline device filter).
 
 ---
 
