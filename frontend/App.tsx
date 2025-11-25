@@ -187,15 +187,17 @@ const App: React.FC = () => {
             c.connected || (c.id === browserAudio.state.clientId && browserAudio.state.isActive)
         );
 
-    // Exclude: 1) myClient, 2) snapweb clients (except our active browser audio)
-    const otherClients = filteredClients.filter(c =>
-        c.id !== myClient?.id && !shouldHideClient(c)
-    );
-
     // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
     const syncedClients = filteredClients.filter(c =>
         c.id !== myClient?.id &&
         c.currentStreamId === myClient?.currentStreamId &&
+        !shouldHideClient(c)
+    );
+
+    // Other clients: all clients EXCEPT myClient and synced clients
+    const otherClients = filteredClients.filter(c =>
+        c.id !== myClient?.id &&
+        c.currentStreamId !== myClient?.currentStreamId &&
         !shouldHideClient(c)
     );
 
