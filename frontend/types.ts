@@ -21,6 +21,7 @@ export interface Client {
     name: string;
     currentStreamId: string | null;
     volume: number; // 0-100
+    connected: boolean;
 }
 
 export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red';
@@ -36,5 +37,8 @@ export interface Settings {
     theme: {
         mode: ThemeMode;
         accent: AccentColor;
+    };
+    display: {
+        showOfflineDevices: boolean;
     };
 }

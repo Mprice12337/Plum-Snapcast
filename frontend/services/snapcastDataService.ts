@@ -175,6 +175,7 @@ const convertSnapcastClientToClient = (snapClient: any, groupStreamId: string | 
     name: snapClient.config?.name || snapClient.host?.name || 'Unknown Device',
     currentStreamId: groupStreamId,
     volume: snapClient.config?.volume?.percent || 0,
+    connected: snapClient.connected !== undefined ? snapClient.connected : true,
 });
 
 export const getSnapcastData = async (): Promise<{

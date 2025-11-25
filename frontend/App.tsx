@@ -35,6 +35,9 @@ const App: React.FC = () => {
         theme: {
             mode: 'dark',
             accent: 'purple',
+        },
+        display: {
+            showOfflineDevices: true,
         }
     });
 
@@ -93,13 +96,19 @@ const App: React.FC = () => {
                 id: browserAudio.state.clientId,
                 name: 'Browser Audio (Connecting...)',
                 currentStreamId: null,
-                volume: browserAudio.state.volume
+                volume: browserAudio.state.volume,
+                connected: true
             };
             allClients.push(browserClient);
         }
     }
 
-    const otherClients = allClients.filter(c =>
+    // Filter clients based on settings
+    const filteredClients = settings.display.showOfflineDevices
+        ? allClients
+        : allClients.filter(c => c.connected);
+
+    const otherClients = filteredClients.filter(c =>
         c.id !== myClient?.id &&
         (browserAudio.state.isActive ? true : c.id !== browserAudio.state.clientId)
     );

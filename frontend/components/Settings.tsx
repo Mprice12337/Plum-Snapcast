@@ -61,6 +61,16 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
         });
     }
 
+    const handleDisplayChange = (key: keyof SettingsType['display'], value: boolean) => {
+        onSettingsChange({
+            ...settings,
+            display: {
+                ...settings.display,
+                [key]: value,
+            }
+        });
+    };
+
     return (
         <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
@@ -91,6 +101,11 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
                                 onChange={(val) => handleIntegrationChange('spotifyConnect', val)}/>
                         <Switch label="Snapcast Stream Enabled" checked={settings.integrations.snapcast}
                                 onChange={(val) => handleIntegrationChange('snapcast', val)}/>
+                    </Section>
+
+                    <Section title="Display">
+                        <Switch label="Show Offline Devices" checked={settings.display.showOfflineDevices}
+                                onChange={(val) => handleDisplayChange('showOfflineDevices', val)}/>
                     </Section>
 
                     <Section title="Appearance">
