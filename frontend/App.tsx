@@ -9,6 +9,7 @@ import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import type {Client, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
+import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 
 const VOLUME_STEP = 5;
 
@@ -24,21 +25,52 @@ const App: React.FC = () => {
     // Track recent user-initiated playback changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
 
-    const [settings, setSettings] = useState<Settings>({
-        integrations: {
-            airplay: true,
-            spotifyConnect: false,
-            snapcast: true,
-            visualizer: false,
-        },
-        theme: {
-            mode: 'dark',
-            accent: 'purple',
+    // Load settings from localStorage or use defaults
+    const [settings, setSettings] = useState<Settings>(() => {
+        try {
+            const saved = localStorage.getItem('snapcast-settings');
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (error) {
+            console.error('Failed to load settings from localStorage:', error);
         }
+
+        // Default settings
+        return {
+            integrations: {
+                airplay: true,
+                spotifyConnect: false,
+                snapcast: true,
+                visualizer: false,
+            },
+            theme: {
+                mode: 'dark',
+                accent: 'purple',
+            },
+            display: {
+                showOfflineDevices: true,
+            }
+        };
     });
 
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
+
+    // Browser audio client for "Listen in Browser" functionality
+    const browserAudio = useBrowserAudioClient(window.location.hostname);
+
+    // Track if we've already auto-assigned the browser client to prevent loops
+    const [browserClientAutoAssigned, setBrowserClientAutoAssigned] = useState(false);
+
+    // Persist settings to localStorage whenever they change
+    useEffect(() => {
+        try {
+            localStorage.setItem('snapcast-settings', JSON.stringify(settings));
+        } catch (error) {
+            console.error('Failed to save settings to localStorage:', error);
+        }
+    }, [settings]);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -67,11 +99,107 @@ const App: React.FC = () => {
 
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
-    const myClient = clients.find(c => /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)) || clients[0];
+    // Exclude browser audio client from being selected as primary
+    const myClient = clients.find(c =>
+        c.id !== browserAudio.state.clientId &&
+        /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
+    ) || clients.find(c => c.id !== browserAudio.state.clientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
-    const syncedClients = clients.filter(c => c.id !== myClient?.id && c.currentStreamId === myClient?.currentStreamId);
-    const otherClients = clients.filter(c => c.currentStreamId !== myClient?.currentStreamId);
+    // Auto-assign browser audio client to user's current stream when it connects
+    useEffect(() => {
+        if (!browserAudio.state.isActive) {
+            // Reset flag when browser audio is stopped
+            setBrowserClientAutoAssigned(false);
+            return;
+        }
+
+        // Skip if already auto-assigned
+        if (browserClientAutoAssigned) return;
+
+        // Check if browser client is connected to server
+        const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
+        if (!browserClient) return; // Not connected yet
+
+        // Check if needs to be assigned to user's stream
+        if (myClient && browserClient.currentStreamId !== myClient.currentStreamId) {
+            console.log(`Auto-assigning browser client to user's stream: ${myClient.currentStreamId}`);
+            handleStreamChange(browserAudio.state.clientId, myClient.currentStreamId);
+            setBrowserClientAutoAssigned(true);
+        } else if (browserClient.currentStreamId === myClient?.currentStreamId) {
+            // Already on correct stream
+            setBrowserClientAutoAssigned(true);
+        }
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned]);
+
+    // Update browser client name if server has reported it
+    // This ensures we show the correct name and state from server
+    const allClients = clients.map(c => {
+        // If this is our browser audio client, ensure proper naming
+        if (browserAudio.state.isActive && c.id === browserAudio.state.clientId) {
+            return {
+                ...c,
+                // Use a friendly name instead of "snapweb"
+                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name
+            };
+        }
+        return c;
+    });
+
+    // Add placeholder if browser audio is active but server hasn't reported it yet
+    if (browserAudio.state.isActive) {
+        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId);
+
+        if (!serverHasClient) {
+            // Server hasn't seen the client yet - add temporary placeholder
+            const browserClient: Client = {
+                id: browserAudio.state.clientId,
+                name: 'Browser Audio (Connecting...)',
+                currentStreamId: null,
+                volume: browserAudio.state.volume,
+                connected: false
+            };
+            allClients.push(browserClient);
+        }
+    }
+
+    // Helper function to detect if a client should be hidden
+    // Hide snapweb clients that aren't our active browser audio client
+    const shouldHideClient = (client: Client): boolean => {
+        // If this is our active browser audio client, NEVER hide it (check ID first!)
+        if (client.id === browserAudio.state.clientId && browserAudio.state.isActive) {
+            return false;
+        }
+
+        // Hide other snapweb/browser clients (auto-created by server)
+        const browserIndicators = ['snapweb', 'browser'];
+        const clientName = client.name.toLowerCase();
+        const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
+
+        return isSnapwebClient;
+    };
+
+    // Filter clients based on settings
+    // Always show browser audio client when active, regardless of offline device setting
+    const filteredClients = settings.display.showOfflineDevices
+        ? allClients
+        : allClients.filter(c =>
+            c.connected || (c.id === browserAudio.state.clientId && browserAudio.state.isActive)
+        );
+
+    // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
+    const syncedClients = filteredClients.filter(c =>
+        c.id !== myClient?.id &&
+        c.currentStreamId === myClient?.currentStreamId &&
+        !shouldHideClient(c)
+    );
+
+    // Other clients: all clients EXCEPT myClient and synced clients
+    const otherClients = filteredClients.filter(c =>
+        c.id !== myClient?.id &&
+        c.currentStreamId !== myClient?.currentStreamId &&
+        !shouldHideClient(c)
+    );
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
         setStreams(prevStreams =>
@@ -519,6 +647,12 @@ const App: React.FC = () => {
     }, []); // Empty dependency array - only run once
 
     const handleVolumeChange = async (clientId: string, volume: number) => {
+        // Handle browser audio client volume changes locally
+        if (clientId === browserAudio.state.clientId) {
+            browserAudio.setVolume(volume);
+            return;
+        }
+
         // Update local state immediately for responsiveness
         setClients(prevClients =>
             prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
@@ -615,6 +749,12 @@ const App: React.FC = () => {
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
         console.log('[StreamChange] Request:', {clientId, streamId, clientGroupMap, allClients: clients.map(c => c.id)});
+
+        // Handle browser audio client - stop it when stream set to null
+        if (clientId === browserAudio.state.clientId && streamId === null) {
+            browserAudio.stop();
+            return;
+        }
 
         // Update local state immediately for responsiveness
         setClients(prevClients =>
@@ -838,6 +978,8 @@ const App: React.FC = () => {
                             onStreamChange={handleStreamChange}
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
+                            onStartBrowserAudio={browserAudio.start}
+                            browserAudioActive={browserAudio.state.isActive}
                         />
                     </div>
                 </div>

@@ -10,6 +10,8 @@ interface ClientManagerProps {
     onStreamChange: (clientId: string, streamId: string | null) => void;
     onGroupVolumeAdjust: (streamId: string, direction: 'up' | 'down') => void;
     onGroupMute: (streamId: string) => void;
+    onStartBrowserAudio?: () => void;
+    browserAudioActive?: boolean;
 }
 
 const ClientDevice: React.FC<{
@@ -103,6 +105,8 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                                                 onStreamChange,
                                                                 onGroupVolumeAdjust,
                                                                 onGroupMute,
+                                                                onStartBrowserAudio,
+                                                                browserAudioActive,
                                                             }) => {
     const groupedClients = clients.reduce((acc, client) => {
         const streamId = client.currentStreamId ?? 'idle';
@@ -116,11 +120,25 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
     const {idle: idleClients, ...streamedClients} = groupedClients;
     const streamGroups = Object.entries(streamedClients);
 
+    // Show listen button if available, even when no other clients
     if (clients.length === 0) {
         return (
-            <div className="text-center py-4">
-                <i className="fas fa-desktop text-4xl text-[var(--icon-muted)] mb-3"></i>
-                <p className="text-[var(--text-muted)]">No other active devices.</p>
+            <div className="space-y-6">
+                <div className="text-center py-4">
+                    <i className="fas fa-desktop text-4xl text-[var(--icon-muted)] mb-3"></i>
+                    <p className="text-[var(--text-muted)]">No other active devices.</p>
+                </div>
+                {onStartBrowserAudio && !browserAudioActive && (
+                    <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
+                        <button
+                            onClick={onStartBrowserAudio}
+                            className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                        >
+                            <i className="fas fa-headphones"></i>
+                            Listen in Browser
+                        </button>
+                    </div>
+                )}
             </div>
         );
     }
@@ -180,6 +198,18 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                             </div>
                         ))}
                     </div>
+                </div>
+            )}
+
+            {onStartBrowserAudio && !browserAudioActive && (
+                <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
+                    <button
+                        onClick={onStartBrowserAudio}
+                        className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                    >
+                        <i className="fas fa-headphones"></i>
+                        Listen in Browser
+                    </button>
                 </div>
             )}
         </div>
