@@ -213,6 +213,12 @@ COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
     chown -R snapcast:snapcast /app
 
+# Replace snapweb index.html with redirect to port 3000
+# This preserves API/WebSocket functionality on /jsonrpc while redirecting browsers to our React GUI
+COPY config/redirect-index.html /usr/share/snapserver/snapweb/index.html
+RUN chown snapcast:snapcast /usr/share/snapserver/snapweb/index.html && \
+    chmod 644 /usr/share/snapserver/snapweb/index.html
+
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
