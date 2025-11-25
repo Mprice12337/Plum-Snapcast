@@ -62,6 +62,8 @@ const App: React.FC = () => {
 
     // Track if we've already auto-assigned the browser client to prevent loops
     const [browserClientAutoAssigned, setBrowserClientAutoAssigned] = useState(false);
+    // Capture the target stream when "Listen in Browser" is clicked
+    const [targetStreamForBrowserAudio, setTargetStreamForBrowserAudio] = useState<string | null>(null);
 
     // Persist settings to localStorage whenever they change
     useEffect(() => {
@@ -109,8 +111,9 @@ const App: React.FC = () => {
     // Auto-assign browser audio client to user's current stream when it connects
     useEffect(() => {
         if (!browserAudio.state.isActive) {
-            // Reset flag when browser audio is stopped
+            // Reset flags when browser audio is stopped
             setBrowserClientAutoAssigned(false);
+            setTargetStreamForBrowserAudio(null);
             return;
         }
 
@@ -121,16 +124,20 @@ const App: React.FC = () => {
         const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
         if (!browserClient) return; // Not connected yet
 
-        // Check if needs to be assigned to user's stream
-        if (myClient && browserClient.currentStreamId !== myClient.currentStreamId) {
-            console.log(`Auto-assigning browser client to user's stream: ${myClient.currentStreamId}`);
-            handleStreamChange(browserAudio.state.clientId, myClient.currentStreamId);
+        // Use the captured target stream (from when button was clicked)
+        // Fall back to myClient's current stream if target wasn't captured
+        const targetStream = targetStreamForBrowserAudio || myClient?.currentStreamId;
+
+        // Check if needs to be assigned to target stream
+        if (targetStream && browserClient.currentStreamId !== targetStream) {
+            console.log(`Auto-assigning browser client to target stream: ${targetStream}`);
+            handleStreamChange(browserAudio.state.clientId, targetStream);
             setBrowserClientAutoAssigned(true);
-        } else if (browserClient.currentStreamId === myClient?.currentStreamId) {
+        } else if (browserClient.currentStreamId === targetStream) {
             // Already on correct stream
             setBrowserClientAutoAssigned(true);
         }
-    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned]);
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio]);
 
     // Update browser client name and volume if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
@@ -980,7 +987,10 @@ const App: React.FC = () => {
                             onStreamChange={handleStreamChange}
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
-                            onStartBrowserAudio={browserAudio.start}
+                            onStartBrowserAudio={() => {
+                                setTargetStreamForBrowserAudio(myClient?.currentStreamId || null);
+                                browserAudio.start();
+                            }}
                             browserAudioActive={browserAudio.state.isActive}
                         />
                     </div>
