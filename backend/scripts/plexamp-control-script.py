@@ -505,7 +505,8 @@ class PlexampMetadataMonitor:
                 return None
 
         except Exception as e:
-            # Don't log every failed poll (keeps logs clean)
+            # Log errors to help debug timeline issues
+            log(f"[Timeline] Error querying timeline API: {e}")
             return None
 
     def seek(self, position_ms: int):
