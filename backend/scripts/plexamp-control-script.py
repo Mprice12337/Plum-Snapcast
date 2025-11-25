@@ -324,16 +324,18 @@ class PlexampMetadataMonitor:
     def _poll_loop(self):
         """Background thread that polls PlayQueue.json file and timeline API
 
-        Continuously polls position and sends updates to frontend:
-        - Every 5 seconds during normal playback
-        - Immediately when position jumps (seek/scrub detected)
-        - On track change
+        Note: We send position updates when the timeline position changes significantly,
+        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
+        to increment position smoothly between server updates.
+
+        Position changes occur when:
+        - Track starts (position resets to 0 or start offset)
+        - User seeks/scrubs from Plexamp app or Plex client
+        - Previous/next button pressed
         """
         log("[Plexamp] Starting PlayQueue monitoring...")
 
-        last_position = None
-        last_sent_position = None
-        update_counter = 0
+        last_position_value = None
 
         while self.running:
             try:
@@ -360,42 +362,36 @@ class PlexampMetadataMonitor:
                     # Always update store with latest position
                     self.store.update(**timeline)
 
-                    # Check if position jumped (seek or mid-track start)
-                    position_jumped = False
-                    if position_ms and last_position is not None:
-                        # Expected position is last_position + 1 second (1000ms) for 1Hz polling
-                        # But we poll every 2s, so expect +2000ms
-                        expected_position = last_position + (POLL_INTERVAL * 1000)
-                        # Position jumped if it's more than 3 seconds off from expected
-                        position_jumped = abs(position_ms - expected_position) > 3000
+                    # Only send update if position changed significantly from last poll
+                    # This detects seeks, track changes, previous/next button, and initial connection
+                    send_update = False
+                    if last_position_value is None:
+                        # Initial connection
+                        log(f"[Timeline] Position changed: {position_ms}ms (initial)")
+                        send_update = True
+                        last_position_value = position_ms
+                    elif metadata_updated:
+                        # New track detected via PlayQueue
+                        log(f"[Timeline] Position changed: {position_ms}ms (track_change)")
+                        send_update = True
+                        last_position_value = position_ms
+                    elif position_ms and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
+                        # Position changed significantly (seek, previous/next, or mid-track start)
+                        # Allow tolerance of POLL_INTERVAL + 1s for polling delay and playback time
+                        if position_ms < 5000:
+                            reason = "track_change"
+                        else:
+                            reason = "seek"
+                        log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                        send_update = True
+                        last_position_value = position_ms
+                    else:
+                        # Position progressing normally, just track it
+                        last_position_value = position_ms
 
-                    # Send update if:
-                    # 1. Every 5 polls (~10 seconds at 2s intervals)
-                    # 2. Position jumped (seek or mid-track start)
-                    # 3. First update (last_sent_position is None)
-                    # 4. Metadata changed (new track)
-                    update_counter += 1
-                    should_send = (
-                        update_counter >= 5 or
-                        position_jumped or
-                        last_sent_position is None or
-                        metadata_updated
-                    )
-
-                    if should_send and playback_status != 'Stopped':
-                        reason = "periodic" if update_counter >= 5 else (
-                            "jumped" if position_jumped else (
-                                "metadata" if metadata_updated else "initial"
-                            )
-                        )
-                        log(f"[Timeline] Position update: {position_ms}ms ({reason})")
+                    if send_update and playback_status != 'Stopped':
                         if self.on_update:
                             self.on_update()
-
-                        last_sent_position = position_ms
-                        update_counter = 0
-
-                    last_position = position_ms
                 elif metadata_updated:
                     # Send update for metadata even without timeline
                     if self.on_update:

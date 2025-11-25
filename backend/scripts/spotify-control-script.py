@@ -339,15 +339,17 @@ class SpotifyMetadataMonitor:
     def _poll_position(self):
         """Background thread that polls position updates from D-Bus
 
-        Continuously polls position and sends updates to frontend:
-        - Every 5 seconds during normal playback
-        - Immediately when position jumps (seek/scrub detected)
-        - On initial connection
+        Note: We send position updates when the D-Bus Position property changes,
+        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
+        to increment position smoothly between server updates.
+
+        Position changes occur when:
+        - Track starts (position resets to 0 or start offset)
+        - User seeks/scrubs from Spotify app
+        - Track ends and next track begins
         """
         log("[DBus] Position polling thread started")
-        last_position = None
-        last_sent_position = None
-        update_counter = 0
+        last_position_value = None
 
         while True:
             try:
@@ -363,36 +365,28 @@ class SpotifyMetadataMonitor:
                         # Always update store with latest position
                         self.store.update(position=position_ms)
 
-                        # Check if position jumped (seek or initial connection)
-                        position_jumped = False
-                        if last_position is not None:
-                            # Expected position is last_position + 1 second (1000ms)
-                            expected_position = last_position + 1000
-                            # Position jumped if it's more than 2 seconds off from expected
-                            position_jumped = abs(position_ms - expected_position) > 2000
-
-                        # Send update if:
-                        # 1. Every 5 seconds (counter >= 5)
-                        # 2. Position jumped (seek or initial connection)
-                        # 3. First update (last_sent_position is None)
-                        update_counter += 1
-                        should_send = (
-                            update_counter >= 5 or
-                            position_jumped or
-                            last_sent_position is None
-                        )
-
-                        if should_send:
-                            # Trigger metadata update to push to Snapcast
-                            reason = "periodic" if update_counter >= 5 else ("jumped" if position_jumped else "initial")
-                            log(f"[DBus] Position update: {position_ms}ms ({reason})")
+                        # Only send update if position actually changed from last poll
+                        # This detects seeks, track changes, and initial connection
+                        if last_position_value is None:
+                            # Initial connection
+                            log(f"[DBus] Position changed: {position_ms}ms (initial)")
                             if self.on_update:
                                 self.on_update()
-
-                            last_sent_position = position_ms
-                            update_counter = 0
-
-                        last_position = position_ms
+                            last_position_value = position_ms
+                        elif abs(position_ms - last_position_value) > 1500:
+                            # Position changed significantly (seek, track change, or mid-track start)
+                            # Allow 1.5s tolerance for polling delay
+                            if position_ms < 5000:
+                                reason = "track_change"
+                            else:
+                                reason = "seek"
+                            log(f"[DBus] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                            if self.on_update:
+                                self.on_update()
+                            last_position_value = position_ms
+                        else:
+                            # Position progressing normally, just track it
+                            last_position_value = position_ms
 
                     except Exception:
                         # Player might not be ready yet
