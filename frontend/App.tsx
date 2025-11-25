@@ -147,14 +147,15 @@ const App: React.FC = () => {
             return;
         }
 
-        // Check if needs to be assigned to target stream
-        if (targetStream && browserClient.currentStreamId !== targetStream) {
-            console.log(`[Auto-Assign] ⚡ Assigning browser client from ${streams.find(s => s.id === browserClient.currentStreamId)?.name} to ${streams.find(s => s.id === targetStream)?.name}`);
-            handleStreamChange(browserAudio.state.clientId, targetStream);
-            setBrowserClientAutoAssigned(true);
-        } else if (browserClient.currentStreamId === targetStream) {
-            // Already on correct stream
-            console.log(`[Auto-Assign] ✓ Browser client already on target stream: ${streams.find(s => s.id === targetStream)?.name}`);
+        // Always assign to target stream if we have one
+        // This handles both new connections and reconnections with stale stream assignments
+        if (targetStream) {
+            if (browserClient.currentStreamId !== targetStream) {
+                console.log(`[Auto-Assign] ⚡ Assigning browser client from ${streams.find(s => s.id === browserClient.currentStreamId)?.name} to ${streams.find(s => s.id === targetStream)?.name}`);
+                handleStreamChange(browserAudio.state.clientId, targetStream);
+            } else {
+                console.log(`[Auto-Assign] ✓ Browser client already on target stream: ${streams.find(s => s.id === targetStream)?.name}`);
+            }
             setBrowserClientAutoAssigned(true);
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams]);
