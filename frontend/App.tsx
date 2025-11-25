@@ -122,19 +122,33 @@ const App: React.FC = () => {
 
         // Check if browser client is connected to server
         const browserClient = clients.find(c => c.id === browserAudio.state.clientId && c.connected);
-        if (!browserClient) return; // Not connected yet
+        if (!browserClient) {
+            console.log(`[Auto-Assign] Browser client not connected yet (clientId: ${browserAudio.state.clientId})`);
+            return; // Not connected yet
+        }
 
         // Use the captured target stream (from when button was clicked)
         // Fall back to myClient's current stream if target wasn't captured
         const targetStream = targetStreamForBrowserAudio || myClient?.currentStreamId;
 
+        console.log(`[Auto-Assign] Browser client connected:`, {
+            browserClientId: browserClient.id,
+            browserClientCurrentStream: browserClient.currentStreamId,
+            targetStreamFromButton: targetStreamForBrowserAudio,
+            myClientCurrentStream: myClient?.currentStreamId,
+            finalTargetStream: targetStream,
+            targetStreamName: streams.find(s => s.id === targetStream)?.name,
+            needsAssignment: targetStream && browserClient.currentStreamId !== targetStream
+        });
+
         // Check if needs to be assigned to target stream
         if (targetStream && browserClient.currentStreamId !== targetStream) {
-            console.log(`Auto-assigning browser client to target stream: ${targetStream}`);
+            console.log(`[Auto-Assign] Assigning browser client to target stream: ${targetStream} (${streams.find(s => s.id === targetStream)?.name})`);
             handleStreamChange(browserAudio.state.clientId, targetStream);
             setBrowserClientAutoAssigned(true);
         } else if (browserClient.currentStreamId === targetStream) {
             // Already on correct stream
+            console.log(`[Auto-Assign] Browser client already on target stream: ${targetStream}`);
             setBrowserClientAutoAssigned(true);
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio]);
@@ -988,7 +1002,14 @@ const App: React.FC = () => {
                             onGroupVolumeAdjust={handleGroupVolumeAdjust}
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={() => {
-                                setTargetStreamForBrowserAudio(myClient?.currentStreamId || null);
+                                const targetStream = myClient?.currentStreamId || null;
+                                console.log(`[Listen Button] Capturing target stream for browser audio:`, {
+                                    myClientId: myClient?.id,
+                                    myClientName: myClient?.name,
+                                    targetStreamId: targetStream,
+                                    targetStreamName: streams.find(s => s.id === targetStream)?.name
+                                });
+                                setTargetStreamForBrowserAudio(targetStream);
                                 browserAudio.start();
                             }}
                             browserAudioActive={browserAudio.state.isActive}
