@@ -172,7 +172,7 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
 
 const convertSnapcastClientToClient = (snapClient: any, groupStreamId: string | null): Client => ({
     id: snapClient.id,
-    name: snapClient.config?.name || snapClient.host?.name || 'Unknown Device',
+    name: (snapClient.config?.name && snapClient.config.name.trim()) || snapClient.host?.name || 'Unknown Device',
     currentStreamId: groupStreamId,
     volume: snapClient.config?.volume?.percent || 0,
     connected: snapClient.connected !== undefined ? snapClient.connected : true,
