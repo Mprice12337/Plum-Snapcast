@@ -15,6 +15,7 @@ export const useAudioSync = (
 ) => {
     const intervalRef = useRef<number | null>(null);
     const lastProgressRef = useRef<number>(0);
+    const lastServerProgressRef = useRef<number>(0);
 
     useEffect(() => {
         // Clear any existing interval
@@ -24,8 +25,18 @@ export const useAudioSync = (
         }
 
         if (stream?.isPlaying) {
-            // Update last known progress
-            lastProgressRef.current = stream.progress;
+            const serverProgress = stream.progress;
+
+            // Compare server position to our PREDICTED position (not last server position)
+            // This avoids false positives when backend sends periodic updates
+            const predictedProgress = lastProgressRef.current;
+            const positionJump = Math.abs(serverProgress - predictedProgress) > 2;
+
+            if (positionJump || lastServerProgressRef.current === 0) {
+                console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (jump: ${positionJump})`);
+                lastProgressRef.current = serverProgress;
+                lastServerProgressRef.current = serverProgress;
+            }
 
             // Start interval to increment progress every second
             intervalRef.current = window.setInterval(() => {
@@ -34,6 +45,8 @@ export const useAudioSync = (
                 lastProgressRef.current = newProgress;
                 updateProgress(stream.id, newProgress);
             }, 1000);
+        } else {
+            lastServerProgressRef.current = 0;
         }
 
         return () => {
