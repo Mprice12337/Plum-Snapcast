@@ -109,14 +109,23 @@ const App: React.FC = () => {
         c.id === browserAudio.state.clientId && c.connected
     );
 
+    // Helper function to detect if a client is a browser-based client
+    // These should be hidden from the device list since they're controlled via the Listen button
+    const isBrowserClient = (client: Client): boolean => {
+        const browserIndicators = ['snapweb', 'browser'];
+        const clientName = client.name.toLowerCase();
+        return browserIndicators.some(indicator => clientName.includes(indicator)) ||
+               client.id === browserAudio.state.clientId;
+    };
+
     // Filter clients based on settings
     const filteredClients = settings.display.showOfflineDevices
         ? allClients
         : allClients.filter(c => c.connected);
 
+    // Exclude: 1) myClient, 2) ALL browser-based clients (Snapweb, browser audio, etc.)
     const otherClients = filteredClients.filter(c =>
-        c.id !== myClient?.id &&
-        (serverHasConnectedBrowserClient ? c.id !== browserAudio.state.clientId : true)
+        c.id !== myClient?.id && !isBrowserClient(c)
     );
 
     const updateStreamProgress = useCallback((streamId: string, newProgress: number) => {
