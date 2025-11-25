@@ -322,12 +322,22 @@ class PlexampMetadataMonitor:
             return None
 
     def _poll_loop(self):
-        """Background thread that polls PlayQueue.json file and timeline API"""
+        """Background thread that polls PlayQueue.json file and timeline API
+
+        Continuously polls position and sends updates to frontend:
+        - Every 5 seconds during normal playback
+        - Immediately when position jumps (seek/scrub detected)
+        - On track change
+        """
         log("[Plexamp] Starting PlayQueue monitoring...")
+
+        last_position = None
+        last_sent_position = None
+        update_counter = 0
 
         while self.running:
             try:
-                updated = False
+                metadata_updated = False
 
                 # Read PlayQueue.json for metadata
                 playqueue_data = self._read_playqueue()
@@ -339,17 +349,57 @@ class PlexampMetadataMonitor:
                     if metadata:
                         # Update store with new data
                         self.store.update(**metadata)
-                        updated = True
+                        metadata_updated = True
 
                 # Query timeline API for position and playback state
                 timeline = self.get_timeline()
                 if timeline:
-                    self.store.update(**timeline)
-                    updated = True
+                    position_ms = timeline.get('position')
+                    playback_status = timeline.get('playback_status', 'Stopped')
 
-                # Notify parent if anything changed
-                if updated and self.on_update:
-                    self.on_update()
+                    # Always update store with latest position
+                    self.store.update(**timeline)
+
+                    # Check if position jumped (seek or mid-track start)
+                    position_jumped = False
+                    if position_ms and last_position is not None:
+                        # Expected position is last_position + 1 second (1000ms) for 1Hz polling
+                        # But we poll every 2s, so expect +2000ms
+                        expected_position = last_position + (POLL_INTERVAL * 1000)
+                        # Position jumped if it's more than 3 seconds off from expected
+                        position_jumped = abs(position_ms - expected_position) > 3000
+
+                    # Send update if:
+                    # 1. Every 5 polls (~10 seconds at 2s intervals)
+                    # 2. Position jumped (seek or mid-track start)
+                    # 3. First update (last_sent_position is None)
+                    # 4. Metadata changed (new track)
+                    update_counter += 1
+                    should_send = (
+                        update_counter >= 5 or
+                        position_jumped or
+                        last_sent_position is None or
+                        metadata_updated
+                    )
+
+                    if should_send and playback_status != 'Stopped':
+                        reason = "periodic" if update_counter >= 5 else (
+                            "jumped" if position_jumped else (
+                                "metadata" if metadata_updated else "initial"
+                            )
+                        )
+                        log(f"[Timeline] Position update: {position_ms}ms ({reason})")
+                        if self.on_update:
+                            self.on_update()
+
+                        last_sent_position = position_ms
+                        update_counter = 0
+
+                    last_position = position_ms
+                elif metadata_updated:
+                    # Send update for metadata even without timeline
+                    if self.on_update:
+                        self.on_update()
 
                 # Sleep before next poll
                 time.sleep(POLL_INTERVAL)
@@ -402,6 +452,14 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipNext')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Next command sent (status={response.status})")
+
+                # Immediately poll timeline to update position/state after command
+                time.sleep(0.1)  # Brief delay for Plexamp to process command
+                timeline = self.get_timeline()
+                if timeline:
+                    self.store.update(**timeline)
+                    log("[Control] Updated position after next track command")
+
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Next command failed: {e}")
@@ -413,6 +471,14 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipPrevious')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Previous command sent (status={response.status})")
+
+                # Immediately poll timeline to update position/state after command
+                time.sleep(0.1)  # Brief delay for Plexamp to process command
+                timeline = self.get_timeline()
+                if timeline:
+                    self.store.update(**timeline)
+                    log("[Control] Updated position after previous track command")
+
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Previous command failed: {e}")

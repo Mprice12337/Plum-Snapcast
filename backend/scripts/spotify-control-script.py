@@ -336,6 +336,77 @@ class SpotifyMetadataMonitor:
         except Exception as e:
             log(f"[Error] Player scan failed: {e}")
 
+    def _poll_position(self):
+        """Background thread that polls position updates from D-Bus
+
+        Continuously polls position and sends updates to frontend:
+        - Every 5 seconds during normal playback
+        - Immediately when position jumps (seek/scrub detected)
+        - On initial connection
+        """
+        log("[DBus] Position polling thread started")
+        last_position = None
+        last_sent_position = None
+        update_counter = 0
+
+        while True:
+            try:
+                # Only poll when we have a player and it's playing
+                playback_status = self.store.get_all().get("playback_status", "Stopped")
+
+                if self.player_properties and playback_status == "Playing":
+                    try:
+                        # Get current position from MPRIS
+                        position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                        position_ms = int(position_us) // 1000
+
+                        # Always update store with latest position
+                        self.store.update(position=position_ms)
+
+                        # Check if position jumped (seek or initial connection)
+                        position_jumped = False
+                        if last_position is not None:
+                            # Expected position is last_position + 1 second (1000ms)
+                            expected_position = last_position + 1000
+                            # Position jumped if it's more than 2 seconds off from expected
+                            position_jumped = abs(position_ms - expected_position) > 2000
+
+                        # Send update if:
+                        # 1. Every 5 seconds (counter >= 5)
+                        # 2. Position jumped (seek or initial connection)
+                        # 3. First update (last_sent_position is None)
+                        update_counter += 1
+                        should_send = (
+                            update_counter >= 5 or
+                            position_jumped or
+                            last_sent_position is None
+                        )
+
+                        if should_send:
+                            # Trigger metadata update to push to Snapcast
+                            reason = "periodic" if update_counter >= 5 else ("jumped" if position_jumped else "initial")
+                            log(f"[DBus] Position update: {position_ms}ms ({reason})")
+                            if self.on_update:
+                                self.on_update()
+
+                            last_sent_position = position_ms
+                            update_counter = 0
+
+                        last_position = position_ms
+
+                    except Exception:
+                        # Player might not be ready yet
+                        pass
+
+                # Poll every second
+                time.sleep(1)
+
+            except Exception as e:
+                log(f"[DBus] Position polling error: {e}")
+                time.sleep(1)
+
+        log("[DBus] Position polling thread stopped")
+
     def start(self):
         """Start monitoring D-Bus for Spotify metadata"""
         if not DBUS_AVAILABLE:
@@ -356,6 +427,11 @@ class SpotifyMetadataMonitor:
 
             # Try to find existing player
             self._scan_for_players()
+
+            # Start background position polling
+            poll_thread = threading.Thread(target=self._poll_position, daemon=True)
+            poll_thread.start()
+            log("[Spotify] Started position polling thread")
 
         except Exception as e:
             log(f"[Error] Failed to start monitoring: {e}")
@@ -386,6 +462,17 @@ class SpotifyMetadataMonitor:
             try:
                 self.player_interface.Next()
                 log("[Control] Sent Next command")
+
+                # Immediately poll position to update after track change
+                time.sleep(0.1)  # Brief delay for Spotify to process command
+                try:
+                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                    position_ms = int(position_us) // 1000
+                    self.store.update(position=position_ms)
+                    log(f"[Control] Updated position after next track: {position_ms}ms")
+                except Exception:
+                    pass
+
             except Exception as e:
                 log(f"[Error] Next failed: {e}")
 
@@ -395,6 +482,17 @@ class SpotifyMetadataMonitor:
             try:
                 self.player_interface.Previous()
                 log("[Control] Sent Previous command")
+
+                # Immediately poll position to update after track change
+                time.sleep(0.1)  # Brief delay for Spotify to process command
+                try:
+                    position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                    position_ms = int(position_us) // 1000
+                    self.store.update(position=position_ms)
+                    log(f"[Control] Updated position after previous track: {position_ms}ms")
+                except Exception:
+                    pass
+
             except Exception as e:
                 log(f"[Error] Previous failed: {e}")
 
