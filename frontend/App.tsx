@@ -131,6 +131,15 @@ const App: React.FC = () => {
         c.id === browserAudio.state.clientId && c.connected
     );
 
+    // Debug: Log the values to help diagnose Listen button visibility
+    console.log('[DEBUG] Listen Button Logic:', {
+        browserAudioClientId: browserAudio.state.clientId,
+        browserAudioIsActive: browserAudio.state.isActive,
+        serverHasConnectedBrowserClient,
+        clientsCount: clients.length,
+        clients: clients.map(c => ({ id: c.id, name: c.name, connected: c.connected }))
+    });
+
     // Helper function to detect if a client is a browser-based client
     // These should be hidden from the device list since they're controlled via the Listen button
     const isBrowserClient = (client: Client): boolean => {
