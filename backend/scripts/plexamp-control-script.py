@@ -403,9 +403,10 @@ class PlexampMetadataMonitor:
                         if self.on_update:
                             self.on_update()
                 elif metadata_updated:
-                    # Send update for metadata even without timeline
+                    # Send update for metadata but WITHOUT position
+                    # Position should only be sent on seeks/track changes
                     if self.on_update:
-                        self.on_update()
+                        self.on_update(include_position=False)
 
                 # Sleep before next poll
                 time.sleep(POLL_INTERVAL)
@@ -566,7 +567,7 @@ class SnapcastControlScript:
         print(json.dumps(notification), file=sys.stdout, flush=True)
         log(f"[Snapcast] → {method}")
 
-    def send_update(self):
+    def send_update(self, include_position=True):
         """Send Plugin.Stream.Player.Properties with current state and metadata"""
         meta_obj = self.store.get_metadata_for_snapcast() or {}
         state_data = self.store.get_all()
@@ -585,7 +586,6 @@ class SnapcastControlScript:
             "volume": 100,
             "mute": False,
             "rate": 1.0,
-            "position": position,
 
             # Control capabilities (via Plexamp HTTP API)
             "canGoNext": can_control,
@@ -598,6 +598,11 @@ class SnapcastControlScript:
             # Metadata (simple field names)
             "metadata": meta_obj
         }
+
+        # Only include position when explicitly requested (on seeks/track changes)
+        if include_position:
+            params["position"] = position
+
         self.send_notification("Plugin.Stream.Player.Properties", params)
 
         # Log what we sent
