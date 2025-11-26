@@ -375,19 +375,29 @@ class PlexampMetadataMonitor:
                         log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms (track_change)")
                         send_update = True
                         last_position_value = position_ms
-                    elif position_ms is not None and last_position_value is not None and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
-                        # Position changed significantly (seek, previous/next, or mid-track start)
-                        # Allow tolerance of POLL_INTERVAL + 1s for polling delay and playback time
-                        if position_ms < 5000:
-                            reason = "track_change"
+                    elif position_ms is not None and last_position_value is not None:
+                        # Check for actual seeks (position went backwards, or jumped forward significantly)
+                        position_delta = position_ms - last_position_value
+                        expected_delta = POLL_INTERVAL * 1000  # Expected progress during poll interval
+
+                        # Only send update for:
+                        # 1. Backward seeks (position went backwards)
+                        # 2. Large forward jumps (>10s forward seek)
+                        # Ignore normal playback progression and timeline API lag
+                        is_backward_seek = position_delta < -1000  # Position went back by >1s
+                        is_forward_seek = position_delta > 10000  # Position jumped forward >10s
+
+                        if is_backward_seek or is_forward_seek:
+                            if position_ms < 5000:
+                                reason = "track_change"
+                            else:
+                                reason = "seek"
+                            log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms (delta: {position_delta}ms, {reason})")
+                            send_update = True
+                            last_position_value = position_ms
                         else:
-                            reason = "seek"
-                        log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
-                        send_update = True
-                        last_position_value = position_ms
-                    else:
-                        # Position progressing normally, just track it
-                        last_position_value = position_ms
+                            # Position progressing normally, just track it (no update sent)
+                            last_position_value = position_ms
 
                     if send_update and playback_status != 'Stopped':
                         if self.on_update:
