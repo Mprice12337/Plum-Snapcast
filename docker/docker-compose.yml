@@ -56,6 +56,7 @@ services:
       - snapcast-certs:/app/certs
       - snapcast-fifos:/tmp/snapcast-fifos
       - plexamp-data:/tmp/plexamp-state:ro
+      - coverart-cache:/usr/share/snapserver/snapweb/coverart
     restart: unless-stopped
     healthcheck:
       # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
@@ -123,4 +124,6 @@ volumes:
   snapcast-fifos:
     driver: local
   plexamp-data:
+    driver: local
+  coverart-cache:
     driver: local
