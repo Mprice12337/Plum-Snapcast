@@ -22,17 +22,26 @@ export const useAudioSync = (
         if (stream?.isPlaying && stream?.progress !== undefined) {
             const serverProgress = stream.progress;
             const predictedProgress = lastProgressRef.current;
-            const positionJump = Math.abs(serverProgress - predictedProgress) > 2;
 
-            // Only sync if there's a significant jump or this is the first update
-            if (positionJump || lastServerProgressRef.current === 0) {
-                console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (jump: ${positionJump})`);
+            // Calculate drift: how far off is server from our prediction?
+            const drift = Math.abs(serverProgress - predictedProgress);
+
+            // Only sync on LARGE jumps (seeks) or initial connection
+            // Ignore small drifts from periodic backend updates (≤3s)
+            const isInitialConnection = lastServerProgressRef.current === 0;
+            const isUserSeek = drift > 5;  // Only sync on 5+ second jumps
+
+            if (isUserSeek || isInitialConnection) {
+                console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (drift: ${drift}s, seek: ${isUserSeek}, initial: ${isInitialConnection})`);
                 lastProgressRef.current = serverProgress;
                 lastServerProgressRef.current = serverProgress;
                 // Update UI immediately to prevent snap-back
                 if (stream?.id) {
                     updateProgress(stream.id, serverProgress);
                 }
+            } else if (drift > 2) {
+                // Log ignored updates for debugging
+                console.log(`[useAudioSync] Ignoring small drift: ${drift}s (server: ${serverProgress}s, predicted: ${predictedProgress}s)`);
             }
         }
     }, [stream?.progress, stream?.isPlaying, stream?.id, updateProgress]);
