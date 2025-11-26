@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {NowPlaying} from './components/NowPlaying';
 import {PlayerControls} from './components/PlayerControls';
 import {StreamSelector} from './components/StreamSelector';
@@ -625,6 +625,14 @@ const App: React.FC = () => {
                                     }
                                 }
 
+                                // Only sync position from polling on initial load (when current progress is 0)
+                                // After that, let useAudioSync handle client-side interpolation
+                                // WebSocket notifications will handle seeks/track changes
+                                if (isPlaying && positionSeconds > 0 && s.progress === 0) {
+                                    console.log(`[Polling] Initial position sync: ${positionSeconds}s`);
+                                    updatedStream.progress = positionSeconds;
+                                }
+
                                 return updatedStream;
                             }
                             return s;
@@ -854,8 +862,21 @@ const App: React.FC = () => {
         }
     };
 
+    // Track last play/pause command time to debounce rapid toggling
+    // This prevents FIFO pipe issues when pause/play are sent too quickly
+    const lastPlayPauseRef = useRef<number>(0);
+    const PLAY_PAUSE_DEBOUNCE_MS = 2000; // 2 second minimum between play/pause commands
+
     const handlePlayPause = async () => {
         if (!currentStream) return;
+
+        // Debounce: prevent rapid play/pause toggling which can break FIFO pipes
+        const now = Date.now();
+        if (now - lastPlayPauseRef.current < PLAY_PAUSE_DEBOUNCE_MS) {
+            console.log(`[PlayPause] Debounced - must wait ${PLAY_PAUSE_DEBOUNCE_MS}ms between commands`);
+            return;
+        }
+        lastPlayPauseRef.current = now;
 
         try {
             // Check stream capabilities first

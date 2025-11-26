@@ -359,36 +359,50 @@ class PlexampMetadataMonitor:
                     position_ms = timeline.get('position')
                     playback_status = timeline.get('playback_status', 'Stopped')
 
-                    # Always update store with latest position
+                    # ALWAYS update store with latest position so Snapcast properties stay current
+                    # This ensures page refresh gets correct position
                     self.store.update(**timeline)
 
-                    # Only send update if position changed significantly from last poll
-                    # This detects seeks, track changes, previous/next button, and initial connection
+                    # Determine if we should send notification to frontend
+                    # Only notify on significant changes to prevent progress bar jumping
                     send_update = False
+
                     if last_position_value is None:
                         # Initial connection
-                        log(f"[Timeline] Position changed: {position_ms}ms (initial)")
+                        log(f"[Timeline] Position: {position_ms}ms (initial)")
                         send_update = True
                         last_position_value = position_ms
                     elif metadata_updated:
                         # New track detected via PlayQueue
-                        log(f"[Timeline] Position changed: {position_ms}ms (track_change)")
+                        log(f"[Timeline] Position: {position_ms}ms (track_change)")
                         send_update = True
                         last_position_value = position_ms
-                    elif position_ms and abs(position_ms - last_position_value) > (POLL_INTERVAL * 1000 + 1000):
-                        # Position changed significantly (seek, previous/next, or mid-track start)
-                        # Allow tolerance of POLL_INTERVAL + 1s for polling delay and playback time
-                        if position_ms < 5000:
-                            reason = "track_change"
-                        else:
-                            reason = "seek"
-                        log(f"[Timeline] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
-                        send_update = True
-                        last_position_value = position_ms
-                    else:
-                        # Position progressing normally, just track it
+                    elif position_ms is not None and last_position_value is not None:
+                        # Check for actual seeks (position went backwards, or jumped forward significantly)
+                        position_delta = position_ms - last_position_value
+
+                        # Only notify for:
+                        # 1. Backward seeks (position went back by >1s)
+                        # 2. Large forward jumps (>10s forward seek)
+                        is_backward_seek = position_delta < -1000
+                        is_forward_seek = position_delta > 10000
+
+                        if is_backward_seek or is_forward_seek:
+                            reason = "track_change" if position_ms < 5000 else "seek"
+                            log(f"[Timeline] Position: {last_position_value}ms → {position_ms}ms (delta: {position_delta}ms, {reason})")
+                            send_update = True
                         last_position_value = position_ms
 
+                    # Check if playback state changed
+                    if 'playback_status' in timeline:
+                        current_status = timeline['playback_status']
+                        previous_status = getattr(self, '_last_playback_status', None)
+                        if previous_status is None or previous_status != current_status:
+                            log(f"[Timeline] Playback state: {previous_status} → {current_status}")
+                            send_update = True
+                        self._last_playback_status = current_status
+
+                    # Send notification on significant changes
                     if send_update and playback_status != 'Stopped':
                         if self.on_update:
                             self.on_update()
