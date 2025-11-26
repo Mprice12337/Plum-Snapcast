@@ -709,7 +709,9 @@ class SnapcastControlScript:
                     log(f"[Warning] Unknown control command: {command}")
 
                 if success:
-                    self.send_update()
+                    # Don't send position on control commands - position updates
+                    # should only come from the polling loop on actual seeks
+                    self.send_update(include_position=False)
 
                 # Send success response
                 response = {
