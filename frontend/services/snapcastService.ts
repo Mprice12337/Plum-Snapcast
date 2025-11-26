@@ -182,25 +182,29 @@ export class SnapcastService {
             const params = message.params;
             const streamId = params.id || params.stream_id || 'unknown';
 
+            // Stream.OnProperties has properties nested in params.properties
+            // Plugin.Stream.Player.Properties has properties directly in params
+            const props = params.properties || params;
+
             // Notify metadata listeners if metadata changed
-            if (params && params.metadata) {
+            if (props && props.metadata) {
                 this.metadataUpdateListeners.forEach(listener => {
-                    listener(streamId, params.metadata);
+                    listener(streamId, props.metadata);
                 });
             }
 
             // Notify playback state listeners if playback status changed
-            if (params && params.playbackStatus !== undefined) {
+            if (props && props.playbackStatus !== undefined) {
                 this.playbackStateListeners.forEach(listener => {
-                    listener(streamId, params.playbackStatus, params);
+                    listener(streamId, props.playbackStatus, props);
                 });
             }
 
             // Notify position listeners if position changed
             // Position comes from backend in milliseconds, duration too
-            if (params && params.position !== undefined) {
-                const position = params.position || 0;  // milliseconds
-                const duration = params.metadata?.duration || 0;  // milliseconds
+            if (props && props.position !== undefined) {
+                const position = props.position || 0;  // milliseconds
+                const duration = props.metadata?.duration || 0;  // milliseconds
                 console.log(`[SnapcastService] Position update: stream=${streamId}, position=${position}ms (${Math.floor(position/1000)}s), duration=${duration}ms`);
                 this.positionUpdateListeners.forEach(listener => {
                     listener(streamId, position, duration);
@@ -246,6 +250,16 @@ export class SnapcastService {
                 if (stream.properties && stream.properties.metadata) {
                     this.metadataUpdateListeners.forEach(listener => {
                         listener(streamId, stream.properties.metadata);
+                    });
+                }
+
+                // Check for position updates in stream.properties
+                if (stream.properties && stream.properties.position !== undefined) {
+                    const position = stream.properties.position || 0;
+                    const duration = stream.properties.metadata?.duration || 0;
+                    console.log(`[SnapcastService] Position update from Stream.OnUpdate: stream=${streamId}, position=${position}ms (${Math.floor(position/1000)}s)`);
+                    this.positionUpdateListeners.forEach(listener => {
+                        listener(streamId, position, duration);
                     });
                 }
             }
