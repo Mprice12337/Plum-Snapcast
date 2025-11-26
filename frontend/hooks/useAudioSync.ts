@@ -29,9 +29,13 @@ export const useAudioSync = (
                 console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (jump: ${positionJump})`);
                 lastProgressRef.current = serverProgress;
                 lastServerProgressRef.current = serverProgress;
+                // Update UI immediately to prevent snap-back
+                if (stream?.id) {
+                    updateProgress(stream.id, serverProgress);
+                }
             }
         }
-    }, [stream?.progress, stream?.isPlaying]);
+    }, [stream?.progress, stream?.isPlaying, stream?.id, updateProgress]);
 
     // Main effect to start/stop the interval based on playback state
     useEffect(() => {
