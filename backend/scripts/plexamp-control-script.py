@@ -468,10 +468,11 @@ class PlexampMetadataMonitor:
         """Query Plexamp HTTP API for current timeline (position and state)
 
         Note: Plexamp's local API doesn't require Plex client headers and actually
-        rejects them with HTTP 400. Just use a plain request to localhost:32500.
+        rejects them with HTTP 400. The commandID parameter is required for the
+        API to return a response (Plex's long-polling pattern).
         """
         try:
-            req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?wait=0')
+            req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?wait=0&commandID=1')
             # NOTE: Do NOT add Plex client headers - they cause HTTP 400!
             # Plexamp's local API works without authentication headers.
             with urllib.request.urlopen(req, timeout=2) as response:
