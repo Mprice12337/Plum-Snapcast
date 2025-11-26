@@ -17,6 +17,23 @@ export const useAudioSync = (
     const lastProgressRef = useRef<number>(0);
     const lastServerProgressRef = useRef<number>(0);
 
+    // Separate effect to monitor position changes WITHOUT restarting interval
+    useEffect(() => {
+        if (stream?.isPlaying && stream?.progress !== undefined) {
+            const serverProgress = stream.progress;
+            const predictedProgress = lastProgressRef.current;
+            const positionJump = Math.abs(serverProgress - predictedProgress) > 2;
+
+            // Only sync if there's a significant jump or this is the first update
+            if (positionJump || lastServerProgressRef.current === 0) {
+                console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (jump: ${positionJump})`);
+                lastProgressRef.current = serverProgress;
+                lastServerProgressRef.current = serverProgress;
+            }
+        }
+    }, [stream?.progress, stream?.isPlaying]);
+
+    // Main effect to start/stop the interval based on playback state
     useEffect(() => {
         // Clear any existing interval
         if (intervalRef.current) {
@@ -25,19 +42,6 @@ export const useAudioSync = (
         }
 
         if (stream?.isPlaying) {
-            const serverProgress = stream.progress;
-
-            // Compare server position to our PREDICTED position (not last server position)
-            // This avoids false positives when backend sends periodic updates
-            const predictedProgress = lastProgressRef.current;
-            const positionJump = Math.abs(serverProgress - predictedProgress) > 2;
-
-            if (positionJump || lastServerProgressRef.current === 0) {
-                console.log(`[useAudioSync] Position sync: ${predictedProgress}s → ${serverProgress}s (jump: ${positionJump})`);
-                lastProgressRef.current = serverProgress;
-                lastServerProgressRef.current = serverProgress;
-            }
-
             // Start interval to increment progress every second
             intervalRef.current = window.setInterval(() => {
                 // Increment from last known progress
@@ -55,5 +59,5 @@ export const useAudioSync = (
             }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [stream?.isPlaying, stream?.id, stream?.progress, updateProgress]);
+    }, [stream?.isPlaying, stream?.id, updateProgress]);
 };
