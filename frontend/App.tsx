@@ -295,8 +295,13 @@ const App: React.FC = () => {
                         console.log(`[Metadata] artUrl received: type=${artUrlType}, preview=${artUrlPreview}`);
 
                         if (metadata.artUrl && metadata.artUrl.trim() !== '') {
-                            console.log(`[Metadata] ✓ Using provided artwork (${metadata.artUrl.length} chars)`);
-                            updatedTrack.albumArtUrl = metadata.artUrl;
+                            // Transform artUrl: relative paths need Snapcast HTTP URL prefix
+                            let resolvedArtUrl = metadata.artUrl;
+                            if (metadata.artUrl.startsWith('/')) {
+                                resolvedArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+                            }
+                            console.log(`[Metadata] ✓ Using provided artwork (${resolvedArtUrl.length} chars)`);
+                            updatedTrack.albumArtUrl = resolvedArtUrl;
                         } else if (isNewTrack) {
                             console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
                             updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+CjxwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
@@ -493,6 +498,11 @@ const App: React.FC = () => {
                 const serverStream = await snapcastService.getStreamStatus(currentStream.id);
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
+
+                    // Extract position from stream properties (convert ms to seconds)
+                    const positionSeconds = serverStream.properties?.position
+                        ? Math.floor(serverStream.properties.position / 1000)
+                        : 0;
 
                     // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
@@ -724,6 +734,12 @@ const App: React.FC = () => {
         // Handle browser audio client volume changes locally
         if (clientId === browserAudio.state.clientId) {
             browserAudio.setVolume(volume);
+            // Also update clients state to ensure controlled input stays in sync
+            // (The allClients mapping will override with browserAudio.state.volume,
+            // but this ensures React's controlled input batching works correctly)
+            setClients(prevClients =>
+                prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
+            );
             return;
         }
 
@@ -750,10 +766,15 @@ const App: React.FC = () => {
                 if (c.currentStreamId === streamId) {
                     const newVolume = Math.max(0, Math.min(100, c.volume + adjustment));
 
-                    // Send volume change to server for this client
-                    snapcastService.setClientVolume(c.id, newVolume).catch(error => {
-                        console.error(`Failed to adjust volume for client ${c.id}:`, error);
-                    });
+                    // Handle browser audio client locally
+                    if (c.id === browserAudio.state.clientId) {
+                        browserAudio.setVolume(newVolume);
+                    } else {
+                        // Send volume change to server for regular clients
+                        snapcastService.setClientVolume(c.id, newVolume).catch(error => {
+                            console.error(`Failed to adjust volume for client ${c.id}:`, error);
+                        });
+                    }
 
                     return {...c, volume: newVolume};
                 }
@@ -775,10 +796,15 @@ const App: React.FC = () => {
                     if (c.currentStreamId === streamId && preMuteGroupVolumes[streamId][c.id] !== undefined) {
                         const restoredVolume = preMuteGroupVolumes[streamId][c.id];
 
-                        // Unmute on server
-                        snapcastService.setClientVolume(c.id, restoredVolume, false).catch(error => {
-                            console.error(`Failed to unmute client ${c.id}:`, error);
-                        });
+                        // Handle browser audio client locally
+                        if (c.id === browserAudio.state.clientId) {
+                            browserAudio.setVolume(restoredVolume, false);
+                        } else {
+                            // Unmute on server
+                            snapcastService.setClientVolume(c.id, restoredVolume, false).catch(error => {
+                                console.error(`Failed to unmute client ${c.id}:`, error);
+                            });
+                        }
 
                         return {...c, volume: restoredVolume};
                     }
@@ -808,10 +834,15 @@ const App: React.FC = () => {
             setClients(prevClients =>
                 prevClients.map(c => {
                     if (c.currentStreamId === streamId) {
-                        // Mute on server
-                        snapcastService.setClientVolume(c.id, 0, true).catch(error => {
-                            console.error(`Failed to mute client ${c.id}:`, error);
-                        });
+                        // Handle browser audio client locally
+                        if (c.id === browserAudio.state.clientId) {
+                            browserAudio.setVolume(0, true);
+                        } else {
+                            // Mute on server
+                            snapcastService.setClientVolume(c.id, 0, true).catch(error => {
+                                console.error(`Failed to mute client ${c.id}:`, error);
+                            });
+                        }
 
                         return {...c, volume: 0};
                     }
