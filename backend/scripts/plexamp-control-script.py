@@ -468,6 +468,10 @@ class PlexampMetadataMonitor:
         """Query Plexamp HTTP API for current timeline (position and state)"""
         try:
             req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?wait=0')
+            # Add required Plex headers for API authentication
+            req.add_header('X-Plex-Client-Identifier', 'plum-snapcast-plexamp-control')
+            req.add_header('X-Plex-Device-Name', 'Plum-Snapcast')
+            req.add_header('X-Plex-Product', 'Plum-Snapcast')
             with urllib.request.urlopen(req, timeout=2) as response:
                 data = response.read().decode('utf-8')
                 timeline = ET.fromstring(data)
