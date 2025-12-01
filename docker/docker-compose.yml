@@ -50,6 +50,7 @@ services:
       - SNAPCLIENT_HOST=localhost
       - SNAPCLIENT_SOUNDCARD=${SNAPCLIENT_SOUNDCARD:-hw:Headphones}
       - SNAPCLIENT_LATENCY=0
+      - IDLE_TIMEOUT_MINUTES=${IDLE_TIMEOUT_MINUTES:-5}
     volumes:
       - snapcast-config:/app/config
       - snapcast-data:/app/data
