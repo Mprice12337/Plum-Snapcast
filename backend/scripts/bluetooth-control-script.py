@@ -19,6 +19,7 @@ from typing import Dict, Optional
 
 # Configuration
 LOG_FILE = "/tmp/bluetooth-control-script.log"
+SIGNAL_FILE = "/tmp/stream-manager-signals"
 
 # Set up logging to file
 def log(message: str):
@@ -31,6 +32,15 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def signal_source_active(source_name: str = "Bluetooth"):
+    """Notify stream manager that this source has new audio"""
+    try:
+        with open(SIGNAL_FILE, 'a') as f:
+            timestamp = int(time.time())
+            f.write(f"{source_name}:active:{timestamp}\n")
+    except Exception as e:
+        log(f"[Warning] Failed to signal source activity: {e}")
 
 # Try to import D-Bus - graceful fallback if not available
 try:
@@ -329,6 +339,8 @@ class BluetoothMetadataMonitor:
                 self.player_interface.Play()
                 log("[Control] Sent Play command")
                 self.store.update(playback_status="Playing")
+                # Signal stream manager that source is active
+                signal_source_active("Bluetooth")
             except Exception as e:
                 log(f"[Error] Play failed: {e}")
 

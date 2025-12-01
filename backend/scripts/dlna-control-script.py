@@ -37,6 +37,7 @@ LOG_FILE = "/tmp/dlna-control-script.log"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 METADATA_FILE = "/tmp/dlna-metadata.json"
+SIGNAL_FILE = "/tmp/stream-manager-signals"
 
 # Global for dynamically discovered gmrender port and host
 _gmrender_host = None
@@ -54,6 +55,15 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def signal_source_active(source_name: str = "DLNA"):
+    """Notify stream manager that this source has new audio"""
+    try:
+        with open(SIGNAL_FILE, 'a') as f:
+            timestamp = int(time.time())
+            f.write(f"{source_name}:active:{timestamp}\n")
+    except Exception as e:
+        log(f"[Warning] Failed to signal source activity: {e}")
 
 def discover_gmrender_endpoint() -> tuple:
     """

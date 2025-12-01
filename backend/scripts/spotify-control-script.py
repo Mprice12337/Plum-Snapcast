@@ -28,6 +28,7 @@ from typing import Dict, Optional
 LOG_FILE = "/tmp/spotify-control-script.log"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
+SIGNAL_FILE = "/tmp/stream-manager-signals"
 
 # Set up logging to file
 def log(message: str):
@@ -40,6 +41,15 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def signal_source_active(source_name: str = "Spotify"):
+    """Notify stream manager that this source has new audio"""
+    try:
+        with open(SIGNAL_FILE, 'a') as f:
+            timestamp = int(time.time())
+            f.write(f"{source_name}:active:{timestamp}\n")
+    except Exception as e:
+        log(f"[Warning] Failed to signal source activity: {e}")
 
 # Try to import D-Bus - graceful fallback if not available
 try:
@@ -437,6 +447,8 @@ class SpotifyMetadataMonitor:
                 self.player_interface.Play()
                 log("[Control] Sent Play command")
                 self.store.update(playback_status="Playing")
+                # Signal stream manager that source is active
+                signal_source_active("Spotify")
             except Exception as e:
                 log(f"[Error] Play failed: {e}")
 

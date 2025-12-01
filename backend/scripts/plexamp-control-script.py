@@ -32,6 +32,7 @@ PLEXAMP_RESOURCES_FILE = "/tmp/plexamp-state/.local/share/Plexamp/Settings/%40Pl
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 POLL_INTERVAL = 2.0  # Poll PlayQueue.json every 2 seconds
+SIGNAL_FILE = "/tmp/stream-manager-signals"
 
 # Set up logging to file
 def log(message: str):
@@ -44,6 +45,15 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def signal_source_active(source_name: str = "Plexamp"):
+    """Notify stream manager that this source has new audio"""
+    try:
+        with open(SIGNAL_FILE, 'a') as f:
+            timestamp = int(time.time())
+            f.write(f"{source_name}:active:{timestamp}\n")
+    except Exception as e:
+        log(f"[Warning] Failed to signal source activity: {e}")
 
 
 class MetadataStore:
@@ -440,6 +450,8 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request('http://127.0.0.1:32500/player/playback/play')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Play command sent (status={response.status})")
+                # Signal stream manager that source is active
+                signal_source_active("Plexamp")
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Play command failed: {e}")
