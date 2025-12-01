@@ -7,6 +7,14 @@ export interface Track {
     duration: number; // in seconds
 }
 
+export interface StreamCapabilities {
+    canPlay: boolean;
+    canPause: boolean;
+    canSeek: boolean;
+    canGoNext: boolean;
+    canGoPrevious: boolean;
+}
+
 export interface Stream {
     id: string;
     name: string;
@@ -14,6 +22,7 @@ export interface Stream {
     currentTrack: Track;
     isPlaying: boolean;
     progress: number; // in seconds
+    capabilities?: StreamCapabilities;
 }
 
 export interface Client {
@@ -40,5 +49,6 @@ export interface Settings {
     };
     display: {
         showOfflineDevices: boolean;
+        idleTimeoutMinutes: number;
     };
 }

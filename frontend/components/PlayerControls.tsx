@@ -1,9 +1,10 @@
 import React from 'react';
-import type {Stream} from '../types';
+import type {Stream, StreamCapabilities} from '../types';
 
 interface PlayerControlsProps {
     stream: Stream;
     volume: number;
+    capabilities?: StreamCapabilities;
     onVolumeChange: (volume: number) => void;
     onPlayPause: () => void;
     onSkip: (direction: 'next' | 'prev') => void;
@@ -33,6 +34,7 @@ const ControlButton: React.FC<{ onClick?: () => void; icon: string; size?: 'sm' 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({
                                                                   stream,
                                                                   volume,
+                                                                  capabilities,
                                                                   onVolumeChange,
                                                                   onPlayPause,
                                                                   onSkip
@@ -42,6 +44,15 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
+    // Default to all capabilities enabled if not specified
+    const canPlay = capabilities?.canPlay ?? true;
+    const canPause = capabilities?.canPause ?? true;
+    const canGoPrevious = capabilities?.canGoPrevious ?? true;
+    const canGoNext = capabilities?.canGoNext ?? true;
+
+    // Show play/pause button if either play or pause is supported
+    const showPlayPause = stream.isPlaying ? canPause : canPlay;
+
     return (
         <div className="flex flex-col md:flex-row items-center gap-6 px-4">
             {/* Mobile: Volume on top, Controls below */}
@@ -50,9 +61,9 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             {/* Media Controls - order-2 on mobile, order-1 on desktop */}
             {/* On desktop: flex-shrink-0 w-56 to match album artwork width (14rem = 224px) */}
             <div className="flex items-center gap-4 order-2 md:order-1 md:flex-shrink-0 md:w-56 justify-center">
-                <ControlButton icon="fa-backward-step" onClick={() => onSkip('prev')}/>
-                <ControlButton icon={stream.isPlaying ? 'fa-pause' : 'fa-play'} onClick={onPlayPause} size="lg"/>
-                <ControlButton icon="fa-forward-step" onClick={() => onSkip('next')}/>
+                {canGoPrevious && <ControlButton icon="fa-backward-step" onClick={() => onSkip('prev')}/>}
+                {showPlayPause && <ControlButton icon={stream.isPlaying ? 'fa-pause' : 'fa-play'} onClick={onPlayPause} size="lg"/>}
+                {canGoNext && <ControlButton icon="fa-forward-step" onClick={() => onSkip('next')}/>}
             </div>
 
             {/* Volume Control - order-1 on mobile, order-2 on desktop */}

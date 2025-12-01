@@ -61,7 +61,7 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
         });
     }
 
-    const handleDisplayChange = (key: keyof SettingsType['display'], value: boolean) => {
+    const handleDisplayChange = (key: keyof SettingsType['display'], value: boolean | number) => {
         onSettingsChange({
             ...settings,
             display: {
@@ -106,6 +106,23 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
                     <Section title="Display">
                         <Switch label="Show Offline Devices" checked={settings.display.showOfflineDevices}
                                 onChange={(val) => handleDisplayChange('showOfflineDevices', val)}/>
+                        <div className="flex flex-col gap-2">
+                            <label htmlFor="idle-timeout" className="text-sm font-medium">
+                                Idle Timeout (minutes)
+                            </label>
+                            <input
+                                id="idle-timeout"
+                                type="number"
+                                min="1"
+                                max="60"
+                                value={settings.display.idleTimeoutMinutes}
+                                onChange={(e) => handleDisplayChange('idleTimeoutMinutes', Math.max(1, Math.min(60, parseInt(e.target.value) || 5)))}
+                                className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                            />
+                            <p className="text-xs text-[var(--text-muted)]">
+                                Streams will stop after being idle for this duration. Sources will auto-reconnect when new audio is detected.
+                            </p>
+                        </div>
                     </Section>
 
                     <Section title="Appearance">

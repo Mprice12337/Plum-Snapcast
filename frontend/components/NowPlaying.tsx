@@ -65,23 +65,25 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, 
                 <ScrollingText text={currentTrack.artist} className="text-lg text-[var(--text-secondary)] mt-1" />
                 <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-muted)] mt-1" />
 
-                <div className="mt-6 w-full">
-                    <div
-                        ref={progressBarRef}
-                        className={`bg-[var(--border-color)] rounded-full h-2 w-full ${canSeek ? 'cursor-pointer hover:h-3 transition-all' : ''}`}
-                        onClick={handleProgressBarClick}
-                        title={canSeek ? 'Click to seek' : undefined}
-                    >
+                {canSeek && currentTrack.duration > 0 && (
+                    <div className="mt-6 w-full">
                         <div
-                            className="bg-[var(--accent-color)] h-full rounded-full transition-all duration-1000 ease-linear"
-                            style={{width: `${progressPercent}%`}}
-                        ></div>
+                            ref={progressBarRef}
+                            className="bg-[var(--border-color)] rounded-full h-2 w-full cursor-pointer hover:h-3 transition-all"
+                            onClick={handleProgressBarClick}
+                            title="Click to seek"
+                        >
+                            <div
+                                className="bg-[var(--accent-color)] h-full rounded-full transition-all duration-1000 ease-linear"
+                                style={{width: `${progressPercent}%`}}
+                            ></div>
+                        </div>
+                        <div className="flex justify-between text-xs text-[var(--text-muted)] mt-2">
+                            <span>{formatTime(progress)}</span>
+                            <span>{formatTime(currentTrack.duration)}</span>
+                        </div>
                     </div>
-                    <div className="flex justify-between text-xs text-[var(--text-muted)] mt-2">
-                        <span>{formatTime(progress)}</span>
-                        <span>{formatTime(currentTrack.duration)}</span>
-                    </div>
-                </div>
+                )}
             </div>
         </div>
     );

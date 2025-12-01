@@ -7,7 +7,7 @@ import {SyncedDevices} from './components/SyncedDevices';
 import {Settings as SettingsModal} from './components/Settings';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
-import type {Client, Settings, Stream} from './types';
+import type {Client, Settings, Stream, StreamCapabilities} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 
@@ -17,7 +17,7 @@ const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
     const [serverName, setServerName] = useState<string>('Snapcast Server');
-    const [streamCapabilities, setStreamCapabilities] = useState<{canSeek?: boolean}>({});
+    const [streamCapabilities, setStreamCapabilities] = useState<StreamCapabilities | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
@@ -51,6 +51,7 @@ const App: React.FC = () => {
             },
             display: {
                 showOfflineDevices: true,
+                idleTimeoutMinutes: 5,
             }
         };
     });
@@ -417,7 +418,7 @@ const App: React.FC = () => {
     // Fetch stream capabilities when current stream changes
     useEffect(() => {
         if (!currentStream || !snapcastService) {
-            setStreamCapabilities({});
+            setStreamCapabilities(null);
             return;
         }
 
@@ -425,11 +426,21 @@ const App: React.FC = () => {
             try {
                 const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
                 setStreamCapabilities({
-                    canSeek: capabilities.canSeek || false
+                    canPlay: capabilities.canPlay ?? true,
+                    canPause: capabilities.canPause ?? true,
+                    canSeek: capabilities.canSeek ?? false,
+                    canGoNext: capabilities.canGoNext ?? true,
+                    canGoPrevious: capabilities.canGoPrevious ?? true
                 });
             } catch (error) {
                 console.error('Failed to fetch stream capabilities:', error);
-                setStreamCapabilities({canSeek: false});
+                setStreamCapabilities({
+                    canPlay: true,
+                    canPause: true,
+                    canSeek: false,
+                    canGoNext: true,
+                    canGoPrevious: true
+                });
             }
         };
 
@@ -1084,12 +1095,13 @@ const App: React.FC = () => {
                             <div className="space-y-6">
                                 <NowPlaying
                                     stream={currentStream}
-                                    canSeek={streamCapabilities.canSeek}
+                                    canSeek={streamCapabilities?.canSeek ?? false}
                                     onSeek={handleSeek}
                                 />
                                 <PlayerControls
                                     stream={currentStream}
                                     volume={myClient.volume}
+                                    capabilities={streamCapabilities ?? undefined}
                                     onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
                                     onPlayPause={handlePlayPause}
                                     onSkip={handleSkip}

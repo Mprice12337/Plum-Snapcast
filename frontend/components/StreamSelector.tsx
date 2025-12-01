@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import type {Stream} from '../types';
 
 interface StreamSelectorProps {
@@ -11,6 +11,11 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const currentStream = streams.find(s => s.id === currentStreamId);
+
+    // Sort streams alphabetically by name
+    const sortedStreams = useMemo(() => {
+        return [...streams].sort((a, b) => a.name.localeCompare(b.name));
+    }, [streams]);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -59,7 +64,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                                 None
                             </button>
                         </li>
-                        {streams.map(s => (
+                        {sortedStreams.map(s => (
                             <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
                                 <button
                                     onClick={() => handleSelect(s.id)}
