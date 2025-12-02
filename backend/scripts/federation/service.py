@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+Main Federation Service
+Orchestrates discovery, WebSocket connections, routing, and API server
+"""
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import signal
+import sys
+import threading
+from typing import Dict, List
+
+from .discovery import AvahiDiscovery, ServerInfo
+from .websocket_manager import WebSocketManager
+from .router import FederationRouter
+from .api import FederationAPI, DataAggregator
+
+logger = logging.getLogger(__name__)
+
+
+class FederationService:
+    """
+    Main Federation Service
+    Coordinates all federation components
+    """
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self.running = False
+
+        # Get configuration
+        self.local_server_name = config.get("local_name", "Main Server")
+        self.auto_discover = config.get("auto_discover", True)
+        self.manual_servers = config.get("manual_servers", [])
+        self.api_port = config.get("api_port", 5000)
+        self.local_server_id = self._generate_server_id(config.get("local_host", "localhost"))
+
+        # Initialize components
+        self.discovery = None
+        self.ws_manager = None
+        self.router = None
+        self.data_aggregator = None
+        self.api = None
+
+        # Async loop
+        self.loop = None
+
+    def _generate_server_id(self, host: str) -> str:
+        """Generate server ID from host"""
+        return f"server-{host.replace('.', '-')}"
+
+    async def _on_servers_discovered(self, servers: List[ServerInfo]):
+        """Handle newly discovered servers"""
+        logger.info(f"Discovered {len(servers)} servers")
+
+        for server in servers:
+            # Skip if already connected
+            if self.ws_manager.get_connection(server.id):
+                continue
+
+            # Skip local server (we don't connect to ourselves)
+            if server.id == self.local_server_id:
+                logger.info(f"Skipping local server: {server.name}")
+                continue
+
+            # Connect to new server
+            try:
+                await self.ws_manager.add_server(
+                    server_id=server.id,
+                    host=server.host,
+                    port=server.port,
+                    name=server.name,
+                    use_https=False
+                )
+            except Exception as e:
+                logger.error(f"Failed to connect to {server.name}: {e}")
+
+    async def _on_server_event(self, server_id: str, method: str, params: Dict):
+        """Handle events from servers"""
+        logger.debug(f"Event from {server_id}: {method}")
+        # Events automatically trigger status refresh in WebSocket manager
+
+    async def start_async_components(self):
+        """Start all async components"""
+        logger.info("Starting Federation Service async components")
+
+        # Initialize WebSocket manager
+        self.ws_manager = WebSocketManager()
+        self.ws_manager.add_event_callback(self._on_server_event)
+
+        # Initialize router
+        self.router = FederationRouter(self.ws_manager, self.local_server_id)
+
+        # Initialize data aggregator
+        self.data_aggregator = DataAggregator(
+            self.ws_manager,
+            self.discovery,
+            self.local_server_id,
+            self.local_server_name
+        )
+
+        # Add local server connection (localhost)
+        try:
+            logger.info("Connecting to local Snapcast server...")
+            await self.ws_manager.add_server(
+                server_id=self.local_server_id,
+                host="localhost",
+                port=1780,
+                name=self.local_server_name,
+                use_https=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to connect to local server: {e}")
+
+        # Add manual servers
+        for server_config in self.manual_servers:
+            host = server_config.get("host")
+            port = server_config.get("port", 1780)
+            name = server_config.get("name", host)
+
+            try:
+                server_id = self._generate_server_id(host)
+                await self.ws_manager.add_server(
+                    server_id=server_id,
+                    host=host,
+                    port=port,
+                    name=name,
+                    use_https=False
+                )
+            except Exception as e:
+                logger.error(f"Failed to connect to manual server {name}: {e}")
+
+        logger.info("Federation Service async components started")
+
+    def start(self):
+        """Start the federation service"""
+        if self.running:
+            logger.warning("Service already running")
+            return
+
+        self.running = True
+        logger.info("Starting Federation Service")
+
+        # Start discovery if enabled
+        if self.auto_discover:
+            logger.info("Starting Avahi discovery")
+            self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
+                self._on_servers_discovered(servers), self.loop
+            ))
+            self.discovery.start()
+        else:
+            logger.info("Auto-discovery disabled")
+            self.discovery = AvahiDiscovery()  # Without callback
+
+        # Start async event loop in background thread
+        def run_async_loop():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
+            # Start async components
+            self.loop.run_until_complete(self.start_async_components())
+
+            # Keep loop running
+            try:
+                self.loop.run_forever()
+            except Exception as e:
+                logger.error(f"Async loop error: {e}")
+            finally:
+                self.loop.close()
+
+        async_thread = threading.Thread(target=run_async_loop, daemon=True)
+        async_thread.start()
+
+        # Wait for async components to initialize
+        import time
+        time.sleep(2)
+
+        # Start REST API (blocks in main thread)
+        self.api = FederationAPI(self.data_aggregator, self.router, port=self.api_port)
+        logger.info(f"Starting REST API on port {self.api_port}")
+
+        try:
+            self.api.run(debug=False)
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+            self.stop()
+
+    def stop(self):
+        """Stop the federation service"""
+        if not self.running:
+            return
+
+        logger.info("Stopping Federation Service")
+        self.running = False
+
+        # Stop discovery
+        if self.discovery:
+            self.discovery.stop()
+
+        # Close WebSocket connections
+        if self.loop and self.ws_manager:
+            asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
+
+        # Stop async loop
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
+        logger.info("Federation Service stopped")
+
+
+def load_config() -> Dict:
+    """Load configuration from environment variables"""
+    config = {
+        "enabled": os.getenv("FEDERATION_ENABLED", "0") == "1",
+        "auto_discover": os.getenv("FEDERATION_AUTO_DISCOVER", "1") == "1",
+        "local_name": os.getenv("FEDERATION_LOCAL_NAME", "Main Server"),
+        "local_host": os.getenv("FEDERATION_LOCAL_HOST", "localhost"),
+        "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
+        "manual_servers": []
+    }
+
+    # Parse manual servers from JSON env var
+    manual_servers_json = os.getenv("FEDERATION_MANUAL_SERVERS", "")
+    if manual_servers_json:
+        try:
+            config["manual_servers"] = json.loads(manual_servers_json)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse FEDERATION_MANUAL_SERVERS: {e}")
+
+    return config
+
+
+def main():
+    """Main entry point"""
+    # Setup logging
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s [%(name)s] [%(levelname)s] %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stderr),
+            logging.FileHandler("/tmp/federation-service.log")
+        ]
+    )
+
+    # Load configuration
+    config = load_config()
+
+    # Check if federation is enabled
+    if not config["enabled"]:
+        logger.info("Federation is disabled (FEDERATION_ENABLED=0)")
+        sys.exit(0)
+
+    logger.info("Federation Service Configuration:")
+    logger.info(f"  Enabled: {config['enabled']}")
+    logger.info(f"  Auto-discover: {config['auto_discover']}")
+    logger.info(f"  Local name: {config['local_name']}")
+    logger.info(f"  API port: {config['api_port']}")
+    logger.info(f"  Manual servers: {len(config['manual_servers'])}")
+
+    # Create and start service
+    service = FederationService(config)
+
+    # Setup signal handlers
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}")
+        service.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Start service (blocks)
+    try:
+        service.start()
+    except Exception as e:
+        logger.error(f"Service failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
