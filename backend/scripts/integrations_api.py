@@ -484,7 +484,7 @@ class BluetoothController:
         try:
             # Check if Bluetooth services are running
             services_running = all(
-                self.controller.is_service_running(service)[0]
+                self.controller.get_service_status(service).get("running", False)
                 for service in self.services
             )
 
