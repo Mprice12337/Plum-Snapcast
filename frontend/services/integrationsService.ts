@@ -195,4 +195,29 @@ export const bluetoothService = {
       throw error;
     }
   },
+
+  /**
+   * Update Bluetooth settings (auto-pair and/or discoverable)
+   */
+  async updateSettings(settings: { autoPair?: boolean; discoverable?: boolean }): Promise<{ success: boolean; message: string; autoPair?: boolean; discoverable?: boolean; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/bluetooth/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(settings),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update settings' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update Bluetooth settings:', error);
+      throw error;
+    }
+  },
 };

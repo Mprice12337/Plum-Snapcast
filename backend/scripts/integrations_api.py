@@ -219,7 +219,7 @@ class BluetoothController:
     def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
         self.controller = integration_controller
         # Bluetooth requires multiple services
-        self.services = ["bluetoothd", "bluetooth-init", "bluealsa", "bluealsa-aplay"]
+        self.services = ["bluetoothd", "bluetooth-init", "bluealsa", "bluealsa-aplay", "bluetooth-monitor"]
         self.adapter = "hci0"
         self.settings_manager = settings_manager or SettingsManager()
 
@@ -479,6 +479,105 @@ class BluetoothController:
                 "message": f"Error updating device name: {str(e)}"
             }
 
+    def update_settings(self, auto_pair: bool = None, discoverable: bool = None) -> Dict[str, Any]:
+        """Update Bluetooth settings (auto-pair and/or discoverable) and apply immediately"""
+        try:
+            # Check if Bluetooth services are running
+            services_running = all(
+                self.controller.is_service_running(service)[0]
+                for service in self.services
+            )
+
+            # Get current settings
+            try:
+                with open("/app/data/settings.json", "r") as f:
+                    current_settings = json.load(f)
+                    current_bluetooth = current_settings.get("integrations", {}).get("bluetooth", {})
+                    current_auto_pair = current_bluetooth.get("autoPair", True)
+                    current_discoverable = current_bluetooth.get("discoverable", True)
+            except Exception:
+                current_auto_pair = True
+                current_discoverable = True
+
+            # Determine what changed
+            auto_pair_changed = auto_pair is not None and auto_pair != current_auto_pair
+            discoverable_changed = discoverable is not None and discoverable != current_discoverable
+
+            # Build settings update
+            settings_update = {"integrations": {"bluetooth": {}}}
+            if auto_pair is not None:
+                settings_update["integrations"]["bluetooth"]["autoPair"] = auto_pair
+            if discoverable is not None:
+                settings_update["integrations"]["bluetooth"]["discoverable"] = discoverable
+
+            # Persist settings first
+            logger.info(f"Updating Bluetooth settings: autoPair={auto_pair}, discoverable={discoverable}")
+            try:
+                self.settings_manager.update_settings(settings_update)
+            except Exception as e:
+                logger.error(f"Failed to persist Bluetooth settings: {e}")
+                return {
+                    "success": False,
+                    "message": f"Failed to persist settings: {str(e)}"
+                }
+
+            # If services aren't running, settings will be applied on next start
+            if not services_running:
+                return {
+                    "success": True,
+                    "message": "Settings saved (will apply when Bluetooth is enabled)",
+                    "autoPair": auto_pair,
+                    "discoverable": discoverable
+                }
+
+            # Apply changes immediately if services are running
+            details = []
+
+            # Apply discoverable change via bluetoothctl
+            if discoverable_changed:
+                logger.info(f"Applying discoverable change: {discoverable}")
+                adapter_success, adapter_output = self._set_adapter_discoverable(
+                    discoverable=discoverable,
+                    pairable=True
+                )
+                if adapter_success:
+                    details.append(f"Discoverable set to {'on' if discoverable else 'off'}")
+                else:
+                    logger.warning(f"Failed to set discoverable: {adapter_output}")
+                    details.append(f"Warning: Failed to set discoverable: {adapter_output}")
+
+            # If auto-pair changed, restart bluetooth-init service
+            if auto_pair_changed:
+                logger.info(f"Auto-pair changed, restarting bluetooth-init service")
+                # Restart bluetooth-init to apply new auto-pair setting
+                restart_success, restart_output = self.controller.restart_service("bluetooth-init")
+                if restart_success:
+                    details.append(f"Auto-pair agent {'enabled' if auto_pair else 'disabled'} (service restarted)")
+                    # Wait for service to initialize
+                    time.sleep(3)
+                else:
+                    logger.error(f"Failed to restart bluetooth-init: {restart_output}")
+                    return {
+                        "success": False,
+                        "message": f"Settings saved but failed to restart service: {restart_output}",
+                        "details": "\n".join(details)
+                    }
+
+            return {
+                "success": True,
+                "message": "Settings updated and applied",
+                "autoPair": auto_pair if auto_pair is not None else current_auto_pair,
+                "discoverable": discoverable if discoverable is not None else current_discoverable,
+                "details": "\n".join(details) if details else "Settings applied"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to update Bluetooth settings: {e}")
+            return {
+                "success": False,
+                "message": f"Error updating settings: {str(e)}"
+            }
+
 
 def create_integrations_blueprint(
     integration_controller: IntegrationController = None
@@ -591,6 +690,31 @@ def create_integrations_blueprint(
             return jsonify(result), status_code
         except Exception as e:
             logger.error(f"Bluetooth device name update failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/bluetooth/settings", methods=["POST"])
+    def bluetooth_update_settings():
+        """Update Bluetooth settings (auto-pair and/or discoverable)"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "message": "Request body is required"}), 400
+
+            auto_pair = data.get("autoPair")
+            discoverable = data.get("discoverable")
+
+            if auto_pair is None and discoverable is None:
+                return jsonify({"success": False, "message": "At least one of autoPair or discoverable is required"}), 400
+
+            result = bluetooth_controller.update_settings(
+                auto_pair=auto_pair,
+                discoverable=discoverable
+            )
+
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Bluetooth settings update failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
     return bp

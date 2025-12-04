@@ -204,17 +204,40 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
   };
 
-  const handleBluetoothChange = (field: string, value: boolean | string) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        bluetooth: {
-          ...settings.integrations.bluetooth,
-          [field]: value,
+  const handleBluetoothChange = async (field: string, value: boolean | string) => {
+    // For discoverable, call API to apply immediately
+    if (field === 'discoverable' && typeof value === 'boolean') {
+      try {
+        await bluetoothService.updateSettings({ discoverable: value });
+
+        // Update local state after successful API call
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            bluetooth: {
+              ...settings.integrations.bluetooth,
+              [field]: value,
+            },
+          },
+        });
+      } catch (error: any) {
+        console.error(`Failed to update Bluetooth ${field}:`, error);
+        alert(`Failed to update ${field}: ${error.message}`);
+      }
+    } else {
+      // For other fields (like adapter), just update local state
+      onSettingsChange({
+        ...settings,
+        integrations: {
+          ...settings.integrations,
+          bluetooth: {
+            ...settings.integrations.bluetooth,
+            [field]: value,
+          },
         },
-      },
-    });
+      });
+    }
   };
 
   const handleSpotifyChange = (field: string, value: boolean | string | number) => {
@@ -422,18 +445,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                   className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
                   placeholder="hci0"
                 />
-              </div>
-              <div className="flex items-center">
-                <input
-                  type="checkbox"
-                  id="bt-autopair"
-                  checked={settings.integrations.bluetooth.autoPair}
-                  onChange={(e) => handleBluetoothChange('autoPair', e.target.checked)}
-                  className="mr-2"
-                />
-                <label htmlFor="bt-autopair" className="text-sm text-[var(--text-secondary)]">
-                  Auto-pair with devices
-                </label>
               </div>
               <div className="flex items-center">
                 <input
