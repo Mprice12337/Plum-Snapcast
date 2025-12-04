@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration file paths
 SHAIRPORT_SYNC_CONF = "/app/config/shairport-sync.conf"
+SPOTIFYD_CONF = "/app/config/spotifyd.conf"
 SUPERVISORCTL_CONF = "/app/supervisord/supervisord.conf"
 
 
@@ -579,6 +580,131 @@ class BluetoothController:
             }
 
 
+class SpotifyController:
+    """Controls Spotify Connect (spotifyd) service"""
+
+    def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
+        self.controller = integration_controller
+        self.service_name = "spotifyd"
+        self.config_file = SPOTIFYD_CONF
+        self.settings_manager = settings_manager or SettingsManager()
+
+    def enable(self) -> Dict[str, Any]:
+        """Enable Spotify service"""
+        success, output = self.controller.start_service(self.service_name)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "spotify": {
+                            "enabled": True
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Spotify enabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "Spotify enabled" if success else "Failed to enable Spotify",
+            "details": output.strip()
+        }
+
+    def disable(self) -> Dict[str, Any]:
+        """Disable Spotify service"""
+        success, output = self.controller.stop_service(self.service_name)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "spotify": {
+                            "enabled": False
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Spotify disabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "Spotify disabled" if success else "Failed to disable Spotify",
+            "details": output.strip()
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get Spotify service status"""
+        return self.controller.get_service_status(self.service_name)
+
+    def update_device_name(self, device_name: str) -> Dict[str, Any]:
+        """Update Spotify device name in config and restart service"""
+        try:
+            # Validate device name
+            if not device_name or len(device_name) > 50:
+                return {
+                    "success": False,
+                    "message": "Invalid device name (must be 1-50 characters)"
+                }
+
+            # Escape special characters for sed
+            device_name_escaped = device_name.replace('"', '\\"').replace('/', '\\/')
+
+            # Use sed to update config (same approach as AirPlay)
+            # Format: device_name = "Plum Audio"
+            sed_pattern = f's/^device_name = ".*"/device_name = "{device_name_escaped}"/'
+            sed_cmd = ["sed", "-i", sed_pattern, self.config_file]
+
+            result = subprocess.run(sed_cmd, capture_output=True, text=True, timeout=10)
+
+            if result.returncode != 0:
+                logger.error(f"sed command failed: {result.stderr}")
+                return {
+                    "success": False,
+                    "message": "Failed to update config file",
+                    "details": result.stderr.strip()
+                }
+
+            logger.info(f"Updated Spotify device name to: {device_name}")
+
+            # Restart service to apply changes
+            success, output = self.controller.restart_service(self.service_name)
+
+            if not success:
+                logger.error(f"Failed to restart spotifyd: {output}")
+
+            # Update settings to persist device name and enabled state
+            # Note: restarting the service enables it, so we set enabled=True
+            if success:
+                try:
+                    self.settings_manager.update_settings({
+                        "integrations": {
+                            "spotify": {
+                                "deviceName": device_name,
+                                "enabled": True
+                            }
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to persist Spotify device name: {e}")
+
+            return {
+                "success": success,
+                "message": f"Device name updated to '{device_name}'" if success else "Failed to restart Spotify service",
+                "device_name": device_name if success else None,
+                "details": output.strip()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to update device name: {e}")
+            return {
+                "success": False,
+                "message": f"Error updating device name: {str(e)}"
+            }
+
+
 def create_integrations_blueprint(
     integration_controller: IntegrationController = None
 ) -> Blueprint:
@@ -589,6 +715,7 @@ def create_integrations_blueprint(
 
     airplay_controller = AirPlayController(integration_controller)
     bluetooth_controller = BluetoothController(integration_controller)
+    spotify_controller = SpotifyController(integration_controller)
 
     bp = Blueprint('integrations', __name__)
 
@@ -715,6 +842,56 @@ def create_integrations_blueprint(
             return jsonify(result), status_code
         except Exception as e:
             logger.error(f"Bluetooth settings update failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # Spotify endpoints
+    @bp.route("/api/integrations/spotify/enable", methods=["POST"])
+    def spotify_enable():
+        """Enable Spotify service"""
+        try:
+            result = spotify_controller.enable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify enable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/disable", methods=["POST"])
+    def spotify_disable():
+        """Disable Spotify service"""
+        try:
+            result = spotify_controller.disable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify disable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/status", methods=["GET"])
+    def spotify_status():
+        """Get Spotify service status"""
+        try:
+            result = spotify_controller.get_status()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Spotify status check failed: {e}")
+            return jsonify({"running": False, "status": "error", "error": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/device-name", methods=["POST"])
+    def spotify_update_device_name():
+        """Update Spotify device name"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            result = spotify_controller.update_device_name(device_name)
+
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify device name update failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
     return bp
