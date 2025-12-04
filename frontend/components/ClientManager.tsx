@@ -12,6 +12,7 @@ interface ClientManagerProps {
     onGroupMute: (streamId: string) => void;
     onStartBrowserAudio?: () => void;
     browserAudioActive?: boolean;
+    federationEnabled?: boolean;
 }
 
 const ClientDevice: React.FC<{
@@ -19,7 +20,8 @@ const ClientDevice: React.FC<{
     streams: Stream[];
     onVolumeChange: (clientId: string, volume: number) => void;
     onStreamChange: (clientId: string, streamId: string | null) => void;
-}> = ({client, streams, onVolumeChange, onStreamChange}) => {
+    federationEnabled?: boolean;
+}> = ({client, streams, onVolumeChange, onStreamChange, federationEnabled = false}) => {
     const [isSelectorOpen, setIsSelectorOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -44,6 +46,23 @@ const ClientDevice: React.FC<{
     const sliderStyle = {
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
+
+    const groupedStreams = React.useMemo(() => {
+        if (!federationEnabled) {
+            return { ungrouped: streams };
+        }
+
+        const groups: { [serverName: string]: Stream[] } = {};
+        streams.forEach(stream => {
+            const serverName = stream.serverName || 'Unknown Server';
+            if (!groups[serverName]) {
+                groups[serverName] = [];
+            }
+            groups[serverName].push(stream);
+        });
+        return groups;
+    }, [streams, federationEnabled]);
+
     return (
         <div className="flex items-center gap-3">
             <span className="flex-1 truncate font-semibold">{client.name}</span>
@@ -79,16 +98,36 @@ const ClientDevice: React.FC<{
                                     None
                                 </button>
                             </li>
-                            {streams.map(s => (
-                                <li key={s.id} role="option" aria-selected={client.currentStreamId === s.id}>
-                                    <button
-                                        onClick={() => handleSelectStream(s.id)}
-                                        className={`block w-full text-left px-3 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors truncate ${client.currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
-                                    >
-                                        {s.name}
-                                    </button>
-                                </li>
-                            ))}
+                            {federationEnabled ? (
+                                Object.entries(groupedStreams).map(([serverName, serverStreams]) => (
+                                    <React.Fragment key={serverName}>
+                                        <li className="px-3 py-1 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider border-t border-[var(--border-color)] mt-1 first:mt-0 first:border-0">
+                                            {serverName}
+                                        </li>
+                                        {serverStreams.map(s => (
+                                            <li key={s.id} role="option" aria-selected={client.currentStreamId === s.id}>
+                                                <button
+                                                    onClick={() => handleSelectStream(s.id)}
+                                                    className={`block w-full text-left px-3 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors truncate ${client.currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
+                                                >
+                                                    {s.name}
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </React.Fragment>
+                                ))
+                            ) : (
+                                streams.map(s => (
+                                    <li key={s.id} role="option" aria-selected={client.currentStreamId === s.id}>
+                                        <button
+                                            onClick={() => handleSelectStream(s.id)}
+                                            className={`block w-full text-left px-3 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors truncate ${client.currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
+                                        >
+                                            {s.name}
+                                        </button>
+                                    </li>
+                                ))
+                            )}
                         </ul>
                     </div>
                 )}
@@ -107,6 +146,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                                                 onGroupMute,
                                                                 onStartBrowserAudio,
                                                                 browserAudioActive,
+                                                                federationEnabled = false,
                                                             }) => {
     const groupedClients = clients.reduce((acc, client) => {
         const streamId = client.currentStreamId ?? 'idle';
@@ -164,7 +204,8 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                         <div className="space-y-3">
                             {typedClientsInGroup.map(client => (
                                 <ClientDevice key={client.id} client={client} streams={streams}
-                                              onVolumeChange={onVolumeChange} onStreamChange={onStreamChange}/>
+                                              onVolumeChange={onVolumeChange} onStreamChange={onStreamChange}
+                                              federationEnabled={federationEnabled}/>
                             ))}
                         </div>
                         {typedClientsInGroup.length > 1 && (

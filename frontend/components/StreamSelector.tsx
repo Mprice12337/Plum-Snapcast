@@ -5,9 +5,10 @@ interface StreamSelectorProps {
     streams: Stream[];
     currentStreamId: string | null;
     onSelectStream: (streamId: string | null) => void;
+    federationEnabled?: boolean;
 }
 
-export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream}) => {
+export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false}) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const currentStream = streams.find(s => s.id === currentStreamId);
@@ -28,6 +29,22 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
         onSelectStream(streamId);
         setIsOpen(false);
     };
+
+    const groupedStreams = React.useMemo(() => {
+        if (!federationEnabled) {
+            return { ungrouped: streams };
+        }
+
+        const groups: { [serverName: string]: Stream[] } = {};
+        streams.forEach(stream => {
+            const serverName = stream.serverName || 'Unknown Server';
+            if (!groups[serverName]) {
+                groups[serverName] = [];
+            }
+            groups[serverName].push(stream);
+        });
+        return groups;
+    }, [streams, federationEnabled]);
 
     return (
         <div ref={wrapperRef} className="relative">
@@ -59,16 +76,36 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                                 None
                             </button>
                         </li>
-                        {streams.map(s => (
-                            <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
-                                <button
-                                    onClick={() => handleSelect(s.id)}
-                                    className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
-                                >
-                                    {s.name}
-                                </button>
-                            </li>
-                        ))}
+                        {federationEnabled ? (
+                            Object.entries(groupedStreams).map(([serverName, serverStreams]) => (
+                                <React.Fragment key={serverName}>
+                                    <li className="px-4 py-2 text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider border-t border-[var(--border-color)] mt-2 first:mt-0 first:border-0">
+                                        {serverName}
+                                    </li>
+                                    {serverStreams.map(s => (
+                                        <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
+                                            <button
+                                                onClick={() => handleSelect(s.id)}
+                                                className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
+                                            >
+                                                {s.name}
+                                            </button>
+                                        </li>
+                                    ))}
+                                </React.Fragment>
+                            ))
+                        ) : (
+                            streams.map(s => (
+                                <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
+                                    <button
+                                        onClick={() => handleSelect(s.id)}
+                                        className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
+                                    >
+                                        {s.name}
+                                    </button>
+                                </li>
+                            ))
+                        )}
                     </ul>
                 </div>
             )}

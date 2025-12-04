@@ -7,7 +7,7 @@ ARG BUILDPLATFORM
 LABEL maintainer="Plum-Snapcast"
 LABEL description="Snapcast server with AirPlay, Bluetooth, Spotify, and DLNA/UPnP support"
 
-# Install runtime dependencies (python3 for metadata, GStreamer for DLNA)
+# Install runtime dependencies (python3 for metadata, GStreamer for DLNA, Flask for federation)
 RUN apk add --no-cache \
     bash \
     avahi \
@@ -31,9 +31,12 @@ RUN apk add --no-cache \
     libuuid \
     ffmpeg-libs \
     python3 \
+    py3-pip \
     py3-dbus \
     py3-gobject3 \
     py3-requests \
+    py3-flask \
+    py3-flask-cors \
     bluez \
     bluez-alsa \
     util-linux \
@@ -44,6 +47,9 @@ RUN apk add --no-cache \
     gst-plugins-ugly \
     gst-libav \
     libupnp
+
+# Install Python packages for federation service (websockets not in Alpine repos)
+RUN pip3 install --no-cache-dir --break-system-packages websockets
 
 # Add edge repository and install snapcast (latest: 0.34.0 in community repo)
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
@@ -223,6 +229,7 @@ RUN chown snapcast:snapcast /usr/share/snapserver/snapweb/index.html && \
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
 # Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
 # Metadata Debug Server: 8080 (HTTP)
+# Federation API: 5000 (HTTP REST API)
 # Note: Plexamp runs in separate container (port 32500)
 EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 
@@ -268,7 +275,12 @@ ENV TZ=Etc/UTC \
     SNAPCLIENT_ENABLED=1 \
     SNAPCLIENT_HOST=localhost \
     SNAPCLIENT_SOUNDCARD=hw:Headphones \
-    SNAPCLIENT_LATENCY=0
+    SNAPCLIENT_LATENCY=0 \
+    FEDERATION_ENABLED=0 \
+    FEDERATION_AUTO_DISCOVER=1 \
+    FEDERATION_LOCAL_NAME="Main Server" \
+    FEDERATION_API_PORT=5000 \
+    FEDERATION_MANUAL_SERVERS=""
 
 # Volume mount points
 VOLUME ["/app/config", "/app/data", "/app/certs"]

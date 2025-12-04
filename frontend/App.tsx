@@ -7,7 +7,8 @@ import {SyncedDevices} from './components/SyncedDevices';
 import {Settings as SettingsModal} from './components/Settings';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
-import type {Client, Settings, Stream} from './types';
+import {federationService} from './services/federationService';
+import type {Client, Server, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 
@@ -16,6 +17,7 @@ const VOLUME_STEP = 5;
 const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
+    const [servers, setServers] = useState<Server[]>([]);
     const [serverName, setServerName] = useState<string>('Snapcast Server');
     const [streamCapabilities, setStreamCapabilities] = useState<{canSeek?: boolean}>({});
     const [isLoading, setIsLoading] = useState(true);
@@ -23,22 +25,15 @@ const App: React.FC = () => {
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-    // Track recent user-initiated playback changes to prevent polling from overwriting them
+    // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
+    const [recentUserChanges, setRecentUserChanges] = useState<{type: string, timestamp: number, data: any} | null>(null);
+    // Use ref to avoid stale closure in polling callback
+    const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
 
     // Load settings from localStorage or use defaults
     const [settings, setSettings] = useState<Settings>(() => {
-        try {
-            const saved = localStorage.getItem('snapcast-settings');
-            if (saved) {
-                return JSON.parse(saved);
-            }
-        } catch (error) {
-            console.error('Failed to load settings from localStorage:', error);
-        }
-
-        // Default settings
-        return {
+        const defaultSettings: Settings = {
             integrations: {
                 airplay: true,
                 spotifyConnect: false,
@@ -51,8 +46,31 @@ const App: React.FC = () => {
             },
             display: {
                 showOfflineDevices: true,
+            },
+            federation: {
+                enabled: false,
+                autoDiscover: true,
+                localServerName: 'Main Server',
             }
         };
+
+        try {
+            const saved = localStorage.getItem('snapcast-settings');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                // Merge with defaults to ensure all fields exist (migration for old settings)
+                return {
+                    integrations: { ...defaultSettings.integrations, ...parsed.integrations },
+                    theme: { ...defaultSettings.theme, ...parsed.theme },
+                    display: { ...defaultSettings.display, ...parsed.display },
+                    federation: { ...defaultSettings.federation, ...parsed.federation },
+                };
+            }
+        } catch (error) {
+            console.error('Failed to load settings from localStorage:', error);
+        }
+
+        return defaultSettings;
     });
 
     // Store group mappings for clients
@@ -100,13 +118,51 @@ const App: React.FC = () => {
         };
     }, [settings.theme]);
 
+    // Helper to get the local server
+    const getLocalServer = () => servers.find(s => s.isLocal);
+
+    // Helper to check if a client/stream ID belongs to the local server
+    const isLocalId = (id: string): boolean => {
+        if (!settings.federation.enabled) return true;
+        const localServer = getLocalServer();
+        return !localServer || id.startsWith(`${localServer.id}-`);
+    };
+
+    // Helper to strip server prefix from federated IDs
+    const stripServerPrefix = (id: string): string => {
+        const localServer = getLocalServer();
+        if (localServer && id.startsWith(`${localServer.id}-`)) {
+            return id.replace(`${localServer.id}-`, '');
+        }
+        return id;
+    };
+
+    // Helper to get the effective browser audio client ID
+    // In federation mode, local clients get "server-{ip}-" prefix from federation API
+    const getBrowserAudioClientId = (): string => {
+        if (!browserAudio.state.clientId) return '';
+
+        if (settings.federation.enabled) {
+            // Find the local server ID (isLocal=true)
+            const localServer = getLocalServer();
+            if (localServer) {
+                return `${localServer.id}-${browserAudio.state.clientId}`;
+            }
+            // Fallback to localhost prefix if local server not found yet
+            return `server-localhost-${browserAudio.state.clientId}`;
+        }
+
+        return browserAudio.state.clientId;
+    };
+
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
     // Exclude browser audio client from being selected as primary
+    const browserClientId = getBrowserAudioClientId();
     const myClient = clients.find(c =>
-        c.id !== browserAudio.state.clientId &&
+        c.id !== browserClientId &&
         /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
-    ) || clients.find(c => c.id !== browserAudio.state.clientId);
+    ) || clients.find(c => c.id !== browserClientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
 
     // Auto-assign browser audio client to user's current stream when it connects
@@ -120,7 +176,7 @@ const App: React.FC = () => {
 
         // Check if browser client exists in client list (server has recognized it)
         // Note: Browser audio client might not report as connected immediately, but if it exists, we can assign it
-        const browserClient = clients.find(c => c.id === browserAudio.state.clientId);
+        const browserClient = clients.find(c => c.id === browserClientId);
         if (!browserClient) {
             return; // Server hasn't reported it yet
         }
@@ -137,25 +193,27 @@ const App: React.FC = () => {
         // Always assign to target stream if we have one
         // This handles both new connections and reconnections with stale stream assignments
         if (targetStream && browserClient.currentStreamId !== targetStream) {
-            handleStreamChange(browserAudio.state.clientId, targetStream);
+            handleStreamChange(browserClientId, targetStream);
         }
 
         if (targetStream) {
             setBrowserClientAutoAssigned(true);
         }
-    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams]);
+    }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, servers, settings.federation.enabled]);
 
-    // Update browser client name and volume if server has reported it
+    // Update browser client name, volume, and connection status if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
     const allClients = clients.map(c => {
-        // If this is our browser audio client, ensure proper naming and local volume
-        if (browserAudio.state.isActive && c.id === browserAudio.state.clientId) {
+        // If this is our browser audio client, ensure proper naming, local volume, and connection status
+        if (browserAudio.state.isActive && c.id === browserClientId) {
             return {
                 ...c,
                 // Use a friendly name instead of "snapweb"
                 name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name,
                 // Override volume with local state (browser audio volume is local only)
-                volume: browserAudio.state.volume
+                volume: browserAudio.state.volume,
+                // Override connection status - if browser audio is active, it's connected
+                connected: true
             };
         }
         return c;
@@ -163,12 +221,12 @@ const App: React.FC = () => {
 
     // Add placeholder if browser audio is active but server hasn't reported it yet
     if (browserAudio.state.isActive) {
-        const serverHasClient = clients.some(c => c.id === browserAudio.state.clientId);
+        const serverHasClient = clients.some(c => c.id === browserClientId);
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
             const browserClient: Client = {
-                id: browserAudio.state.clientId,
+                id: browserClientId,
                 name: 'Browser Audio (Connecting...)',
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
@@ -182,7 +240,7 @@ const App: React.FC = () => {
     // Hide snapweb clients that aren't our active browser audio client
     const shouldHideClient = (client: Client): boolean => {
         // If this is our active browser audio client, NEVER hide it (check ID first!)
-        if (client.id === browserAudio.state.clientId && browserAudio.state.isActive) {
+        if (client.id === browserClientId && browserAudio.state.isActive) {
             return false;
         }
 
@@ -199,7 +257,7 @@ const App: React.FC = () => {
     const filteredClients = settings.display.showOfflineDevices
         ? allClients
         : allClients.filter(c =>
-            c.connected || (c.id === browserAudio.state.clientId && browserAudio.state.isActive)
+            c.connected || (c.id === browserClientId && browserAudio.state.isActive)
         );
 
     // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
@@ -246,6 +304,29 @@ const App: React.FC = () => {
         }
     }, [recentPlaybackChange]);
 
+    // Sync ref with state changes
+    useEffect(() => {
+        recentUserChangesRef.current = recentUserChanges;
+    }, [recentUserChanges]);
+
+    // Clean up recent user changes after grace period expires
+    useEffect(() => {
+        if (!recentUserChanges) return;
+
+        const gracePeriod = 7000; // 7 seconds for user changes (longer than 5s polling interval)
+        const timeRemaining = gracePeriod - (Date.now() - recentUserChanges.timestamp);
+
+        if (timeRemaining > 0) {
+            const timeout = setTimeout(() => {
+                setRecentUserChanges(null);
+            }, timeRemaining);
+
+            return () => clearTimeout(timeout);
+        } else {
+            setRecentUserChanges(null);
+        }
+    }, [recentUserChanges]);
+
     // Listen for real-time metadata updates from Snapcast
     useEffect(() => {
         if (!snapcastService) return;
@@ -254,6 +335,7 @@ const App: React.FC = () => {
             // Debug: Log all metadata updates
             console.log(`[Metadata] Update received:`, {
                 streamId,
+                federationEnabled: settings.federation.enabled,
                 hasTitle: !!metadata.title,
                 hasArtist: !!metadata.artist,
                 hasAlbum: !!metadata.album,
@@ -265,7 +347,11 @@ const App: React.FC = () => {
             // IMPORTANT: Metadata updates are instant and indicate the stream is actively playing
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
-                    if (stream.id === streamId) {
+                    // Map local WebSocket stream ID to federated stream ID
+                    const federatedStreamId = getFederatedStreamId(streamId);
+                    const isMatch = stream.id === federatedStreamId;
+
+                    if (isMatch) {
                         // Detect if this is a new track (title changed)
                         const isNewTrack = metadata.title && metadata.title !== stream.currentTrack.title;
 
@@ -343,7 +429,7 @@ const App: React.FC = () => {
         });
 
         return () => unsubscribe();
-    }, [recentPlaybackChange]);
+    }, [recentPlaybackChange, settings.federation.enabled, servers]);
 
     // Listen for real-time playback state updates from Snapcast
     useEffect(() => {
@@ -357,7 +443,10 @@ const App: React.FC = () => {
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
                     setStreams(prevStreams =>
                         prevStreams.map(stream => {
-                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === stream.id);
+                            // Strip federation prefix for server stream lookup
+                            const localStreamId = getLocalStreamId(stream.id);
+
+                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
                             if (serverStream) {
                                 const isPlaying = snapcastService.isStreamPlaying(serverStream);
                                 if (stream.isPlaying !== isPlaying) {
@@ -381,7 +470,11 @@ const App: React.FC = () => {
             // Update the stream's playing state
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
-                    if (stream.id === streamId) {
+                    // Map local WebSocket stream ID to federated stream ID
+                    const federatedStreamId = getFederatedStreamId(streamId);
+                    const isMatch = stream.id === federatedStreamId;
+
+                    if (isMatch) {
                         if (stream.isPlaying !== isPlaying) {
                             console.log(`[WebSocket] Stream ${streamId} playback state: ${stream.isPlaying ? 'Playing' : 'Paused'} → ${isPlaying ? 'Playing' : 'Paused'}`);
                         }
@@ -396,7 +489,7 @@ const App: React.FC = () => {
         });
 
         return () => unsubscribe();
-    }, []);
+    }, [settings.federation.enabled, servers]);
 
     // Listen for real-time position updates from Snapcast (for sources that support it)
     useEffect(() => {
@@ -405,14 +498,17 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
             // Position and duration come in milliseconds from backend, convert to seconds
             const progressInSeconds = Math.floor(position / 1000);
-            console.log(`[App] Position update received: stream=${streamId}, progress=${progressInSeconds}s`);
+            console.log(`[App] Position update received: stream=${streamId}, progress=${progressInSeconds}s, federationEnabled=${settings.federation.enabled}`);
+
+            // Map local WebSocket stream ID to federated stream ID
+            const federatedStreamId = getFederatedStreamId(streamId);
 
             // Update stream progress
-            updateStreamProgress(streamId, progressInSeconds);
+            updateStreamProgress(federatedStreamId, progressInSeconds);
         });
 
         return () => unsubscribe();
-    }, [updateStreamProgress]);
+    }, [updateStreamProgress, settings.federation.enabled, servers]);
 
     // Fetch stream capabilities when current stream changes
     useEffect(() => {
@@ -490,8 +586,10 @@ const App: React.FC = () => {
 
     // Periodically sync metadata AND playback state with server as fallback
     // This ensures GUI stays in sync even if WebSocket notifications fail
+    // NOTE: Disabled in federation mode - federation polling handles this
     useEffect(() => {
         if (!currentStream || !snapcastService) return;
+        if (settings.federation.enabled) return; // Federation polling handles this
 
         const syncStreamState = async () => {
             try {
@@ -658,7 +756,7 @@ const App: React.FC = () => {
         const interval = setInterval(syncStreamState, 2000);
 
         return () => clearInterval(interval);
-    }, [currentStream?.id]);
+    }, [currentStream?.id, settings.federation.enabled]);
 
     useEffect(() => {
         let isCancelled = false;
@@ -730,9 +828,180 @@ const App: React.FC = () => {
         };
     }, []); // Empty dependency array - only run once
 
+    // Federation polling - fetch data from federation API when enabled
+    useEffect(() => {
+        if (!settings.federation.enabled) {
+            // Stop polling if federation was disabled
+            federationService.stopPolling();
+            setServers([]);
+            return;
+        }
+
+        console.log('[Federation] Starting polling...');
+
+        // Transform federated stream data to match frontend Stream type
+        const transformFederatedStream = (federatedStream: any): Stream => {
+            const metadata = federatedStream.metadata || {};
+            const properties = federatedStream.properties || {};
+
+            // Extract stream name from federated ID by removing "{serverId}-" prefix
+            // Example: "192-168-7-226-default" -> "default"
+            const extractStreamName = (id: string, serverId: string): string => {
+                const prefix = `${serverId}-`;
+                if (id.startsWith(prefix)) {
+                    return id.substring(prefix.length);
+                }
+                return 'Unknown';
+            };
+
+            const streamName = extractStreamName(federatedStream.id, federatedStream.serverId);
+
+            return {
+                id: federatedStream.id,
+                serverId: federatedStream.serverId,
+                serverName: federatedStream.serverName,
+                name: streamName,
+                sourceDevice: streamName,
+                currentTrack: {
+                    id: federatedStream.id,
+                    title: metadata.title || 'Unknown Track',
+                    artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
+                    album: metadata.album || 'Unknown Album',
+                    albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTAwLCAxMDApIHNjYWxlKDEyLjUpIj48cGF0aCBmaWxsPSIjRjBGMEYwIiBkPSJNNCAzdjkuNGMtMC40LTAuMi0wLjktMC40LTEuNS0wLjQtMS40IDAtMi41IDAuOS0yLjUgMnMxLjEgMiAyLjUgMiAyLjUtMC45IDIuNS0ydi03LjNsNy0yLjN2NS4xYy0wLjQtMC4zLTAuOS0wLjUtMS41LTAuNS0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTExbC05IDN6Ij48L3BhdGg+PC9nPjwvc3ZnPg==',
+                    duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0
+                },
+                isPlaying: properties.playbackStatus === 'playing',
+                progress: properties.position ? Math.floor(properties.position / 1000) : 0
+            };
+        };
+
+        // Transform federated client data to ensure names are populated
+        const transformFederatedClient = (federatedClient: any): Client => {
+            // Extract client name from federated ID or use provided name
+            // Federated client IDs may be in format "server-{serverId}-{clientId}"
+            const extractClientName = (client: any): string => {
+                // If client has a name, use it
+                if (client.name && client.name !== '') {
+                    return client.name;
+                }
+                // Otherwise try to extract from ID
+                // Format might be: "server-localhost-00:21:6a:7e:3f:ae" or similar
+                const parts = client.id.split('-');
+                if (parts.length >= 3) {
+                    // Take everything after "server-{serverId}-"
+                    return parts.slice(2).join('-');
+                }
+                return client.id; // Fallback to ID
+            };
+
+            return {
+                ...federatedClient,
+                name: extractClientName(federatedClient)
+            };
+        };
+
+        // Helper to detect if a client ID is local (served by this server's WebSocket)
+        // Local clients from federation API have "server-localhost-" prefix but should use WebSocket API
+        const isLocalFederatedClient = (clientId: string): boolean => {
+            return clientId.startsWith('server-localhost-');
+        };
+
+        // Helper to strip federation prefix from local client IDs
+        const stripLocalPrefix = (clientId: string): string => {
+            if (isLocalFederatedClient(clientId)) {
+                return clientId.replace('server-localhost-', '');
+            }
+            return clientId;
+        };
+
+        // Start polling for federated data
+        federationService.startPolling((data) => {
+            console.log('[Federation] Received update:', {
+                servers: data.servers.length,
+                streams: data.streams.length,
+                clients: data.clients.length
+            });
+
+            setServers(data.servers);
+
+            // Check if we should ignore polling updates due to recent user changes
+            // Use ref to avoid stale closure
+            const now = Date.now();
+            const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
+            const recentChanges = recentUserChangesRef.current;
+            const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
+
+            if (hasRecentChange) {
+                console.log(`[Federation] Grace period active: ${recentChanges.type} change for`, recentChanges.data, `(${Math.round((GRACE_PERIOD - (now - recentChanges.timestamp)) / 1000)}s remaining)`);
+            }
+
+            // Transform and MERGE federated streams (preserve client-side progress tracking)
+            if (data.streams.length > 0) {
+                setStreams(prevStreams => {
+                    const transformedStreams = data.streams.map(federatedStream => {
+                        const newStream = transformFederatedStream(federatedStream);
+
+                        // Find existing stream to preserve client-side progress
+                        const existingStream = prevStreams.find(s => s.id === newStream.id);
+
+                        if (existingStream && existingStream.isPlaying) {
+                            // Stream is playing - preserve client-side progress for smooth updates
+                            // Accept all other server data (metadata, isPlaying, etc.)
+                            // Use whichever progress is higher (client increments between polls)
+                            // However, if there was a recent playback change for THIS stream, preserve its state
+                            if (hasRecentChange && recentChanges!.type === 'playback' && recentChanges!.data.streamId === newStream.id) {
+                                console.log(`[Federation] Preserving user-initiated playback state for ${newStream.id} during grace period`);
+                                return {
+                                    ...newStream,
+                                    isPlaying: existingStream.isPlaying,
+                                    progress: Math.max(newStream.progress, existingStream.progress)
+                                };
+                            }
+
+                            return {
+                                ...newStream,
+                                progress: Math.max(newStream.progress, existingStream.progress)
+                            };
+                        }
+
+                        // New stream or not playing - use server data as-is
+                        return newStream;
+                    });
+
+                    return transformedStreams;
+                });
+            }
+
+            // Transform and set federated clients
+            if (data.clients.length > 0) {
+                // If there was a recent client routing change, preserve that client's stream assignment
+                const transformedClients = data.clients.map(client => {
+                    const transformed = transformFederatedClient(client);
+
+                    if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
+                        console.log(`[Federation] Preserving user-initiated stream routing for ${transformed.id} during grace period`);
+                        return {
+                            ...transformed,
+                            currentStreamId: recentChanges!.data.streamId
+                        };
+                    }
+
+                    return transformed;
+                });
+                setClients(transformedClients);
+            }
+        }, 5000);
+
+        return () => {
+            federationService.stopPolling();
+        };
+    }, [settings.federation.enabled]);
+
     const handleVolumeChange = async (clientId: string, volume: number) => {
         // Handle browser audio client volume changes locally
-        if (clientId === browserAudio.state.clientId) {
+        // Compare with effective browser client ID (accounting for federation prefix)
+        const effectiveBrowserClientId = getBrowserAudioClientId();
+        if (clientId === effectiveBrowserClientId) {
             browserAudio.setVolume(volume);
             // Also update clients state to ensure controlled input stays in sync
             // (The allClients mapping will override with browserAudio.state.volume,
@@ -748,11 +1017,28 @@ const App: React.FC = () => {
             prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
         );
 
-        // Send to Snapcast server
+        // Determine if this is a local federated client or remote federated client
+        const isLocalFederated = clientId.startsWith('server-localhost-');
+        const isRemoteFederated = settings.federation.enabled && clientId.startsWith('server-') && !isLocalFederated;
+
+        // If federation is enabled and client is REMOTE federated, use federation API
+        if (isRemoteFederated) {
+            try {
+                await federationService.setVolume(clientId, volume);
+            } catch (error) {
+                console.error(`Failed to set volume for federated client ${clientId}:`, error);
+            }
+            return;
+        }
+
+        // Local client (either direct WebSocket or local federated) - use WebSocket API
+        // Strip "server-localhost-" prefix if present
+        const localClientId = isLocalFederated ? clientId.replace('server-localhost-', '') : clientId;
+
         try {
-            await snapcastService.setClientVolume(clientId, volume);
+            await snapcastService.setClientVolume(localClientId, volume);
         } catch (error) {
-            console.error(`Failed to set volume for client ${clientId}:`, error);
+            console.error(`Failed to set volume for client ${localClientId}:`, error);
             // Could revert local state here if needed
         }
     };
@@ -760,6 +1046,7 @@ const App: React.FC = () => {
     const handleGroupVolumeAdjust = (streamId: string | null, direction: 'up' | 'down') => {
         if (!streamId) return;
         const adjustment = direction === 'up' ? VOLUME_STEP : -VOLUME_STEP;
+        const effectiveBrowserClientId = getBrowserAudioClientId();
 
         setClients(prevClients => {
             const updatedClients = prevClients.map(c => {
@@ -767,13 +1054,25 @@ const App: React.FC = () => {
                     const newVolume = Math.max(0, Math.min(100, c.volume + adjustment));
 
                     // Handle browser audio client locally
-                    if (c.id === browserAudio.state.clientId) {
+                    if (c.id === effectiveBrowserClientId) {
                         browserAudio.setVolume(newVolume);
                     } else {
-                        // Send volume change to server for regular clients
-                        snapcastService.setClientVolume(c.id, newVolume).catch(error => {
-                            console.error(`Failed to adjust volume for client ${c.id}:`, error);
-                        });
+                        // Determine if remote federated or local
+                        const isLocalFederated = c.id.startsWith('server-localhost-');
+                        const isRemoteFederated = settings.federation.enabled && c.id.startsWith('server-') && !isLocalFederated;
+
+                        if (isRemoteFederated) {
+                            // Remote federated client - use federation API
+                            federationService.setVolume(c.id, newVolume).catch(error => {
+                                console.error(`Failed to adjust volume for federated client ${c.id}:`, error);
+                            });
+                        } else {
+                            // Local client - use WebSocket API (strip prefix if needed)
+                            const localClientId = isLocalFederated ? c.id.replace('server-localhost-', '') : c.id;
+                            snapcastService.setClientVolume(localClientId, newVolume).catch(error => {
+                                console.error(`Failed to adjust volume for client ${localClientId}:`, error);
+                            });
+                        }
                     }
 
                     return {...c, volume: newVolume};
@@ -789,6 +1088,7 @@ const App: React.FC = () => {
         if (!streamId) return;
 
         const isMuted = preMuteGroupVolumes[streamId];
+        const effectiveBrowserClientId = getBrowserAudioClientId();
 
         if (isMuted) {
             setClients(prevClients =>
@@ -797,13 +1097,25 @@ const App: React.FC = () => {
                         const restoredVolume = preMuteGroupVolumes[streamId][c.id];
 
                         // Handle browser audio client locally
-                        if (c.id === browserAudio.state.clientId) {
+                        if (c.id === effectiveBrowserClientId) {
                             browserAudio.setVolume(restoredVolume, false);
                         } else {
-                            // Unmute on server
-                            snapcastService.setClientVolume(c.id, restoredVolume, false).catch(error => {
-                                console.error(`Failed to unmute client ${c.id}:`, error);
-                            });
+                            // Determine if remote federated or local
+                            const isLocalFederated = c.id.startsWith('server-localhost-');
+                            const isRemoteFederated = settings.federation.enabled && c.id.startsWith('server-') && !isLocalFederated;
+
+                            if (isRemoteFederated) {
+                                // Remote federated client - use federation API
+                                federationService.setVolume(c.id, restoredVolume, false).catch(error => {
+                                    console.error(`Failed to unmute federated client ${c.id}:`, error);
+                                });
+                            } else {
+                                // Local client - unmute on server (strip prefix if needed)
+                                const localClientId = isLocalFederated ? c.id.replace('server-localhost-', '') : c.id;
+                                snapcastService.setClientVolume(localClientId, restoredVolume, false).catch(error => {
+                                    console.error(`Failed to unmute client ${localClientId}:`, error);
+                                });
+                            }
                         }
 
                         return {...c, volume: restoredVolume};
@@ -835,13 +1147,25 @@ const App: React.FC = () => {
                 prevClients.map(c => {
                     if (c.currentStreamId === streamId) {
                         // Handle browser audio client locally
-                        if (c.id === browserAudio.state.clientId) {
+                        if (c.id === effectiveBrowserClientId) {
                             browserAudio.setVolume(0, true);
                         } else {
-                            // Mute on server
-                            snapcastService.setClientVolume(c.id, 0, true).catch(error => {
-                                console.error(`Failed to mute client ${c.id}:`, error);
-                            });
+                            // Determine if remote federated or local
+                            const isLocalFederated = c.id.startsWith('server-localhost-');
+                            const isRemoteFederated = settings.federation.enabled && c.id.startsWith('server-') && !isLocalFederated;
+
+                            if (isRemoteFederated) {
+                                // Remote federated client - use federation API
+                                federationService.setVolume(c.id, 0, true).catch(error => {
+                                    console.error(`Failed to mute federated client ${c.id}:`, error);
+                                });
+                            } else {
+                                // Local client - mute on server (strip prefix if needed)
+                                const localClientId = isLocalFederated ? c.id.replace('server-localhost-', '') : c.id;
+                                snapcastService.setClientVolume(localClientId, 0, true).catch(error => {
+                                    console.error(`Failed to mute client ${localClientId}:`, error);
+                                });
+                            }
                         }
 
                         return {...c, volume: 0};
@@ -853,10 +1177,12 @@ const App: React.FC = () => {
     };
 
     const handleStreamChange = async (clientId: string, streamId: string | null) => {
-        console.log('[StreamChange] Request:', {clientId, streamId, clientGroupMap, allClients: clients.map(c => c.id)});
+        console.log('[StreamChange] Request:', {clientId, streamId, federationEnabled: settings.federation.enabled});
 
         // Handle browser audio client - stop it when stream set to null
-        if (clientId === browserAudio.state.clientId && streamId === null) {
+        // Compare with effective browser client ID (accounting for federation prefix)
+        const effectiveBrowserClientId = getBrowserAudioClientId();
+        if (clientId === effectiveBrowserClientId && streamId === null) {
             browserAudio.stop();
             return;
         }
@@ -866,31 +1192,113 @@ const App: React.FC = () => {
             prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: streamId} : c))
         );
 
-        // Send to Snapcast server
-        try {
-            const groupId = clientGroupMap[clientId];
-            console.log('[StreamChange] Looked up groupId:', groupId, 'for client:', clientId);
+        // Track this as a user-initiated change to prevent polling from overwriting it
+        const timestamp = Date.now();
+        setRecentUserChanges({type: 'routing', timestamp, data: {clientId, streamId}});
 
-            if (groupId && streamId) {
-                console.log('[StreamChange] Calling setGroupStream:', {groupId, streamId});
-                await snapcastService.setGroupStream(groupId, streamId);
+        // Check if this is a local client (use WebSocket) or remote client (use Federation API)
+        const isLocal = isLocalId(clientId);
+
+        // If federation is enabled and client is REMOTE, use federation API
+        if (settings.federation.enabled && !isLocal) {
+            if (!streamId) {
+                return;
+            }
+
+            try {
+                const result = await federationService.routeClient(clientId, streamId);
+
+                if (result.success) {
+                    console.log('[StreamChange] SUCCESS: Remote federated client routed');
+                } else {
+                    console.error('[StreamChange] Federation routing failed:', result.message);
+                    // Revert local state on error
+                    setClients(prevClients =>
+                        prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
+                    );
+                }
+            } catch (error) {
+                console.error(`Failed to route federated client ${clientId}:`, error);
+                // Revert local state on error
+                setClients(prevClients =>
+                    prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
+                );
+            }
+            return;
+        }
+
+        // Local client - use WebSocket API
+        // Strip server prefix if present (e.g., "server-192-168-7-122-")
+        const localClientId = stripServerPrefix(clientId);
+        const localStreamId = streamId ? stripServerPrefix(streamId) : null;
+
+        console.log('[StreamChange] Using WebSocket API for local client:', {
+            originalClientId: clientId,
+            localClientId,
+            originalStreamId: streamId,
+            localStreamId,
+            isLocal,
+            localServerId: getLocalServer()?.id
+        });
+
+        try {
+            const groupId = clientGroupMap[localClientId];
+            console.log('[StreamChange] Looked up groupId:', groupId, 'for local client:', localClientId);
+
+            if (groupId && localStreamId) {
+                console.log('[StreamChange] Calling setGroupStream:', {groupId, streamId: localStreamId});
+                await snapcastService.setGroupStream(groupId, localStreamId);
                 console.log('[StreamChange] SUCCESS: Stream changed');
-            } else if (groupId && streamId === null) {
+            } else if (groupId && localStreamId === null) {
                 // For setting to "no stream", we might need a different approach
                 // This depends on how Snapcast handles idle streams
                 // You might need to set it to a default idle stream instead
                 console.log('[StreamChange] Skipping: streamId is null');
             } else {
-                console.error(`[StreamChange] ERROR: Could not find group for client ${clientId}. ClientGroupMap:`, clientGroupMap);
+                console.error(`[StreamChange] ERROR: Could not find group for client ${localClientId}. ClientGroupMap:`, clientGroupMap);
             }
         } catch (error) {
-            console.error(`Failed to change stream for client ${clientId}:`, error);
+            console.error(`Failed to change stream for client ${localClientId}:`, error);
 
             // Revert local state on error
             setClients(prevClients =>
                 prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
             );
         }
+    };
+
+    // Helper to check if a stream is local (belongs to this server)
+    const isLocalStream = (stream: Stream): boolean => {
+        if (!settings.federation.enabled) return true;
+
+        // In federation mode, check if the stream's server is the local server
+        if (!stream.serverId) return true;
+
+        // Local server is identified by serverId containing "localhost" or being marked as local
+        const localServer = servers.find(s => s.isLocal || s.id.includes('localhost'));
+        return stream.serverId === localServer?.id;
+    };
+
+    // Helper to get local stream ID (strip federation prefix if present)
+    const getLocalStreamId = (streamId: string): string => {
+        if (!settings.federation.enabled) return streamId;
+
+        // Strip any "server-{ip}-" or "server-localhost-" prefix
+        const match = streamId.match(/^server-[\d-]+-(.+)$/) || streamId.match(/^server-localhost-(.+)$/);
+        return match ? match[1] : streamId;
+    };
+
+    // Helper to map WebSocket stream ID to federated stream ID
+    // WebSocket sends: "Airplay" → we need to find: "server-192-168-201-133-Airplay"
+    const getFederatedStreamId = (localStreamId: string): string => {
+        if (!settings.federation.enabled) return localStreamId;
+
+        // Find the local server
+        const localServer = servers.find(s => s.isLocal || s.id.includes('localhost'));
+        if (!localServer) return localStreamId; // Fallback if server not found yet
+
+        // Construct federated ID: server ID + local stream ID
+        return `${localServer.id}-${localStreamId}`;
     };
 
     // Track last play/pause command time to debounce rapid toggling
@@ -910,47 +1318,70 @@ const App: React.FC = () => {
         lastPlayPauseRef.current = now;
 
         try {
-            // Check stream capabilities first
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+            const command = currentStream.isPlaying ? 'pause' : 'play';
 
-            const newPlayingState = !currentStream.isPlaying;
+            // Check if this is a local or remote stream
+            if (settings.federation.enabled && !isLocalStream(currentStream)) {
+                // Remote stream - use federation API
+                console.log(`[PlayPause] Using federation API for remote stream ${currentStream.id}`);
 
-            if (currentStream.isPlaying) {
-                // Try to pause
-                if (capabilities.canPause) {
-                    // Optimistically update state immediately
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: false} : s
-                        )
-                    );
-                    // Record this change to prevent polling from overwriting for 8 seconds
-                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+                // Optimistically update state
+                setStreams(prevStreams =>
+                    prevStreams.map(s =>
+                        s.id === currentStream.id ? {...s, isPlaying: !currentStream.isPlaying} : s
+                    )
+                );
+                const timestamp = Date.now();
+                setRecentPlaybackChange({streamId: currentStream.id, timestamp});
+                setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
 
-                    await snapcastService.pauseStream(currentStream.id);
-                } else {
-                    console.warn(`Stream ${currentStream.id} does not support pause`);
+                const result = await federationService.controlStream(currentStream.id, command);
+                if (!result.success) {
+                    console.error(`Federation playback control failed: ${result.message}`);
+                    setRecentPlaybackChange(null);
+                    setRecentUserChanges(null);
                 }
             } else {
-                // Try to play
-                if (capabilities.canPlay) {
-                    // Optimistically update state immediately
-                    setStreams(prevStreams =>
-                        prevStreams.map(s =>
-                            s.id === currentStream.id ? {...s, isPlaying: true} : s
-                        )
-                    );
-                    // Record this change to prevent polling from overwriting for 8 seconds
-                    setRecentPlaybackChange({streamId: currentStream.id, timestamp: Date.now()});
+                // Local stream - use WebSocket API
+                const localStreamId = getLocalStreamId(currentStream.id);
 
-                    await snapcastService.playStream(currentStream.id);
+                // Check stream capabilities first
+                const capabilities = await snapcastService.getStreamCapabilities(localStreamId);
+
+                if (currentStream.isPlaying) {
+                    // Try to pause
+                    if (capabilities.canPause) {
+                        setStreams(prevStreams =>
+                            prevStreams.map(s =>
+                                s.id === currentStream.id ? {...s, isPlaying: false} : s
+                            )
+                        );
+                        const timestamp = Date.now();
+                        setRecentPlaybackChange({streamId: currentStream.id, timestamp});
+                        setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
+                        await snapcastService.pauseStream(localStreamId);
+                    } else {
+                        console.warn(`Stream ${currentStream.id} does not support pause`);
+                    }
                 } else {
-                    console.warn(`Stream ${currentStream.id} does not support play`);
+                    // Try to play
+                    if (capabilities.canPlay) {
+                        setStreams(prevStreams =>
+                            prevStreams.map(s =>
+                                s.id === currentStream.id ? {...s, isPlaying: true} : s
+                            )
+                        );
+                        const timestamp = Date.now();
+                        setRecentPlaybackChange({streamId: currentStream.id, timestamp});
+                        setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
+                        await snapcastService.playStream(localStreamId);
+                    } else {
+                        console.warn(`Stream ${currentStream.id} does not support play`);
+                    }
                 }
             }
         } catch (error) {
             console.error(`Playback control failed for stream ${currentStream.id}:`, error);
-            // On error, clear the grace period so polling can correct the state
             setRecentPlaybackChange(null);
         }
     };
@@ -959,39 +1390,44 @@ const App: React.FC = () => {
         if (!currentStream) return;
 
         // Optimistically clear artwork IMMEDIATELY when user clicks skip
-        // This must happen before any async operations to prevent race condition where
-        // metadata arrives before the clear is applied
-        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+CjxwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
+        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+PGNwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
 
         setStreams(prevStreams =>
             prevStreams.map(s =>
                 s.id === currentStream.id
-                    ? {
-                        ...s,
-                        currentTrack: {
-                            ...s.currentTrack,
-                            albumArtUrl: defaultArtwork
-                        }
-                    }
+                    ? {...s, currentTrack: {...s.currentTrack, albumArtUrl: defaultArtwork}}
                     : s
             )
         );
 
         try {
-            // Check stream capabilities
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+            const command = direction === 'next' ? 'next' : 'previous';
 
-            if (direction === 'next') {
-                if (capabilities.canGoNext) {
-                    await snapcastService.nextTrack(currentStream.id);
-                } else {
-                    console.warn(`Stream ${currentStream.id} does not support next track`);
+            // Check if this is a local or remote stream
+            if (settings.federation.enabled && !isLocalStream(currentStream)) {
+                // Remote stream - use federation API
+                console.log(`[Skip] Using federation API for remote stream ${currentStream.id}`);
+                const result = await federationService.controlStream(currentStream.id, command);
+                if (!result.success) {
+                    console.error(`Federation skip failed: ${result.message}`);
                 }
             } else {
-                if (capabilities.canGoPrevious) {
-                    await snapcastService.previousTrack(currentStream.id);
+                // Local stream - use WebSocket API
+                const localStreamId = getLocalStreamId(currentStream.id);
+                const capabilities = await snapcastService.getStreamCapabilities(localStreamId);
+
+                if (direction === 'next') {
+                    if (capabilities.canGoNext) {
+                        await snapcastService.nextTrack(localStreamId);
+                    } else {
+                        console.warn(`Stream ${currentStream.id} does not support next track`);
+                    }
                 } else {
-                    console.warn(`Stream ${currentStream.id} does not support previous track`);
+                    if (capabilities.canGoPrevious) {
+                        await snapcastService.previousTrack(localStreamId);
+                    } else {
+                        console.warn(`Stream ${currentStream.id} does not support previous track`);
+                    }
                 }
             }
         } catch (error) {
@@ -1003,20 +1439,20 @@ const App: React.FC = () => {
         if (!currentStream) return;
 
         try {
-            // Check stream capabilities
-            const capabilities = await snapcastService.getStreamCapabilities(currentStream.id);
+            // Seek is only supported for local streams (no federation API endpoint)
+            if (settings.federation.enabled && !isLocalStream(currentStream)) {
+                console.warn(`Seek not supported for remote streams in federation mode`);
+                return;
+            }
+
+            const localStreamId = getLocalStreamId(currentStream.id);
+            const capabilities = await snapcastService.getStreamCapabilities(localStreamId);
 
             if (capabilities.canSeek) {
-                // Convert position to milliseconds for backend
                 const positionInMs = positionInSeconds * 1000;
-
-                // Optimistically update progress locally
                 updateStreamProgress(currentStream.id, positionInSeconds);
-
-                // Send seek command to backend
-                await snapcastService.seekTo(currentStream.id, positionInMs);
-
-                console.log(`Seek to ${positionInSeconds}s (${positionInMs}ms) for stream ${currentStream.id}`);
+                await snapcastService.seekTo(localStreamId, positionInMs);
+                console.log(`Seek to ${positionInSeconds}s for stream ${currentStream.id}`);
             } else {
                 console.warn(`Stream ${currentStream.id} does not support seek`);
             }
@@ -1077,6 +1513,7 @@ const App: React.FC = () => {
                             streams={streams}
                             currentStreamId={myClient.currentStreamId}
                             onSelectStream={(streamId) => handleStreamChange(myClient.id, streamId)}
+                            federationEnabled={settings.federation.enabled}
                         />
                     </div>
                     {currentStream ? (
@@ -1132,6 +1569,7 @@ const App: React.FC = () => {
                                 browserAudio.start();
                             }}
                             browserAudioActive={browserAudio.state.isActive}
+                            federationEnabled={settings.federation.enabled}
                         />
                     </div>
                 </div>

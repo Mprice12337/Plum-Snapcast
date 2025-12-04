@@ -7,8 +7,20 @@ export interface Track {
     duration: number; // in seconds
 }
 
+// Federation: Server representation
+export interface Server {
+    id: string;           // "server-192-168-7-122"
+    name: string;         // "Main Server"
+    host: string;         // "192.168.7.122"
+    port: number;         // 1780
+    connected: boolean;
+    isLocal: boolean;
+}
+
 export interface Stream {
-    id: string;
+    id: string;                      // Federated ID: "server-192-168-7-122-airplay1"
+    serverId?: string;               // "server-192-168-7-122" (for federation)
+    serverName?: string;             // "Main Server" (for federation)
     name: string;
     sourceDevice: string;
     currentTrack: Track;
@@ -17,7 +29,9 @@ export interface Stream {
 }
 
 export interface Client {
-    id: string;
+    id: string;                      // Federated ID: "server-192-168-7-122-living-room"
+    serverId?: string;               // "server-192-168-7-122" (for federation)
+    serverName?: string;             // "Main Server" (for federation)
     name: string;
     currentStreamId: string | null;
     volume: number; // 0-100
@@ -40,5 +54,10 @@ export interface Settings {
     };
     display: {
         showOfflineDevices: boolean;
+    };
+    federation: {
+        enabled: boolean;
+        autoDiscover: boolean;
+        localServerName: string;
     };
 }
