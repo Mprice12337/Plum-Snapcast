@@ -28,6 +28,8 @@ const App: React.FC = () => {
     // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
     const [recentUserChanges, setRecentUserChanges] = useState<{type: string, timestamp: number, data: any} | null>(null);
+    // Use ref to avoid stale closure in polling callback
+    const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
 
     // Load settings from localStorage or use defaults
     const [settings, setSettings] = useState<Settings>(() => {
@@ -116,6 +118,25 @@ const App: React.FC = () => {
         };
     }, [settings.theme]);
 
+    // Helper to get the local server
+    const getLocalServer = () => servers.find(s => s.isLocal);
+
+    // Helper to check if a client/stream ID belongs to the local server
+    const isLocalId = (id: string): boolean => {
+        if (!settings.federation.enabled) return true;
+        const localServer = getLocalServer();
+        return !localServer || id.startsWith(`${localServer.id}-`);
+    };
+
+    // Helper to strip server prefix from federated IDs
+    const stripServerPrefix = (id: string): string => {
+        const localServer = getLocalServer();
+        if (localServer && id.startsWith(`${localServer.id}-`)) {
+            return id.replace(`${localServer.id}-`, '');
+        }
+        return id;
+    };
+
     // Helper to get the effective browser audio client ID
     // In federation mode, local clients get "server-{ip}-" prefix from federation API
     const getBrowserAudioClientId = (): string => {
@@ -123,7 +144,7 @@ const App: React.FC = () => {
 
         if (settings.federation.enabled) {
             // Find the local server ID (isLocal=true)
-            const localServer = servers.find(s => s.isLocal);
+            const localServer = getLocalServer();
             if (localServer) {
                 return `${localServer.id}-${browserAudio.state.clientId}`;
             }
@@ -282,6 +303,11 @@ const App: React.FC = () => {
             setRecentPlaybackChange(null);
         }
     }, [recentPlaybackChange]);
+
+    // Sync ref with state changes
+    useEffect(() => {
+        recentUserChangesRef.current = recentUserChanges;
+    }, [recentUserChanges]);
 
     // Clean up recent user changes after grace period expires
     useEffect(() => {
@@ -899,9 +925,15 @@ const App: React.FC = () => {
             setServers(data.servers);
 
             // Check if we should ignore polling updates due to recent user changes
+            // Use ref to avoid stale closure
             const now = Date.now();
             const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
-            const hasRecentChange = recentUserChanges && (now - recentUserChanges.timestamp) < GRACE_PERIOD;
+            const recentChanges = recentUserChangesRef.current;
+            const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
+
+            if (hasRecentChange) {
+                console.log(`[Federation] Grace period active: ${recentChanges.type} change for`, recentChanges.data, `(${Math.round((GRACE_PERIOD - (now - recentChanges.timestamp)) / 1000)}s remaining)`);
+            }
 
             // Transform and MERGE federated streams (preserve client-side progress tracking)
             if (data.streams.length > 0) {
@@ -917,7 +949,7 @@ const App: React.FC = () => {
                             // Accept all other server data (metadata, isPlaying, etc.)
                             // Use whichever progress is higher (client increments between polls)
                             // However, if there was a recent playback change for THIS stream, preserve its state
-                            if (hasRecentChange && recentUserChanges.type === 'playback' && recentUserChanges.data.streamId === newStream.id) {
+                            if (hasRecentChange && recentChanges!.type === 'playback' && recentChanges!.data.streamId === newStream.id) {
                                 console.log(`[Federation] Preserving user-initiated playback state for ${newStream.id} during grace period`);
                                 return {
                                     ...newStream,
@@ -946,11 +978,11 @@ const App: React.FC = () => {
                 const transformedClients = data.clients.map(client => {
                     const transformed = transformFederatedClient(client);
 
-                    if (hasRecentChange && recentUserChanges.type === 'routing' && recentUserChanges.data.clientId === transformed.id) {
+                    if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
                         console.log(`[Federation] Preserving user-initiated stream routing for ${transformed.id} during grace period`);
                         return {
                             ...transformed,
-                            currentStreamId: recentUserChanges.data.streamId
+                            currentStreamId: recentChanges!.data.streamId
                         };
                     }
 
@@ -1164,12 +1196,11 @@ const App: React.FC = () => {
         const timestamp = Date.now();
         setRecentUserChanges({type: 'routing', timestamp, data: {clientId, streamId}});
 
-        // Determine if this is a local federated client or remote federated client
-        const isLocalFederated = clientId.startsWith('server-localhost-');
-        const isRemoteFederated = settings.federation.enabled && clientId.startsWith('server-') && !isLocalFederated;
+        // Check if this is a local client (use WebSocket) or remote client (use Federation API)
+        const isLocal = isLocalId(clientId);
 
-        // If federation is enabled and client is REMOTE federated, use federation API
-        if (isRemoteFederated) {
+        // If federation is enabled and client is REMOTE, use federation API
+        if (settings.federation.enabled && !isLocal) {
             if (!streamId) {
                 console.log('[StreamChange] Skipping: streamId is null (remote federation)');
                 return;
@@ -1198,17 +1229,18 @@ const App: React.FC = () => {
             return;
         }
 
-        // Local client (either direct WebSocket or local federated) - use WebSocket API
-        // Strip "server-localhost-" prefix if present
-        const localClientId = isLocalFederated ? clientId.replace('server-localhost-', '') : clientId;
-        const localStreamId = streamId?.startsWith('server-localhost-') ? streamId.replace('server-localhost-', '') : streamId;
+        // Local client - use WebSocket API
+        // Strip server prefix if present (e.g., "server-192-168-7-122-")
+        const localClientId = stripServerPrefix(clientId);
+        const localStreamId = streamId ? stripServerPrefix(streamId) : null;
 
         console.log('[StreamChange] Using WebSocket API for local client:', {
             originalClientId: clientId,
             localClientId,
             originalStreamId: streamId,
             localStreamId,
-            isLocalFederated
+            isLocal,
+            localServerId: getLocalServer()?.id
         });
 
         try {
