@@ -8,6 +8,7 @@ import {Settings as SettingsModal} from './components/Settings';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
+import {settingsService} from './services/settingsService';
 import type {Client, Server, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
@@ -31,47 +32,8 @@ const App: React.FC = () => {
     // Use ref to avoid stale closure in polling callback
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
 
-    // Load settings from localStorage or use defaults
-    const [settings, setSettings] = useState<Settings>(() => {
-        const defaultSettings: Settings = {
-            integrations: {
-                airplay: true,
-                spotifyConnect: false,
-                snapcast: true,
-                visualizer: false,
-            },
-            theme: {
-                mode: 'dark',
-                accent: 'purple',
-            },
-            display: {
-                showOfflineDevices: true,
-            },
-            federation: {
-                enabled: false,
-                autoDiscover: true,
-                localServerName: 'Main Server',
-            }
-        };
-
-        try {
-            const saved = localStorage.getItem('snapcast-settings');
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                // Merge with defaults to ensure all fields exist (migration for old settings)
-                return {
-                    integrations: { ...defaultSettings.integrations, ...parsed.integrations },
-                    theme: { ...defaultSettings.theme, ...parsed.theme },
-                    display: { ...defaultSettings.display, ...parsed.display },
-                    federation: { ...defaultSettings.federation, ...parsed.federation },
-                };
-            }
-        } catch (error) {
-            console.error('Failed to load settings from localStorage:', error);
-        }
-
-        return defaultSettings;
-    });
+    // Settings loaded from settingsService (server + local storage)
+    const [settings, setSettings] = useState<Settings>(settingsService.getMergedSettings());
 
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
@@ -84,14 +46,23 @@ const App: React.FC = () => {
     // Capture the target stream when "Listen in Browser" is clicked
     const [targetStreamForBrowserAudio, setTargetStreamForBrowserAudio] = useState<string | null>(null);
 
-    // Persist settings to localStorage whenever they change
+    // Initialize settings from service (fetch from server + local storage)
     useEffect(() => {
-        try {
-            localStorage.setItem('snapcast-settings', JSON.stringify(settings));
-        } catch (error) {
-            console.error('Failed to save settings to localStorage:', error);
-        }
-    }, [settings]);
+        settingsService.init().then((initialSettings) => {
+            setSettings(initialSettings);
+            console.log('[Settings] Initialized:', initialSettings);
+        }).catch((error) => {
+            console.error('[Settings] Failed to initialize:', error);
+        });
+
+        // Subscribe to settings changes
+        const unsubscribe = settingsService.subscribe((updatedSettings) => {
+            setSettings(updatedSettings);
+            console.log('[Settings] Updated:', updatedSettings);
+        });
+
+        return () => unsubscribe();
+    }, []);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -1591,7 +1562,12 @@ const App: React.FC = () => {
             {isSettingsOpen && (
                 <SettingsModal
                     settings={settings}
-                    onSettingsChange={setSettings}
+                    onSettingsChange={(newSettings) => {
+                        // Use settingsService to update settings (handles server + local storage)
+                        settingsService.updateSettings(newSettings).catch((error) => {
+                            console.error('[Settings] Failed to update:', error);
+                        });
+                    }}
                     onClose={() => setIsSettingsOpen(false)}
                 />
             )}

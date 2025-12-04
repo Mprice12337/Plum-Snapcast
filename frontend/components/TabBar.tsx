@@ -1,0 +1,40 @@
+import React from 'react';
+
+export type Tab = {
+  id: string;
+  label: string;
+  icon: string;
+};
+
+interface TabBarProps {
+  tabs: Tab[];
+  activeTab: string;
+  onTabChange: (tabId: string) => void;
+}
+
+export const TabBar: React.FC<TabBarProps> = ({ tabs, activeTab, onTabChange }) => {
+  return (
+    <div className="flex border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          onClick={() => onTabChange(tab.id)}
+          className={`
+            flex items-center gap-2 px-6 py-3 font-semibold text-sm transition-colors
+            border-b-2 -mb-px
+            ${
+              activeTab === tab.id
+                ? 'border-[var(--accent-color)] text-[var(--accent-color)]'
+                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--border-color)]'
+            }
+          `}
+          aria-selected={activeTab === tab.id}
+          role="tab"
+        >
+          <i className={`fas ${tab.icon}`} aria-hidden="true"></i>
+          <span>{tab.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+};

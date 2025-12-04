@@ -8,9 +8,14 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from typing import Dict, List
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+# Add parent directory to path to import settings_api
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from settings_api import create_settings_blueprint, SettingsManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,7 @@ class FederationAPI:
         self.router = router
         self.port = port
         self._setup_routes()
+        self._setup_settings_api()
 
     def _setup_routes(self):
         """Setup all API routes"""
@@ -198,6 +204,13 @@ class FederationAPI:
             except Exception as e:
                 logger.error(f"Remove server failed: {e}")
                 return jsonify({"error": str(e)}), 500
+
+    def _setup_settings_api(self):
+        """Register settings API routes"""
+        settings_manager = SettingsManager()
+        settings_bp = create_settings_blueprint(settings_manager)
+        self.app.register_blueprint(settings_bp)
+        logger.info("Settings API registered")
 
     def run(self, debug: bool = False):
         """Run the Flask server"""

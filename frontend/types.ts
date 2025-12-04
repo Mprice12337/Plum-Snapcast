@@ -43,8 +43,28 @@ export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface Settings {
     integrations: {
-        airplay: boolean;
-        spotifyConnect: boolean;
+        airplay: {
+            enabled: boolean;
+            deviceName: string;
+        };
+        bluetooth: {
+            enabled: boolean;
+            deviceName: string;
+            adapter: string;
+            autoPair: boolean;
+            discoverable: boolean;
+        };
+        spotify: {
+            enabled: boolean;
+            sourceName: string;
+            deviceName: string;
+            bitrate: 96 | 160 | 320;
+        };
+        dlna: {
+            enabled: boolean;
+            sourceName: string;
+            deviceName: string;
+        };
         snapcast: boolean;
         visualizer: boolean;
     };

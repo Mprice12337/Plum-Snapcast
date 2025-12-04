@@ -4,15 +4,19 @@ interface SwitchProps {
     checked: boolean;
     onChange: (checked: boolean) => void;
     label: string;
+    icon?: string;
 }
 
-export const Switch: React.FC<SwitchProps> = ({checked, onChange, label}) => {
+export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon}) => {
     const switchId = `switch-${label.replace(/\s+/g, '-').toLowerCase()}`;
 
     return (
         <label htmlFor={switchId}
                className="flex items-center justify-between cursor-pointer p-2 rounded-lg hover:bg-[var(--bg-tertiary)]">
-            <span className="text-base text-[var(--text-secondary)]">{label}</span>
+            <div className="flex items-center gap-3">
+                {icon && <i className={`fas ${icon} text-[var(--text-secondary)]`} aria-hidden="true"></i>}
+                <span className="text-base text-[var(--text-secondary)]">{label}</span>
+            </div>
             <div className="relative">
                 <input
                     id={switchId}
