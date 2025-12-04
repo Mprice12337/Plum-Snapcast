@@ -5,14 +5,15 @@ interface SwitchProps {
     onChange: (checked: boolean) => void;
     label: string;
     icon?: string;
+    disabled?: boolean;
 }
 
-export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon}) => {
+export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon, disabled = false}) => {
     const switchId = `switch-${label.replace(/\s+/g, '-').toLowerCase()}`;
 
     return (
         <label htmlFor={switchId}
-               className="flex items-center justify-between cursor-pointer p-2 rounded-lg hover:bg-[var(--bg-tertiary)]">
+               className={`flex items-center justify-between p-2 rounded-lg ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--bg-tertiary)]'}`}>
             <div className="flex items-center gap-3">
                 {icon && <i className={`fas ${icon} text-[var(--text-secondary)]`} aria-hidden="true"></i>}
                 <span className="text-base text-[var(--text-secondary)]">{label}</span>
@@ -24,6 +25,7 @@ export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon}) 
                     className="sr-only"
                     checked={checked}
                     onChange={(e) => onChange(e.target.checked)}
+                    disabled={disabled}
                 />
                 <div
                     className={`block w-12 h-6 rounded-full transition ${checked ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'}`}></div>

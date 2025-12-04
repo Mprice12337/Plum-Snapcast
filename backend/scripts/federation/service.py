@@ -274,7 +274,40 @@ def main():
     # Check if federation is enabled
     if not config["enabled"]:
         logger.info("Federation is disabled (FEDERATION_ENABLED=0)")
-        sys.exit(0)
+        logger.info("Starting API server for settings and integrations (without federation features)")
+
+        # Import here to avoid circular imports
+        from flask import Flask
+        from flask_cors import CORS
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from settings_api import create_settings_blueprint, SettingsManager
+        from integrations_api import create_integrations_blueprint, IntegrationController
+
+        # Create minimal Flask app with just settings and integrations APIs
+        app = Flask(__name__)
+        CORS(app)
+
+        # Register settings API
+        settings_manager = SettingsManager()
+        settings_bp = create_settings_blueprint(settings_manager)
+        app.register_blueprint(settings_bp)
+        logger.info("Settings API registered")
+
+        # Register integrations API
+        integration_controller = IntegrationController()
+        integrations_bp = create_integrations_blueprint(integration_controller)
+        app.register_blueprint(integrations_bp)
+        logger.info("Integrations API registered")
+
+        # Start API server
+        api_port = config.get("api_port", 5000)
+        logger.info(f"Starting API server on port {api_port}")
+        try:
+            app.run(host="0.0.0.0", port=api_port, debug=False, threaded=True)
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+            sys.exit(0)
+        return
 
     logger.info("Federation Service Configuration:")
     logger.info(f"  Enabled: {config['enabled']}")
