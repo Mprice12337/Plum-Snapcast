@@ -272,6 +272,7 @@ export interface Settings {
 ### Implemented Features ✅
 
 1. **Multi-Server Discovery**
+   - Avahi/mDNS auto-discovery for Snapcast servers
    - Manual server configuration via environment variables
    - JSON-based server list
 
@@ -306,15 +307,33 @@ export interface Settings {
 - ✅ Control playback for ANY stream (local or remote)
 - ✅ Route local snapclient to streams on any server
 - ✅ Route clients to streams on same server
-- ✅ Automatic server discovery via configuration
+- ✅ Automatic server discovery via Avahi/mDNS
+- ✅ Manual server configuration
 - ✅ Real-time updates via polling
 
 ### What Doesn't Work
 
 - ❌ Cross-server routing for third-party clients (Music Assistant, etc.)
-- ❌ Auto-discovery via Avahi/mDNS (requires additional implementation)
 - ❌ WebSocket updates (currently uses polling)
 - ❌ Multiple AirPlay instances (planned for future)
+
+### Recent Fixes (December 2024)
+
+1. **Auto-Discovery Port Fix** (discovery.py:186)
+   - Issue: Avahi discovery was using advertised port 1705 (Snapcast control port)
+   - Fix: Hardcoded port 1780 (HTTP/WebSocket port) for all discovered servers
+   - Impact: Auto-discovered servers now connect properly without manual configuration
+
+2. **Stream Routing Revert Fix** (App.tsx)
+   - Issue: User stream changes reverted within 5 seconds due to polling conflicts
+   - Root Cause: Grace period (3s) shorter than polling interval (5s), stale closure bug
+   - Fix: Extended grace period to 7 seconds + added `recentUserChangesRef` to prevent stale closures
+   - Impact: Stream changes now persist reliably without reverting
+
+3. **Local Server Detection** (App.tsx)
+   - Issue: Hardcoded "server-localhost-" prefix failed for servers with different IDs
+   - Fix: Added helper functions `getLocalServer()` and `isLocalId()` that use actual server list
+   - Impact: Properly routes local vs remote clients regardless of server configuration
 
 ### Known Limitations
 
@@ -323,8 +342,6 @@ export interface Settings {
 2. **No Event Notifications**: Some servers (like Music Assistant) don't send Snapcast event notifications (`Client.OnVolumeChanged`, etc.). Workaround: Explicit `Server.GetStatus` after every command.
 
 3. **Cross-Server Routing**: Snapcast API doesn't support remotely changing a client's server. Only clients with shell access can be routed cross-server.
-
-4. **No Avahi Auto-Discovery**: Currently requires manual server configuration. Auto-discovery via mDNS planned for future.
 
 ## Implementation Plan
 
@@ -465,14 +482,13 @@ If auto-discovery is disabled or additional servers need manual configuration:
 
 ## Future Enhancements
 
-1. **Avahi/mDNS Auto-Discovery**: Automatically discover Snapcast servers on the network
-2. **WebSocket for real-time updates**: Replace polling with WebSocket from Federation Service
-3. **Multiple AirPlay instances**: Support concurrent users on same server
-4. **Stream priority/presets**: Save common routing configurations
-5. **Auto-failover**: If a server goes down, reroute clients automatically
-6. **Matrix View**: Grid-style routing interface (sources × destinations)
-7. **Bandwidth monitoring**: Show network utilization per stream
-8. **Access control**: Per-user routing permissions
+1. **WebSocket for real-time updates**: Replace polling with WebSocket from Federation Service
+2. **Multiple AirPlay instances**: Support concurrent users on same server
+3. **Stream priority/presets**: Save common routing configurations
+4. **Auto-failover**: If a server goes down, reroute clients automatically
+5. **Matrix View**: Grid-style routing interface (sources × destinations)
+6. **Bandwidth monitoring**: Show network utilization per stream
+7. **Access control**: Per-user routing permissions
 
 ## Troubleshooting
 
