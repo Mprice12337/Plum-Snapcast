@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
 from typing import Dict, List
@@ -212,13 +213,33 @@ class FederationService:
         logger.info("Federation Service stopped")
 
 
+def get_local_ip() -> str:
+    """Get local IP address"""
+    try:
+        # Create a socket to determine local IP (doesn't actually connect)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        # Fallback to localhost if we can't determine IP
+        return "localhost"
+
+
 def load_config() -> Dict:
     """Load configuration from environment variables"""
+    # Auto-detect local IP if not specified
+    default_local_host = os.getenv("FEDERATION_LOCAL_HOST")
+    if not default_local_host:
+        default_local_host = get_local_ip()
+        logger.info(f"Auto-detected local IP: {default_local_host}")
+
     config = {
         "enabled": os.getenv("FEDERATION_ENABLED", "0") == "1",
         "auto_discover": os.getenv("FEDERATION_AUTO_DISCOVER", "1") == "1",
         "local_name": os.getenv("FEDERATION_LOCAL_NAME", "Main Server"),
-        "local_host": os.getenv("FEDERATION_LOCAL_HOST", "localhost"),
+        "local_host": default_local_host,
         "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
         "manual_servers": []
     }

@@ -1,6 +1,8 @@
-import React from 'react';
-import type {AccentColor, Settings as SettingsType, ThemeMode} from '../types';
+import React, {useState, useEffect} from 'react';
+import type {AccentColor, Server, Settings as SettingsType, ThemeMode} from '../types';
 import {Switch} from './Switch';
+import {ServerManager} from './ServerManager';
+import {federationService} from '../services/federationService';
 
 interface SettingsProps {
     settings: SettingsType;
@@ -30,6 +32,20 @@ const Section: React.FC<React.PropsWithChildren<{ title: string }>> = ({title, c
 );
 
 export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, onClose}) => {
+    const [servers, setServers] = useState<Server[]>([]);
+
+    // Fetch servers when federation is enabled
+    useEffect(() => {
+        if (settings.federation.enabled) {
+            const fetchServers = async () => {
+                const serverList = await federationService.getServers();
+                setServers(serverList);
+            };
+            fetchServers();
+        } else {
+            setServers([]);
+        }
+    }, [settings.federation.enabled]);
 
     const handleIntegrationChange = (key: keyof SettingsType['integrations'], value: boolean) => {
         onSettingsChange({
@@ -71,6 +87,32 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
         });
     };
 
+    const handleFederationChange = (key: keyof SettingsType['federation'], value: boolean | string) => {
+        onSettingsChange({
+            ...settings,
+            federation: {
+                ...settings.federation,
+                [key]: value,
+            }
+        });
+    };
+
+    const handleAddServer = async (host: string, port: number, name: string) => {
+        const result = await federationService.addServer(host, port, name);
+        if (result.success && result.server) {
+            setServers([...servers, result.server]);
+        }
+        return result;
+    };
+
+    const handleRemoveServer = async (serverId: string) => {
+        const result = await federationService.removeServer(serverId);
+        if (result.success) {
+            setServers(servers.filter(s => s.id !== serverId));
+        }
+        return result;
+    };
+
     return (
         <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
@@ -106,6 +148,40 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
                     <Section title="Display">
                         <Switch label="Show Offline Devices" checked={settings.display.showOfflineDevices}
                                 onChange={(val) => handleDisplayChange('showOfflineDevices', val)}/>
+                    </Section>
+
+                    <Section title="Federation">
+                        <Switch
+                            label="Multi-Server Control"
+                            checked={settings.federation.enabled}
+                            onChange={(val) => handleFederationChange('enabled', val)}
+                        />
+                        {settings.federation.enabled && (
+                            <>
+                                <Switch
+                                    label="Auto-Discover Servers"
+                                    checked={settings.federation.autoDiscover}
+                                    onChange={(val) => handleFederationChange('autoDiscover', val)}
+                                />
+                                <div>
+                                    <label className="block text-base text-[var(--text-secondary)] mb-2">
+                                        Local Server Name
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={settings.federation.localServerName}
+                                        onChange={(e) => handleFederationChange('localServerName', e.target.value)}
+                                        placeholder="e.g., Main Server"
+                                        className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-color)]"
+                                    />
+                                </div>
+                                <ServerManager
+                                    servers={servers}
+                                    onAddServer={handleAddServer}
+                                    onRemoveServer={handleRemoveServer}
+                                />
+                            </>
+                        )}
                     </Section>
 
                     <Section title="Appearance">

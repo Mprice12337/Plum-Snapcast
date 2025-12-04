@@ -260,23 +260,37 @@ class DataAggregator:
                 stream_id = stream.get("id", "")
                 federated_id = f"{conn.server_id}-{stream_id}"
 
-                # Extract metadata
+                # Extract metadata and properties
                 properties = stream.get("properties", {})
                 metadata = properties.get("metadata", {})
+
+                # Extract playback status from stream status field
+                # Snapcast stream status is "playing", "idle", or "unknown"
+                stream_status = stream.get("status", "idle")
+                playback_status = "playing" if stream_status.lower() == "playing" else "idle"
+
+                # Build enhanced properties with playbackStatus and position
+                enhanced_properties = {
+                    **properties,  # Include all original properties
+                    "playbackStatus": playback_status,
+                    # Position is already in properties.position (in milliseconds)
+                    # Duration is already in properties.metadata.duration (in milliseconds)
+                }
 
                 streams.append({
                     "id": federated_id,
                     "serverId": conn.server_id,
                     "serverName": conn.name,
                     "name": stream.get("status"),
-                    "status": stream.get("status", "idle"),
+                    "status": stream_status,
                     "metadata": {
                         "title": metadata.get("title", ""),
                         "artist": metadata.get("artist", ""),
                         "album": metadata.get("album", ""),
-                        "artUrl": metadata.get("artUrl", "")
+                        "artUrl": metadata.get("artUrl", ""),
+                        "duration": metadata.get("duration", 0)
                     },
-                    "properties": properties
+                    "properties": enhanced_properties
                 })
 
         return streams
@@ -307,7 +321,7 @@ class DataAggregator:
                         "id": federated_id,
                         "serverId": conn.server_id,
                         "serverName": conn.name,
-                        "name": config.get("name", host_info.get("name", client_id)),
+                        "name": config.get("name") or host_info.get("name", client_id),
                         "connected": client.get("connected", False),
                         "currentStreamId": federated_stream_id,
                         "volume": volume.get("percent", 100),

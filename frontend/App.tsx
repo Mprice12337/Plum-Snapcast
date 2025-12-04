@@ -1197,7 +1197,14 @@ const App: React.FC = () => {
         setRecentUserChanges({type: 'routing', timestamp, data: {clientId, streamId}});
 
         // Check if this is a local client (use WebSocket) or remote client (use Federation API)
+        const localServer = getLocalServer();
         const isLocal = isLocalId(clientId);
+        console.log('[StreamChange] Local server detection:', {
+            localServer,
+            clientId,
+            isLocal,
+            allServers: servers.map(s => ({id: s.id, name: s.name, isLocal: s.isLocal}))
+        });
 
         // If federation is enabled and client is REMOTE, use federation API
         if (settings.federation.enabled && !isLocal) {

@@ -180,9 +180,11 @@ class AvahiDiscovery:
                             key, value = record.split("=", 1)
                             txt_records[key] = value
 
+                # Snapcast advertises port 1705 (control port) via mDNS,
+                # but we need port 1780 (HTTP/WebSocket port)
                 server = ServerInfo(
                     host=address,
-                    port=port,
+                    port=1780,  # Always use HTTP port for WebSocket connections
                     name=service_name or hostname,
                     txt_records=txt_records
                 )

@@ -141,5 +141,13 @@ if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
     sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
 fi
 
+# Enable federation service if configured
+if [ "${FEDERATION_ENABLED}" = "1" ]; then
+    echo "Enabling federation service..."
+    sed -i 's/autostart=false/autostart=true/' /app/supervisord/federation.ini
+else
+    echo "Federation service disabled"
+fi
+
 echo "Setup complete. Starting supervisord..."
 exec /usr/bin/supervisord -c /app/supervisord/supervisord.conf

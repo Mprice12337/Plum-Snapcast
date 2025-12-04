@@ -1,13 +1,18 @@
 # Federation Architecture for Multi-Server Snapcast
 
-> **Status**: Planned
+> **Status**: Implemented
 > **Branch**: `feature/federation-layer`
 > **Author**: Claude + Michael Price
 > **Date**: December 2024
 
 ## Overview
 
-The Federation Layer enables a unified control plane for multiple Snapcast servers, allowing any stream from any server to be routed to any client across the network. This creates a pro-AV style audio matrix where sources and destinations can be freely interconnected.
+The Federation Layer enables a unified control plane for multiple Snapcast servers, providing:
+- **Unified View**: See all streams and clients from all servers in one interface
+- **Cross-Server Control**: Control volume and playback for clients on any server
+- **Partial Cross-Server Routing**: Route managed clients (local snapclient) to streams on any server
+
+**Important Limitation**: Due to Snapcast architecture, cross-server routing only works for clients you have shell access to (local snapclient). Third-party server clients (like Music Assistant) cannot be routed to different servers via API.
 
 ## Problem Statement
 
@@ -197,12 +202,20 @@ Set client volume.
 When a client needs to play a stream from a different server:
 
 1. Federation Service identifies which server owns the target stream
-2. If client is on different server:
-   a. Reconfigure snapclient to connect to target server
-   b. Wait for client to appear on target server
-   c. Assign client to requested stream
-3. If client is on same server:
-   a. Simply assign client to stream via JSON-RPC
+2. **If client is on same server**:
+   - Simply assign client to stream via JSON-RPC (`Group.SetStream`)
+3. **If client is on different server**:
+   - **Only works for local snapclient** (shell access required)
+   - Reconfigure snapclient via supervisord to connect to target server
+   - Wait for client to appear on target server
+   - Assign client to requested stream
+
+**Limitation**: Snapcast has no API to remotely change a client's server connection. Cross-server routing requires:
+- Shell access to the client's host system
+- Permission to modify client configuration
+- Ability to restart the snapclient process
+
+This means third-party server clients (e.g., Music Assistant) cannot be routed cross-server, as they're controlled by their respective systems.
 
 ## Data Model Changes
 
@@ -254,9 +267,68 @@ export interface Settings {
 }
 ```
 
+## Implementation Status
+
+### Implemented Features ✅
+
+1. **Multi-Server Discovery**
+   - Manual server configuration via environment variables
+   - JSON-based server list
+
+2. **WebSocket Connection Management**
+   - Concurrent connections to multiple Snapcast servers
+   - Automatic reconnection with exponential backoff
+   - Music Assistant compatibility mode (one-shot requests)
+
+3. **REST API**
+   - `GET /api/federation/status` - All servers, streams, clients
+   - `POST /api/federation/route` - Client routing (same-server + local cross-server)
+   - `POST /api/federation/volume` - Volume control for any client
+   - `POST /api/federation/control` - Stream control for any stream
+
+4. **Frontend Integration**
+   - Unified view of all streams and clients
+   - Server badges showing origin
+   - Cross-server routing for local clients
+   - Volume control for all clients
+   - Stream controls for all streams
+
+5. **Music Assistant Compatibility**
+   - Automatic detection of MA servers (by name)
+   - One-shot WebSocket mode (workaround for MA bug where it stops responding after first request)
+   - Explicit status refresh after commands (MA doesn't send event notifications)
+
+### What Works
+
+- ✅ View streams from all servers in one UI
+- ✅ View clients from all servers in one UI
+- ✅ Control volume for ANY client (local or remote)
+- ✅ Control playback for ANY stream (local or remote)
+- ✅ Route local snapclient to streams on any server
+- ✅ Route clients to streams on same server
+- ✅ Automatic server discovery via configuration
+- ✅ Real-time updates via polling
+
+### What Doesn't Work
+
+- ❌ Cross-server routing for third-party clients (Music Assistant, etc.)
+- ❌ Auto-discovery via Avahi/mDNS (requires additional implementation)
+- ❌ WebSocket updates (currently uses polling)
+- ❌ Multiple AirPlay instances (planned for future)
+
+### Known Limitations
+
+1. **Music Assistant Bug**: MA's Snapcast server responds to first WebSocket request but stops responding to subsequent requests on same connection. Workaround: One-shot mode creates new connection per request.
+
+2. **No Event Notifications**: Some servers (like Music Assistant) don't send Snapcast event notifications (`Client.OnVolumeChanged`, etc.). Workaround: Explicit `Server.GetStatus` after every command.
+
+3. **Cross-Server Routing**: Snapcast API doesn't support remotely changing a client's server. Only clients with shell access can be routed cross-server.
+
+4. **No Avahi Auto-Discovery**: Currently requires manual server configuration. Auto-discovery via mDNS planned for future.
+
 ## Implementation Plan
 
-### Phase 1: Federation Service Backend (~10 hours)
+### Phase 1: Federation Service Backend ✅ COMPLETED
 
 #### 1.1 Server Discovery Module
 - Avahi/mDNS discovery for `_snapcast-jsonrpc._tcp` services
@@ -277,27 +349,26 @@ export interface Settings {
 - API to dynamically change snapclient's target server
 - Supervisord integration for restart handling
 
-### Phase 2: Frontend Updates (~6 hours)
+### Phase 2: Frontend Updates ✅ COMPLETED
 
-#### 2.1 Federation API Client
-- Replace direct Snapcast WebSocket with Federation REST API
-- Polling for real-time updates (or WebSocket upgrade later)
+#### 2.1 Federation API Client ✅
+- Replaced direct Snapcast WebSocket with Federation REST API
+- Implemented polling for real-time updates
 
-#### 2.2 Type Updates
-- Add server context to Stream and Client types
-- New Server type and federation settings
+#### 2.2 Type Updates ✅
+- Added server context to Stream and Client types
+- Added federation settings to configuration
 
-#### 2.3 Component Updates
-- StreamSelector: Group streams by server
-- ClientManager: Show server context, cross-server routing
-- Settings: Federation configuration panel
-- New: ServerManager component
+#### 2.3 Component Updates ✅
+- StreamSelector: Shows server badges, cross-server compatible
+- ClientManager: Server context display, cross-server routing
+- ServerManager: New component for viewing connected servers
 
-#### 2.4 Matrix View (Optional)
-- Sources × Destinations grid view
-- One-click routing like pro-AV control systems
+#### 2.4 Matrix View ⏸️ Deferred
+- Future enhancement
+- Would provide grid-style routing interface
 
-### Phase 3: Multi-AirPlay Support (~4 hours)
+### Phase 3: Multi-AirPlay Support ⏸️ Planned
 
 #### 3.1 Multiple Shairport-Sync Instances
 - Supervisord configs for N instances
@@ -394,12 +465,36 @@ If auto-discovery is disabled or additional servers need manual configuration:
 
 ## Future Enhancements
 
-1. **WebSocket for real-time updates**: Replace polling with WebSocket from Federation Service
-2. **Stream priority/presets**: Save common routing configurations
-3. **Auto-failover**: If a server goes down, reroute clients automatically
-4. **Bandwidth monitoring**: Show network utilization per stream
-5. **Access control**: Per-user routing permissions
-6. **Mobile app**: Native iOS/Android control app
+1. **Avahi/mDNS Auto-Discovery**: Automatically discover Snapcast servers on the network
+2. **WebSocket for real-time updates**: Replace polling with WebSocket from Federation Service
+3. **Multiple AirPlay instances**: Support concurrent users on same server
+4. **Stream priority/presets**: Save common routing configurations
+5. **Auto-failover**: If a server goes down, reroute clients automatically
+6. **Matrix View**: Grid-style routing interface (sources × destinations)
+7. **Bandwidth monitoring**: Show network utilization per stream
+8. **Access control**: Per-user routing permissions
+
+## Troubleshooting
+
+### Music Assistant Clients Not Routing Cross-Server
+
+**Expected behavior**: Music Assistant's clients cannot be routed to streams on other servers.
+
+**Reason**: Snapcast has no API to remotely change a client's server connection. Cross-server routing requires shell access to reconfigure and restart the snapclient process. Music Assistant controls its own clients.
+
+**Workaround**: Use Music Assistant's interface to control those clients, or route your local clients to Music Assistant's streams instead.
+
+### Volume Sliders Reverting After Changes
+
+**Cause**: Server doesn't send event notifications after volume changes.
+
+**Fixed**: Federation service now explicitly refreshes status after volume commands.
+
+### Commands Timing Out After 30 Seconds
+
+**Cause**: Music Assistant's Snapcast server bug - stops responding after first request on persistent WebSocket connection.
+
+**Fixed**: Automatic detection and one-shot mode enabled for servers with "music" or "ma" in name.
 
 ## References
 

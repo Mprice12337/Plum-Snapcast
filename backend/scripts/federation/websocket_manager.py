@@ -34,6 +34,9 @@ class SnapcastConnection:
         self._request_id = 0
         self._pending_requests: Dict[int, asyncio.Future] = {}
         self._event_callbacks: List[Callable] = []
+        self._requests_sent = 0
+        self._responses_received = 0
+        self._connection_per_request = False  # Workaround for buggy servers
 
     @property
     def url(self) -> str:
@@ -63,6 +66,12 @@ class SnapcastConnection:
 
             # Get initial status
             await self.get_status()
+
+            # Enable one-shot mode immediately for Music Assistant servers (known bug)
+            # MA responds to first request but stops responding to subsequent requests
+            if "music" in self.name.lower() or "ma" in self.name.lower():
+                logger.info(f"[{self.name}] Enabling one-shot mode (Music Assistant compatibility)")
+                self._connection_per_request = True
 
         except Exception as e:
             logger.error(f"Failed to connect to {self.name}: {e}")
@@ -98,38 +107,61 @@ class SnapcastConnection:
 
     async def _message_listener(self):
         """Listen for messages from server"""
+        logger.debug(f"Message listener started for {self.name}")
         try:
-            async for message in self.ws:
+            logger.debug(f"[{self.name}] Starting message receive loop...")
+            while True:
                 try:
-                    data = json.loads(message)
+                    logger.debug(f"[{self.name}] Waiting for next message...")
+                    message = await self.ws.recv()
+                    logger.debug(f"[{self.name}] Received message!")
 
-                    # Handle JSON-RPC responses
-                    if "id" in data:
-                        request_id = data["id"]
-                        if request_id in self._pending_requests:
-                            future = self._pending_requests.pop(request_id)
-                            if "error" in data:
-                                future.set_exception(Exception(data["error"]))
+                    try:
+                        logger.debug(f"Received message from {self.name}: {message[:200]}...")
+                        data = json.loads(message)
+
+                        # Handle JSON-RPC responses
+                        if "id" in data:
+                            request_id = data["id"]
+                            logger.debug(f"Processing response for request ID {request_id} from {self.name}")
+                            if request_id in self._pending_requests:
+                                future = self._pending_requests.pop(request_id)
+                                if "error" in data:
+                                    logger.debug(f"Response has error: {data['error']}")
+                                    future.set_exception(Exception(data["error"]))
+                                else:
+                                    logger.debug(f"Response successful, setting result")
+                                    future.set_result(data.get("result"))
                             else:
-                                future.set_result(data.get("result"))
+                                logger.warning(f"Received response for unknown request ID {request_id} from {self.name}")
 
-                    # Handle notifications (events)
-                    elif "method" in data:
-                        await self._handle_notification(data)
+                        # Handle notifications (events)
+                        elif "method" in data:
+                            logger.debug(f"[{self.name}] Received notification: {data.get('method')}")
+                            await self._handle_notification(data)
 
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON from {self.name}: {e}")
+                        logger.debug(f"[{self.name}] Finished processing message, looping back...")
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON from {self.name}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error processing message from {self.name}: {e}", exc_info=True)
+
+                except ConnectionClosed:
+                    logger.warning(f"Connection closed to {self.name}")
+                    self.connected = False
+                    # Attempt reconnection
+                    asyncio.create_task(self.reconnect())
+                    break
                 except Exception as e:
-                    logger.error(f"Error processing message from {self.name}: {e}")
+                    logger.error(f"Error receiving message from {self.name}: {e}", exc_info=True)
+                    await asyncio.sleep(0.1)  # Brief pause before retry
 
-        except ConnectionClosed:
-            logger.warning(f"Connection closed to {self.name}")
-            self.connected = False
-            # Attempt reconnection
-            asyncio.create_task(self.reconnect())
         except Exception as e:
-            logger.error(f"Message listener error for {self.name}: {e}")
+            logger.error(f"Message listener error for {self.name}: {e}", exc_info=True)
             self.connected = False
+
+        logger.error(f"[{self.name}] Message listener has EXITED - this should not happen!")
 
     async def _handle_notification(self, data: Dict):
         """Handle server notification/event"""
@@ -151,8 +183,47 @@ class SnapcastConnection:
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
 
+    async def _send_oneshot_request(self, method: str, params: Optional[Dict] = None) -> Any:
+        """Send a single request with its own connection (workaround for buggy servers)"""
+        logger.debug(f"[{self.name}] Creating one-shot connection for {method}")
+
+        ws = None
+        try:
+            # Create temporary connection
+            ws = await websockets.connect(self.url, ping_interval=20, ping_timeout=10)
+
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params or {}
+            }
+
+            # Send request
+            await ws.send(json.dumps(request))
+            logger.debug(f"[{self.name}] One-shot request sent, waiting for response...")
+
+            # Wait for response
+            response_str = await asyncio.wait_for(ws.recv(), timeout=10)
+            response = json.loads(response_str)
+
+            if "error" in response:
+                raise Exception(response["error"])
+
+            logger.debug(f"[{self.name}] One-shot request completed successfully")
+            return response.get("result")
+
+        finally:
+            if ws:
+                await ws.close()
+
     async def send_request(self, method: str, params: Optional[Dict] = None) -> Any:
         """Send JSON-RPC request and wait for response"""
+        # Use one-shot mode if enabled (workaround for buggy servers)
+        if self._connection_per_request:
+            logger.info(f"[{self.name}] Using one-shot request mode (server bug workaround)")
+            return await self._send_oneshot_request(method, params)
+
         if not self.connected or not self.ws:
             raise Exception(f"Not connected to {self.name}")
 
@@ -171,12 +242,24 @@ class SnapcastConnection:
         self._pending_requests[request_id] = future
 
         try:
+            logger.debug(f"Sending request ID {request_id} to {self.name}: {method}")
             await self.ws.send(json.dumps(request))
-            # Wait for response with timeout
-            result = await asyncio.wait_for(future, timeout=10)
+            self._requests_sent += 1
+            logger.debug(f"Request ID {request_id} sent, waiting for response (timeout=30s)...")
+            # Wait for response with timeout (30s for cross-network operations)
+            result = await asyncio.wait_for(future, timeout=30)
+            self._responses_received += 1
+            logger.debug(f"Request ID {request_id} completed successfully")
             return result
         except asyncio.TimeoutError:
             self._pending_requests.pop(request_id, None)
+
+            # Detect buggy servers that stop responding after first request
+            if self._requests_sent > 1 and self._responses_received == 1 and not self._connection_per_request:
+                logger.warning(f"[{self.name}] Server stopped responding after first request - enabling one-shot mode")
+                self._connection_per_request = True
+
+            logger.error(f"Request ID {request_id} timed out after 30s to {self.name}: {method}")
             raise Exception(f"Request timeout to {self.name}: {method}")
         except Exception as e:
             self._pending_requests.pop(request_id, None)

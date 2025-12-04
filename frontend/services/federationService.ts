@@ -5,7 +5,8 @@
 
 import { Server, Stream, Client } from '../types';
 
-const FEDERATION_API_BASE = import.meta.env.VITE_FEDERATION_API_URL || 'http://localhost:5000/api/federation';
+// Use relative path - nginx will proxy /api/federation/ to snapcast-host:5000/api/federation/
+const FEDERATION_API_BASE = import.meta.env.VITE_FEDERATION_API_URL || '/api/federation';
 
 export class FederationService {
   private baseUrl: string;

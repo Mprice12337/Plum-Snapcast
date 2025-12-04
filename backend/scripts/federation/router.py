@@ -32,11 +32,13 @@ class FederationRouter:
         Parse federated ID into server_id and local_id
         Format: "server-id-stream-name" or "server-id-client-name"
         Example: "server-192-168-7-122-airplay1" -> ("server-192-168-7-122", "airplay1")
+        Example: "server-192-168-7-226-esparagus-201" -> ("server-192-168-7-226", "esparagus-201")
         """
-        parts = federated_id.split("-", 3)  # Split into at most 4 parts
-        if len(parts) >= 4:
-            server_part = "-".join(parts[:4])  # "server-192-168-7-122"
-            local_part = parts[4] if len(parts) > 4 else ""  # Everything after
+        parts = federated_id.split("-")
+        if len(parts) >= 5:
+            # Server ID is always first 5 components: "server-A-B-C-D" (where A.B.C.D is IP)
+            server_part = "-".join(parts[:5])  # "server-192-168-7-122"
+            local_part = "-".join(parts[5:]) if len(parts) > 5 else ""  # Everything after
             return server_part, local_part
         return federated_id, ""
 
@@ -143,6 +145,8 @@ class FederationRouter:
             "id": group_id,
             "stream_id": stream_id
         })
+        # Refresh status after routing (important for servers that don't send events)
+        await conn.get_status()
         logger.info(f"Routed group {group_id} to stream {stream_id}")
 
     async def _route_cross_server(
@@ -268,6 +272,9 @@ class FederationRouter:
                 }
             })
 
+            # Refresh status after volume change (important for servers that don't send events)
+            await conn.get_status()
+
             return {
                 "success": True,
                 "message": f"Volume set to {volume}%"
@@ -299,6 +306,9 @@ class FederationRouter:
                 "id": local_stream_id,
                 "command": command
             })
+
+            # Refresh status after control command (important for servers that don't send events)
+            await conn.get_status()
 
             return {
                 "success": True,
