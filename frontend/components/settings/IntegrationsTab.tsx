@@ -1,7 +1,7 @@
 import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
-import {airplayService, bluetoothService} from '../../services/integrationsService';
+import {airplayService, bluetoothService, spotifyService} from '../../services/integrationsService';
 
 interface IntegrationsTabProps {
   settings: SettingsType;
@@ -28,6 +28,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [bluetoothNameMessage, setBluetoothNameMessage] = useState('');
   const [isTogglingBluetooth, setIsTogglingBluetooth] = useState(false);
 
+  // Spotify device name state
+  const [spotifyDeviceName, setSpotifyDeviceName] = useState(settings.integrations.spotify.deviceName);
+  const [spotifyNameStatus, setSpotifyNameStatus] = useState<ApplyStatus>('idle');
+  const [spotifyNameMessage, setSpotifyNameMessage] = useState('');
+  const [isTogglingSpotify, setIsTogglingSpotify] = useState(false);
+
   // Update local state when settings change externally
   useEffect(() => {
     setAirplayDeviceName(settings.integrations.airplay.deviceName);
@@ -37,9 +43,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setBluetoothDeviceName(settings.integrations.bluetooth.deviceName);
   }, [settings.integrations.bluetooth.deviceName]);
 
+  useEffect(() => {
+    setSpotifyDeviceName(settings.integrations.spotify.deviceName);
+  }, [settings.integrations.spotify.deviceName]);
+
   // Check if device name has changed
   const airplayNameChanged = airplayDeviceName !== settings.integrations.airplay.deviceName;
   const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
+  const spotifyNameChanged = spotifyDeviceName !== settings.integrations.spotify.deviceName;
 
   const toggleSection = (section: string) => {
     setExpandedSection(expandedSection === section ? null : section);
@@ -237,6 +248,77 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           },
         },
       });
+    }
+  };
+
+  const handleSpotifyToggle = async (enabled: boolean) => {
+    setIsTogglingSpotify(true);
+    try {
+      const result = enabled
+        ? await spotifyService.enable()
+        : await spotifyService.disable();
+
+      if (result.success) {
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            spotify: {
+              ...settings.integrations.spotify,
+              enabled,
+            },
+          },
+        });
+      } else {
+        console.error('Failed to toggle Spotify:', result.message);
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} Spotify: ${result.message}`);
+      }
+    } catch (error) {
+      console.error('Error toggling Spotify:', error);
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} Spotify`);
+    } finally {
+      setIsTogglingSpotify(false);
+    }
+  };
+
+  const handleApplySpotifyDeviceName = async () => {
+    if (!spotifyNameChanged) return;
+
+    setSpotifyNameStatus('applying');
+    setSpotifyNameMessage('Applying changes... this may take up to 60 seconds');
+
+    try {
+      const result = await spotifyService.updateDeviceName(spotifyDeviceName);
+
+      if (result.success) {
+        setSpotifyNameStatus('success');
+        setSpotifyNameMessage('Applied');
+
+        // Update settings - restarting service enables Spotify
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            spotify: {
+              ...settings.integrations.spotify,
+              deviceName: spotifyDeviceName,
+              enabled: true,
+            },
+          },
+        });
+
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setSpotifyNameStatus('idle');
+          setSpotifyNameMessage('');
+        }, 3000);
+      } else {
+        setSpotifyNameStatus('error');
+        setSpotifyNameMessage(result.message || 'Failed to apply');
+      }
+    } catch (error: any) {
+      setSpotifyNameStatus('error');
+      setSpotifyNameMessage(error.message || 'Error applying changes');
     }
   };
 
@@ -468,8 +550,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <Switch
               label="Spotify Connect"
               checked={settings.integrations.spotify.enabled}
-              onChange={(val) => handleSpotifyChange('enabled', val)}
+              onChange={handleSpotifyToggle}
               icon="fa-brands fa-spotify"
+              disabled={isTogglingSpotify}
             />
             <button
               onClick={() => toggleSection('spotify')}
@@ -481,6 +564,11 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
             Stream music directly from Spotify
           </p>
+          {isTogglingSpotify && (
+            <p className="text-xs text-amber-500 ml-8 mt-1">
+              Processing... this may take up to 60 seconds
+            </p>
+          )}
 
           {expandedSection === 'spotify' && (
             <div className="mt-4 ml-8 space-y-3">
@@ -500,13 +588,46 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Device Name
                 </label>
-                <input
-                  type="text"
-                  value={settings.integrations.spotify.deviceName}
-                  onChange={(e) => handleSpotifyChange('deviceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="Plum Audio"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={spotifyDeviceName}
+                    onChange={(e) => setSpotifyDeviceName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && spotifyNameChanged) {
+                        handleApplySpotifyDeviceName();
+                      }
+                    }}
+                    className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                    placeholder="Plum Audio"
+                    disabled={spotifyNameStatus === 'applying'}
+                  />
+                  {spotifyNameChanged && (
+                    <button
+                      onClick={handleApplySpotifyDeviceName}
+                      disabled={spotifyNameStatus === 'applying'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                    >
+                      {spotifyNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+                {spotifyNameMessage && (
+                  <p className={`text-xs mt-1 ${
+                    spotifyNameStatus === 'success'
+                      ? 'text-green-500'
+                      : spotifyNameStatus === 'error'
+                      ? 'text-red-500'
+                      : 'text-[var(--text-muted)]'
+                  }`}>
+                    {spotifyNameMessage}
+                  </p>
+                )}
+                {spotifyNameChanged && !spotifyNameMessage && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Pending changes - press Enter or click Apply
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">

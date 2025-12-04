@@ -221,3 +221,99 @@ export const bluetoothService = {
     }
   },
 };
+
+/**
+ * Spotify Control
+ */
+export const spotifyService = {
+  /**
+   * Enable Spotify service
+   */
+  async enable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/enable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to enable Spotify' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to enable Spotify:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Disable Spotify service
+   */
+  async disable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/disable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to disable Spotify' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to disable Spotify:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get Spotify service status
+   */
+  async getStatus(): Promise<{ running: boolean; status: string; error?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/status`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get Spotify status:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update Spotify device name
+   */
+  async updateDeviceName(deviceName: string): Promise<{ success: boolean; message: string; deviceName?: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/device-name`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update device name' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update Spotify device name:', error);
+      throw error;
+    }
+  },
+};
