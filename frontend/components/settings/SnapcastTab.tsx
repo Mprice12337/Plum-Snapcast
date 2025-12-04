@@ -15,6 +15,21 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
 }) => {
   const [servers, setServers] = useState<Server[]>([]);
 
+  // Local state for server name changes (like device name pattern)
+  const [localServerName, setLocalServerName] = useState(settings.federation.localServerName);
+  const [serverNameStatus, setServerNameStatus] = useState<'idle' | 'pending' | 'applying' | 'success' | 'error'>('idle');
+  const [serverNameMessage, setServerNameMessage] = useState('');
+  const [isTogglingFederation, setIsTogglingFederation] = useState(false);
+  const [isTogglingAutoDiscover, setIsTogglingAutoDiscover] = useState(false);
+
+  // Sync local state when settings change externally
+  useEffect(() => {
+    setLocalServerName(settings.federation.localServerName);
+  }, [settings.federation.localServerName]);
+
+  // Detect pending changes for server name
+  const serverNameChanged = localServerName !== settings.federation.localServerName;
+
   useEffect(() => {
     if (settings.federation.enabled) {
       const fetchServers = async () => {
@@ -27,14 +42,69 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     }
   }, [settings.federation.enabled]);
 
-  const handleFederationChange = (key: keyof SettingsType['federation'], value: boolean | string) => {
-    onSettingsChange({
-      ...settings,
-      federation: {
-        ...settings.federation,
-        [key]: value,
-      },
-    });
+  const handleFederationToggle = async (enabled: boolean) => {
+    setIsTogglingFederation(true);
+    try {
+      onSettingsChange({
+        ...settings,
+        federation: {
+          ...settings.federation,
+          enabled,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to toggle federation:', error);
+      alert('Error toggling Multi-Server Control');
+    } finally {
+      setIsTogglingFederation(false);
+    }
+  };
+
+  const handleAutoDiscoverToggle = async (enabled: boolean) => {
+    setIsTogglingAutoDiscover(true);
+    try {
+      onSettingsChange({
+        ...settings,
+        federation: {
+          ...settings.federation,
+          autoDiscover: enabled,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to toggle auto-discover:', error);
+      alert('Error toggling Auto-Discover');
+    } finally {
+      setIsTogglingAutoDiscover(false);
+    }
+  };
+
+  const handleApplyServerName = async () => {
+    if (!serverNameChanged) return;
+
+    setServerNameStatus('applying');
+    setServerNameMessage('Applying changes...');
+
+    try {
+      onSettingsChange({
+        ...settings,
+        federation: {
+          ...settings.federation,
+          localServerName,
+        },
+      });
+
+      setServerNameStatus('success');
+      setServerNameMessage('Applied');
+
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setServerNameStatus('idle');
+        setServerNameMessage('');
+      }, 3000);
+    } catch (error: any) {
+      setServerNameStatus('error');
+      setServerNameMessage(error.message || 'Error applying changes');
+    }
   };
 
   const handleDisplayChange = (key: keyof SettingsType['display'], value: boolean) => {
@@ -78,9 +148,16 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
         <Switch
           label="Multi-Server Control"
           checked={settings.federation.enabled}
-          onChange={(val) => handleFederationChange('enabled', val)}
+          onChange={handleFederationToggle}
           icon="fa-network-wired"
+          disabled={isTogglingFederation}
         />
+
+        {isTogglingFederation && (
+          <p className="text-xs text-amber-500 ml-8 mt-1">
+            Processing...
+          </p>
+        )}
 
         {settings.federation.enabled && (
           <>
@@ -88,24 +165,71 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
               <Switch
                 label="Auto-Discover Servers"
                 checked={settings.federation.autoDiscover}
-                onChange={(val) => handleFederationChange('autoDiscover', val)}
+                onChange={handleAutoDiscoverToggle}
                 icon="fa-radar"
+                disabled={isTogglingAutoDiscover}
               />
+
+              {isTogglingAutoDiscover && (
+                <p className="text-xs text-amber-500 ml-8 mt-1">
+                  Processing...
+                </p>
+              )}
 
               <div>
                 <label className="block text-sm font-semibold text-[var(--text-primary)] mb-2">
                   Local Server Name
                 </label>
-                <input
-                  type="text"
-                  value={settings.federation.localServerName}
-                  onChange={(e) => handleFederationChange('localServerName', e.target.value)}
-                  placeholder="e.g., Main Server"
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-color)]"
-                />
-                <p className="text-xs text-[var(--text-muted)] mt-1">
-                  This name will be visible to other servers on your network
-                </p>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={localServerName}
+                    onChange={(e) => setLocalServerName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && serverNameChanged) {
+                        handleApplyServerName();
+                      }
+                    }}
+                    placeholder="e.g., Main Server"
+                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-color)] pr-20"
+                    disabled={serverNameStatus === 'applying'}
+                  />
+                  {serverNameChanged && (
+                    <button
+                      onClick={handleApplyServerName}
+                      disabled={serverNameStatus === 'applying'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] text-white rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {serverNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Status feedback */}
+                {serverNameMessage && (
+                  <p className={`text-xs mt-1 ${
+                    serverNameStatus === 'success'
+                      ? 'text-green-500'
+                      : serverNameStatus === 'error'
+                      ? 'text-red-500'
+                      : 'text-[var(--text-muted)]'
+                  }`}>
+                    {serverNameMessage}
+                  </p>
+                )}
+
+                {/* Pending changes indicator */}
+                {serverNameChanged && !serverNameMessage && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Pending changes - press Enter or click Apply
+                  </p>
+                )}
+
+                {!serverNameChanged && !serverNameMessage && (
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    This name will be visible to other servers on your network
+                  </p>
+                )}
               </div>
 
               <div>
