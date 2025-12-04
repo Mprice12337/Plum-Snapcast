@@ -81,6 +81,9 @@ if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
     start_service bluealsa-aplay
     sleep 2
 
+    start_service bluetooth-monitor
+    sleep 1
+
     echo "==========================================="
     echo "Bluetooth services startup complete!"
     echo "==========================================="
