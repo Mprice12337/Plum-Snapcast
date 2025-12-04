@@ -6,7 +6,12 @@ set -e
 
 # Configuration from environment
 ADAPTER="${BLUETOOTH_ADAPTER:-hci0}"
-DEVICE_NAME="${BLUETOOTH_DEVICE_NAME:-Plum Audio}"
+# Read device name from settings file if it exists, otherwise fall back to env var
+if [ -f /app/data/settings.json ] && command -v python3 >/dev/null 2>&1; then
+    DEVICE_NAME=$(python3 -c "import json; f=open('/app/data/settings.json'); s=json.load(f); print(s.get('integrations',{}).get('bluetooth',{}).get('deviceName','${BLUETOOTH_DEVICE_NAME:-Plum Audio}'))" 2>/dev/null || echo "${BLUETOOTH_DEVICE_NAME:-Plum Audio}")
+else
+    DEVICE_NAME="${BLUETOOTH_DEVICE_NAME:-Plum Audio}"
+fi
 DISCOVERABLE="${BLUETOOTH_DISCOVERABLE:-1}"
 AUTO_PAIR="${BLUETOOTH_AUTO_PAIR:-1}"
 

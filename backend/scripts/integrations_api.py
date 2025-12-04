@@ -416,8 +416,9 @@ class BluetoothController:
                             "details": output
                         }
 
-                # Wait for bluetoothd to initialize
-                time.sleep(2)
+                # Wait for bluetoothd and bluetooth-init.sh to complete initialization
+                # This ensures the init script finishes setting the old name before we override it
+                time.sleep(5)
 
             # Escape device name for shell command
             device_name_escaped = device_name.replace("'", "'\\''")
