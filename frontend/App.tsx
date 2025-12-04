@@ -287,7 +287,7 @@ const App: React.FC = () => {
     useEffect(() => {
         if (!recentUserChanges) return;
 
-        const gracePeriod = 3000; // 3 seconds for user changes
+        const gracePeriod = 7000; // 7 seconds for user changes (longer than 5s polling interval)
         const timeRemaining = gracePeriod - (Date.now() - recentUserChanges.timestamp);
 
         if (timeRemaining > 0) {
@@ -900,7 +900,7 @@ const App: React.FC = () => {
 
             // Check if we should ignore polling updates due to recent user changes
             const now = Date.now();
-            const GRACE_PERIOD = 3000; // 3 second grace period for user changes
+            const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
             const hasRecentChange = recentUserChanges && (now - recentUserChanges.timestamp) < GRACE_PERIOD;
 
             // Transform and MERGE federated streams (preserve client-side progress tracking)
