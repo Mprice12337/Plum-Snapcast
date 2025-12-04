@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from typing import Dict, Any
 from flask import Blueprint, jsonify, request
 
@@ -212,6 +213,272 @@ class AirPlayController:
             }
 
 
+class BluetoothController:
+    """Controls Bluetooth services"""
+
+    def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
+        self.controller = integration_controller
+        # Bluetooth requires multiple services
+        self.services = ["bluetoothd", "bluetooth-init", "bluealsa", "bluealsa-aplay"]
+        self.adapter = "hci0"
+        self.settings_manager = settings_manager or SettingsManager()
+
+    def _set_adapter_discoverable(self, discoverable: bool, pairable: bool = True) -> tuple[bool, str]:
+        """Set Bluetooth adapter discoverable and pairable state via bluetoothctl"""
+        try:
+            # Build bluetoothctl commands
+            commands = [
+                "power on",
+                f"pairable {'on' if pairable else 'off'}",
+                "discoverable-timeout 0",  # No timeout
+                f"discoverable {'on' if discoverable else 'off'}"
+            ]
+
+            # Join commands with newlines for bluetoothctl stdin
+            commands_str = "\n".join(commands) + "\n"
+
+            # Run bluetoothctl with commands via stdin
+            result = subprocess.run(
+                ["bluetoothctl"],
+                input=commands_str,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            success = result.returncode == 0
+            output = result.stdout + result.stderr
+
+            if success:
+                state = "discoverable and pairable" if discoverable and pairable else "not discoverable"
+                logger.info(f"Bluetooth adapter set to {state}")
+            else:
+                logger.error(f"Failed to set adapter state: {output}")
+
+            return success, output.strip()
+
+        except subprocess.TimeoutExpired:
+            logger.error("bluetoothctl command timed out")
+            return False, "Command timed out"
+        except Exception as e:
+            logger.error(f"Failed to set adapter state: {e}")
+            return False, str(e)
+
+    def enable(self) -> Dict[str, Any]:
+        """Enable Bluetooth services"""
+        all_success = True
+        outputs = []
+
+        # Start services in order
+        for service_name in self.services:
+            success, output = self.controller.start_service(service_name)
+            outputs.append(f"{service_name}: {output.strip()}")
+            if not success:
+                all_success = False
+                logger.error(f"Failed to start {service_name}: {output}")
+
+        # Wait for bluetoothd to initialize before setting adapter properties
+        if all_success:
+            time.sleep(2)  # Give bluetoothd time to start
+
+            # Set adapter to discoverable and pairable
+            adapter_success, adapter_output = self._set_adapter_discoverable(discoverable=True, pairable=True)
+            outputs.append(f"adapter config: {adapter_output}")
+
+            if not adapter_success:
+                logger.warning(f"Services started but failed to set adapter discoverable: {adapter_output}")
+                # Don't fail the entire operation if adapter config fails
+                # The user can still use Bluetooth, just not discoverable
+
+        # Update settings to persist state
+        if all_success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "bluetooth": {
+                            "enabled": True
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Bluetooth enabled state: {e}")
+
+        return {
+            "success": all_success,
+            "message": "Bluetooth enabled" if all_success else "Failed to enable some Bluetooth services",
+            "details": "\n".join(outputs)
+        }
+
+    def disable(self) -> Dict[str, Any]:
+        """Disable Bluetooth services"""
+        all_success = True
+        outputs = []
+
+        # Set adapter to not discoverable before stopping services
+        # This makes the device disappear from Bluetooth discovery immediately
+        adapter_success, adapter_output = self._set_adapter_discoverable(discoverable=False, pairable=False)
+        outputs.append(f"adapter config: {adapter_output}")
+
+        if not adapter_success:
+            logger.warning(f"Failed to set adapter not discoverable: {adapter_output}")
+            # Continue with stopping services even if adapter config fails
+
+        # Stop services in reverse order
+        for service_name in reversed(self.services):
+            success, output = self.controller.stop_service(service_name)
+            outputs.append(f"{service_name}: {output.strip()}")
+            if not success:
+                all_success = False
+                logger.error(f"Failed to stop {service_name}: {output}")
+
+        # Update settings to persist state
+        if all_success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "bluetooth": {
+                            "enabled": False
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Bluetooth disabled state: {e}")
+
+        return {
+            "success": all_success,
+            "message": "Bluetooth disabled" if all_success else "Failed to disable some Bluetooth services",
+            "details": "\n".join(outputs)
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get Bluetooth service status"""
+        # Check first service (bluetoothd) as representative
+        status = self.controller.get_service_status(self.services[0])
+
+        # Check all services for detailed status
+        all_running = True
+        service_statuses = {}
+        for service_name in self.services:
+            svc_status = self.controller.get_service_status(service_name)
+            service_statuses[service_name] = svc_status
+            if not svc_status.get("running", False):
+                all_running = False
+
+        return {
+            "running": all_running,
+            "status": "running" if all_running else "partial" if status.get("running", False) else "stopped",
+            "services": service_statuses
+        }
+
+    def update_device_name(self, device_name: str) -> Dict[str, Any]:
+        """Update Bluetooth device name via D-Bus"""
+        try:
+            # Validate device name
+            if not device_name or len(device_name) > 50:
+                return {
+                    "success": False,
+                    "message": "Invalid device name (must be 1-50 characters)"
+                }
+
+            # Check if Bluetooth services are running
+            status = self.get_status()
+            services_running = status.get("running", False)
+
+            # If services aren't running, persist the device name to settings FIRST
+            # This ensures bluetooth-init.sh reads the new name when it starts
+            if not services_running:
+                logger.info("Bluetooth services not running, persisting device name before starting services")
+                try:
+                    self.settings_manager.update_settings({
+                        "integrations": {
+                            "bluetooth": {
+                                "deviceName": device_name,
+                                "enabled": True
+                            }
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to persist Bluetooth device name: {e}")
+                    return {
+                        "success": False,
+                        "message": f"Failed to persist device name: {str(e)}"
+                    }
+
+                # Now start services - bluetooth-init.sh will read the new name from settings
+                logger.info("Starting Bluetooth services with new device name")
+                for service_name in self.services:
+                    success, output = self.controller.start_service(service_name)
+                    if not success:
+                        logger.error(f"Failed to start {service_name}: {output}")
+                        return {
+                            "success": False,
+                            "message": f"Failed to start Bluetooth services: {output}",
+                            "details": output
+                        }
+
+                # Wait for bluetoothd to initialize
+                time.sleep(2)
+
+            # Escape device name for shell command
+            device_name_escaped = device_name.replace("'", "'\\''")
+
+            # Use gdbus to set Bluetooth adapter alias (same approach as bluetooth-init.sh)
+            gdbus_cmd = [
+                "gdbus", "call", "--system",
+                "--dest", "org.bluez",
+                "--object-path", f"/org/bluez/{self.adapter}",
+                "--method", "org.freedesktop.DBus.Properties.Set",
+                "org.bluez.Adapter1",
+                "Alias",
+                f"<'{device_name_escaped}'>"
+            ]
+
+            result = subprocess.run(gdbus_cmd, capture_output=True, text=True, timeout=10)
+
+            if result.returncode != 0:
+                logger.error(f"gdbus command failed: {result.stderr}")
+                return {
+                    "success": False,
+                    "message": "Failed to update Bluetooth device name",
+                    "details": result.stderr.strip()
+                }
+
+            logger.info(f"Updated Bluetooth device name to: {device_name}")
+
+            # If we started the services, also set the adapter to discoverable
+            if not services_running:
+                adapter_success, adapter_output = self._set_adapter_discoverable(discoverable=True, pairable=True)
+                if not adapter_success:
+                    logger.warning(f"Device name updated but failed to set adapter discoverable: {adapter_output}")
+            else:
+                # Services were already running, so we only need to persist the device name
+                # (enabled state doesn't change, settings were not updated before starting services)
+                try:
+                    self.settings_manager.update_settings({
+                        "integrations": {
+                            "bluetooth": {
+                                "deviceName": device_name
+                            }
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to persist Bluetooth device name: {e}")
+
+            return {
+                "success": True,
+                "message": f"Device name updated to '{device_name}'",
+                "device_name": device_name,
+                "details": result.stdout.strip()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to update Bluetooth device name: {e}")
+            return {
+                "success": False,
+                "message": f"Error updating device name: {str(e)}"
+            }
+
+
 def create_integrations_blueprint(
     integration_controller: IntegrationController = None
 ) -> Blueprint:
@@ -221,9 +488,11 @@ def create_integrations_blueprint(
         integration_controller = IntegrationController()
 
     airplay_controller = AirPlayController(integration_controller)
+    bluetooth_controller = BluetoothController(integration_controller)
 
     bp = Blueprint('integrations', __name__)
 
+    # AirPlay endpoints
     @bp.route("/api/integrations/airplay/enable", methods=["POST"])
     def airplay_enable():
         """Enable AirPlay service"""
@@ -271,6 +540,56 @@ def create_integrations_blueprint(
             return jsonify(result), status_code
         except Exception as e:
             logger.error(f"AirPlay device name update failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # Bluetooth endpoints
+    @bp.route("/api/integrations/bluetooth/enable", methods=["POST"])
+    def bluetooth_enable():
+        """Enable Bluetooth services"""
+        try:
+            result = bluetooth_controller.enable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Bluetooth enable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/bluetooth/disable", methods=["POST"])
+    def bluetooth_disable():
+        """Disable Bluetooth services"""
+        try:
+            result = bluetooth_controller.disable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Bluetooth disable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/bluetooth/status", methods=["GET"])
+    def bluetooth_status():
+        """Get Bluetooth service status"""
+        try:
+            result = bluetooth_controller.get_status()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Bluetooth status check failed: {e}")
+            return jsonify({"running": False, "status": "error", "error": str(e)}), 500
+
+    @bp.route("/api/integrations/bluetooth/device-name", methods=["POST"])
+    def bluetooth_update_device_name():
+        """Update Bluetooth device name"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            result = bluetooth_controller.update_device_name(device_name)
+
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Bluetooth device name update failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
     return bp

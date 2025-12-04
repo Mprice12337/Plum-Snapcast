@@ -1,7 +1,7 @@
 import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
-import {airplayService} from '../../services/integrationsService';
+import {airplayService, bluetoothService} from '../../services/integrationsService';
 
 interface IntegrationsTabProps {
   settings: SettingsType;
@@ -22,13 +22,24 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [airplayNameMessage, setAirplayNameMessage] = useState('');
   const [isTogglingAirplay, setIsTogglingAirplay] = useState(false);
 
+  // Bluetooth device name state
+  const [bluetoothDeviceName, setBluetoothDeviceName] = useState(settings.integrations.bluetooth.deviceName);
+  const [bluetoothNameStatus, setBluetoothNameStatus] = useState<ApplyStatus>('idle');
+  const [bluetoothNameMessage, setBluetoothNameMessage] = useState('');
+  const [isTogglingBluetooth, setIsTogglingBluetooth] = useState(false);
+
   // Update local state when settings change externally
   useEffect(() => {
     setAirplayDeviceName(settings.integrations.airplay.deviceName);
   }, [settings.integrations.airplay.deviceName]);
 
+  useEffect(() => {
+    setBluetoothDeviceName(settings.integrations.bluetooth.deviceName);
+  }, [settings.integrations.bluetooth.deviceName]);
+
   // Check if device name has changed
   const airplayNameChanged = airplayDeviceName !== settings.integrations.airplay.deviceName;
+  const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
 
   const toggleSection = (section: string) => {
     setExpandedSection(expandedSection === section ? null : section);
@@ -117,6 +128,80 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         },
       },
     });
+  };
+
+  const handleBluetoothToggle = async (enabled: boolean) => {
+    setIsTogglingBluetooth(true);
+    try {
+      const result = enabled
+        ? await bluetoothService.enable()
+        : await bluetoothService.disable();
+
+      if (result.success) {
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            bluetooth: {
+              ...settings.integrations.bluetooth,
+              enabled,
+            },
+          },
+        });
+      } else {
+        console.error('Failed to toggle Bluetooth:', result.message);
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} Bluetooth: ${result.message}`);
+      }
+    } catch (error) {
+      console.error('Error toggling Bluetooth:', error);
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} Bluetooth`);
+    } finally {
+      setIsTogglingBluetooth(false);
+    }
+  };
+
+  const handleApplyBluetoothDeviceName = async () => {
+    if (!bluetoothNameChanged) return;
+
+    // Track if Bluetooth was disabled before applying
+    const wasDisabled = !settings.integrations.bluetooth.enabled;
+
+    setBluetoothNameStatus('applying');
+    setBluetoothNameMessage('Applying changes... this may take up to 60 seconds');
+
+    try {
+      const result = await bluetoothService.updateDeviceName(bluetoothDeviceName);
+
+      if (result.success) {
+        setBluetoothNameStatus('success');
+        setBluetoothNameMessage('Applied');
+
+        // Update settings - if Bluetooth was disabled, it's now enabled
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            bluetooth: {
+              ...settings.integrations.bluetooth,
+              deviceName: bluetoothDeviceName,
+              enabled: wasDisabled ? true : settings.integrations.bluetooth.enabled,
+            },
+          },
+        });
+
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setBluetoothNameStatus('idle');
+          setBluetoothNameMessage('');
+        }, 3000);
+      } else {
+        setBluetoothNameStatus('error');
+        setBluetoothNameMessage(result.message || 'Failed to apply');
+      }
+    } catch (error: any) {
+      setBluetoothNameStatus('error');
+      setBluetoothNameMessage(error.message || 'Error applying changes');
+    }
   };
 
   const handleBluetoothChange = (field: string, value: boolean | string) => {
@@ -263,8 +348,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <Switch
               label="Bluetooth"
               checked={settings.integrations.bluetooth.enabled}
-              onChange={(val) => handleBluetoothChange('enabled', val)}
+              onChange={handleBluetoothToggle}
               icon="fa-bluetooth"
+              disabled={isTogglingBluetooth}
             />
             <button
               onClick={() => toggleSection('bluetooth')}
@@ -276,6 +362,11 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
             Bluetooth A2DP audio streaming
           </p>
+          {isTogglingBluetooth && (
+            <p className="text-xs text-amber-500 ml-8 mt-1">
+              Processing... this may take up to 60 seconds
+            </p>
+          )}
 
           {expandedSection === 'bluetooth' && (
             <div className="mt-4 ml-8 space-y-3">
@@ -283,13 +374,42 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Device Name
                 </label>
-                <input
-                  type="text"
-                  value={settings.integrations.bluetooth.deviceName}
-                  onChange={(e) => handleBluetoothChange('deviceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="Plum Audio"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={bluetoothDeviceName}
+                    onChange={(e) => setBluetoothDeviceName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleApplyBluetoothDeviceName()}
+                    disabled={bluetoothNameStatus === 'applying'}
+                    className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)] disabled:opacity-50"
+                    placeholder="Plum Audio"
+                  />
+                  {bluetoothNameChanged && (
+                    <button
+                      onClick={handleApplyBluetoothDeviceName}
+                      disabled={bluetoothNameStatus === 'applying'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {bluetoothNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+                {bluetoothNameMessage && (
+                  <p className={`text-xs mt-1 ${
+                    bluetoothNameStatus === 'success'
+                      ? 'text-green-500'
+                      : bluetoothNameStatus === 'error'
+                      ? 'text-red-500'
+                      : 'text-[var(--text-muted)]'
+                  }`}>
+                    {bluetoothNameMessage}
+                  </p>
+                )}
+                {bluetoothNameChanged && !bluetoothNameMessage && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Pending changes - press Enter or click Apply
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">

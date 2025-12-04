@@ -100,3 +100,99 @@ export const airplayService = {
     }
   },
 };
+
+/**
+ * Bluetooth Control
+ */
+export const bluetoothService = {
+  /**
+   * Enable Bluetooth services
+   */
+  async enable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/bluetooth/enable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to enable Bluetooth' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to enable Bluetooth:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Disable Bluetooth services
+   */
+  async disable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/bluetooth/disable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to disable Bluetooth' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to disable Bluetooth:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get Bluetooth service status
+   */
+  async getStatus(): Promise<{ running: boolean; status: string; error?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/bluetooth/status`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get Bluetooth status:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update Bluetooth device name
+   */
+  async updateDeviceName(deviceName: string): Promise<{ success: boolean; message: string; deviceName?: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/bluetooth/device-name`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update device name' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update Bluetooth device name:', error);
+      throw error;
+    }
+  },
+};

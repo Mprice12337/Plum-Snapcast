@@ -105,12 +105,11 @@ SNAPCONF
     fi
 
     # Add Bluetooth source to [stream] section
-    if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
-        echo "Adding Bluetooth source..."
-        # Insert source after [stream] line with control script for metadata
-        # Bluetooth audio is typically 44.1kHz/16-bit stereo
-        sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
-    fi
+    # Always add the source - it will only be available when services are running
+    echo "Adding Bluetooth source..."
+    # Insert source after [stream] line with control script for metadata
+    # Bluetooth audio is typically 44.1kHz/16-bit stereo
+    sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
 
     # Add DLNA source to [stream] section
     if [ "${DLNA_ENABLED}" = "1" ]; then
