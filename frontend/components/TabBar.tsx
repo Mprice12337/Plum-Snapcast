@@ -32,7 +32,7 @@ export const TabBar: React.FC<TabBarProps> = ({ tabs, activeTab, onTabChange }) 
           aria-selected={activeTab === tab.id}
           role="tab"
         >
-          <Icon name={tab.icon} aria-hidden style={{ color: 'inherit' }} />
+          <Icon name={tab.icon} aria-hidden className="text-lg" style={{ color: 'inherit' }} />
           <span>{tab.label}</span>
         </button>
       ))}

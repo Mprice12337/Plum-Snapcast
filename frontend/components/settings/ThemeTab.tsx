@@ -84,7 +84,7 @@ export const ThemeTab: React.FC<ThemeTabProps> = ({
                   }
                 `}
               >
-                <Icon name={mode.icon} />
+                <Icon name={mode.icon} className="text-lg" style={{ color: 'inherit' }} />
                 {mode.label}
               </button>
             ))}

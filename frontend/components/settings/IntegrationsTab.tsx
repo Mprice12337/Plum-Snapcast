@@ -462,7 +462,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               onClick={() => toggleSection('airplay')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <Icon name={expandedSection === 'airplay' ? 'chevron-up' : 'chevron-down'} />
+              <Icon name={expandedSection === 'airplay' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -539,7 +539,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               onClick={() => toggleSection('bluetooth')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <Icon name={expandedSection === 'bluetooth' ? 'chevron-up' : 'chevron-down'} />
+              <Icon name={expandedSection === 'bluetooth' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -636,7 +636,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               onClick={() => toggleSection('spotify')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <Icon name={expandedSection === 'spotify' ? 'chevron-up' : 'chevron-down'} />
+              <Icon name={expandedSection === 'spotify' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -739,7 +739,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               onClick={() => toggleSection('dlna')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <Icon name={expandedSection === 'dlna' ? 'chevron-up' : 'chevron-down'} />
+              <Icon name={expandedSection === 'dlna' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">

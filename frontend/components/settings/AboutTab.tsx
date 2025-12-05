@@ -115,7 +115,7 @@ export const AboutTab: React.FC = () => {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-[var(--accent-color)] hover:underline"
             >
-              <Icon name="github" />
+              <Icon name="github" className="text-lg" style={{ color: 'inherit' }} />
               <span>View on GitHub</span>
             </a>
             <a
@@ -124,7 +124,7 @@ export const AboutTab: React.FC = () => {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-[var(--accent-color)] hover:underline"
             >
-              <Icon name="book" />
+              <Icon name="book" className="text-lg" style={{ color: 'inherit' }} />
               <span>Snapcast API Documentation</span>
             </a>
           </div>
