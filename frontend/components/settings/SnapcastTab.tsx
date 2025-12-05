@@ -31,16 +31,17 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
   // Detect pending changes for server name
   const serverNameChanged = localServerName !== settings.federation.localServerName;
 
-  useEffect(() => {
+  const fetchServers = async () => {
     if (settings.federation.enabled) {
-      const fetchServers = async () => {
-        const serverList = await federationService.getServers();
-        setServers(serverList);
-      };
-      fetchServers();
+      const serverList = await federationService.getServers();
+      setServers(serverList);
     } else {
       setServers([]);
     }
+  };
+
+  useEffect(() => {
+    fetchServers();
   }, [settings.federation.enabled]);
 
   const handleFederationToggle = async (enabled: boolean) => {
@@ -94,6 +95,11 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
         },
       });
 
+      // Refresh server list after a delay to show updated name
+      setTimeout(() => {
+        fetchServers();
+      }, 1500);
+
       setServerNameStatus('success');
       setServerNameMessage('Server name updated successfully');
 
@@ -122,12 +128,20 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     setIsServerOperationInProgress(true);
     try {
       const result = await federationService.addServer(host, port, name);
-      if (result.success && result.server) {
-        setServers([...servers, result.server]);
+      if (result.success) {
+        // Refresh server list to get updated connection status
+        // Use a slight delay to ensure backend has time to establish connection
+        setTimeout(() => {
+          fetchServers();
+          setIsServerOperationInProgress(false);
+        }, 1000);
+      } else {
+        setIsServerOperationInProgress(false);
       }
       return result;
-    } finally {
+    } catch (error) {
       setIsServerOperationInProgress(false);
+      throw error;
     }
   };
 
@@ -135,12 +149,20 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     setIsServerOperationInProgress(true);
     try {
       const result = await federationService.editServer(serverId, host, port, name);
-      if (result.success && result.server) {
-        setServers(servers.map(s => s.id === serverId ? result.server! : s));
+      if (result.success) {
+        // Refresh server list to get updated connection status
+        // Use a slight delay to ensure backend has time to reconnect
+        setTimeout(() => {
+          fetchServers();
+          setIsServerOperationInProgress(false);
+        }, 1000);
+      } else {
+        setIsServerOperationInProgress(false);
       }
       return result;
-    } finally {
+    } catch (error) {
       setIsServerOperationInProgress(false);
+      throw error;
     }
   };
 
@@ -149,7 +171,8 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     try {
       const result = await federationService.removeServer(serverId);
       if (result.success) {
-        setServers(servers.filter(s => s.id !== serverId));
+        // Refresh server list to ensure clean state
+        await fetchServers();
       }
       return result;
     } finally {
