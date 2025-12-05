@@ -1,7 +1,7 @@
 import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
-import {airplayService, bluetoothService, spotifyService} from '../../services/integrationsService';
+import {airplayService, bluetoothService, spotifyService, dlnaService} from '../../services/integrationsService';
 
 interface IntegrationsTabProps {
   settings: SettingsType;
@@ -34,6 +34,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [spotifyNameMessage, setSpotifyNameMessage] = useState('');
   const [isTogglingSpotify, setIsTogglingSpotify] = useState(false);
 
+  // DLNA device name state
+  const [dlnaDeviceName, setDlnaDeviceName] = useState(settings.integrations.dlna.deviceName);
+  const [dlnaNameStatus, setDlnaNameStatus] = useState<ApplyStatus>('idle');
+  const [dlnaNameMessage, setDlnaNameMessage] = useState('');
+  const [isTogglingDlna, setIsTogglingDlna] = useState(false);
+
   // Update local state when settings change externally
   useEffect(() => {
     setAirplayDeviceName(settings.integrations.airplay.deviceName);
@@ -47,10 +53,15 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setSpotifyDeviceName(settings.integrations.spotify.deviceName);
   }, [settings.integrations.spotify.deviceName]);
 
+  useEffect(() => {
+    setDlnaDeviceName(settings.integrations.dlna.deviceName);
+  }, [settings.integrations.dlna.deviceName]);
+
   // Check if device name has changed
   const airplayNameChanged = airplayDeviceName !== settings.integrations.airplay.deviceName;
   const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
   const spotifyNameChanged = spotifyDeviceName !== settings.integrations.spotify.deviceName;
+  const dlnaNameChanged = dlnaDeviceName !== settings.integrations.dlna.deviceName;
 
   const toggleSection = (section: string) => {
     setExpandedSection(expandedSection === section ? null : section);
@@ -333,6 +344,72 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         },
       },
     });
+  };
+
+  const handleDlnaToggle = async (enabled: boolean) => {
+    setIsTogglingDlna(true);
+    try {
+      const result = enabled
+        ? await dlnaService.enable()
+        : await dlnaService.disable();
+
+      if (result.success) {
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            dlna: {
+              ...settings.integrations.dlna,
+              enabled,
+            },
+          },
+        });
+      } else {
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} DLNA: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} DLNA: ${error.message}`);
+    } finally {
+      setIsTogglingDlna(false);
+    }
+  };
+
+  const handleApplyDlnaDeviceName = async () => {
+    if (!dlnaNameChanged) return;
+
+    setDlnaNameStatus('applying');
+    setDlnaNameMessage('Applying changes...');
+
+    try {
+      const result = await dlnaService.updateDeviceName(dlnaDeviceName);
+
+      if (result.success) {
+        setDlnaNameStatus('success');
+        setDlnaNameMessage('Applied');
+
+        // Update parent settings
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            dlna: {
+              ...settings.integrations.dlna,
+              deviceName: dlnaDeviceName,
+              enabled: true,
+            },
+          },
+        });
+
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setDlnaNameStatus('idle');
+          setDlnaNameMessage('');
+        }, 3000);
+      }
+    } catch (error: any) {
+      setDlnaNameStatus('error');
+      setDlnaNameMessage(error.message || 'Error applying changes');
+    }
   };
 
   const handleDlnaChange = (field: string, value: boolean | string) => {
@@ -653,8 +730,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <Switch
               label="DLNA/UPnP"
               checked={settings.integrations.dlna.enabled}
-              onChange={(val) => handleDlnaChange('enabled', val)}
+              onChange={handleDlnaToggle}
               icon="fa-network-wired"
+              disabled={isTogglingDlna}
             />
             <button
               onClick={() => toggleSection('dlna')}
@@ -666,6 +744,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
             DLNA/UPnP media renderer
           </p>
+
+          {isTogglingDlna && (
+            <p className="text-xs text-amber-500 ml-8 mt-1">
+              Processing... this may take up to 60 seconds
+            </p>
+          )}
 
           {expandedSection === 'dlna' && (
             <div className="mt-4 ml-8 space-y-3">
@@ -685,13 +769,50 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Device Name
                 </label>
-                <input
-                  type="text"
-                  value={settings.integrations.dlna.deviceName}
-                  onChange={(e) => handleDlnaChange('deviceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="Plum Audio"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={dlnaDeviceName}
+                    onChange={(e) => setDlnaDeviceName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && dlnaNameChanged) {
+                        handleApplyDlnaDeviceName();
+                      }
+                    }}
+                    placeholder="Plum Audio"
+                    className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)] pr-20"
+                    disabled={dlnaNameStatus === 'applying'}
+                  />
+                  {dlnaNameChanged && (
+                    <button
+                      onClick={handleApplyDlnaDeviceName}
+                      disabled={dlnaNameStatus === 'applying'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] text-white rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {dlnaNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Status feedback */}
+                {dlnaNameMessage && (
+                  <p className={`text-xs mt-1 ${
+                    dlnaNameStatus === 'success'
+                      ? 'text-green-500'
+                      : dlnaNameStatus === 'error'
+                      ? 'text-red-500'
+                      : 'text-[var(--text-muted)]'
+                  }`}>
+                    {dlnaNameMessage}
+                  </p>
+                )}
+
+                {/* Pending changes indicator */}
+                {dlnaNameChanged && !dlnaNameMessage && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Pending changes - press Enter or click Apply
+                  </p>
+                )}
               </div>
             </div>
           )}

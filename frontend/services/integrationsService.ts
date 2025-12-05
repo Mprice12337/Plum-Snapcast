@@ -317,3 +317,99 @@ export const spotifyService = {
     }
   },
 };
+
+/**
+ * DLNA Control
+ */
+export const dlnaService = {
+  /**
+   * Enable DLNA service
+   */
+  async enable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/enable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to enable DLNA' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to enable DLNA:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Disable DLNA service
+   */
+  async disable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/disable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to disable DLNA' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to disable DLNA:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get DLNA service status
+   */
+  async getStatus(): Promise<{ running: boolean; status: string; error?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/status`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get DLNA status:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update DLNA device name
+   */
+  async updateDeviceName(deviceName: string): Promise<{ success: boolean; message: string; deviceName?: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/device-name`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update device name' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update DLNA device name:', error);
+      throw error;
+    }
+  },
+};

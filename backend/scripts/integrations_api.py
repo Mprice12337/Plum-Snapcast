@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Configuration file paths
 SHAIRPORT_SYNC_CONF = "/app/config/shairport-sync.conf"
 SPOTIFYD_CONF = "/app/config/spotifyd.conf"
+DLNA_DEVICE_NAME_FILE = "/app/config/dlna-device-name.txt"
 SUPERVISORCTL_CONF = "/app/supervisord/supervisord.conf"
 
 
@@ -705,6 +706,114 @@ class SpotifyController:
             }
 
 
+class DLNAController:
+    """Controls DLNA/UPnP (gmrender-resurrect) service"""
+
+    def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
+        self.controller = integration_controller
+        self.service_name = "gmrender"
+        self.device_name_file = DLNA_DEVICE_NAME_FILE
+        self.settings_manager = settings_manager or SettingsManager()
+
+    def enable(self) -> Dict[str, Any]:
+        """Enable DLNA service"""
+        success, output = self.controller.start_service(self.service_name)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {"dlna": {"enabled": True}}
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist DLNA enabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "DLNA enabled" if success else "Failed to enable DLNA",
+            "details": output.strip()
+        }
+
+    def disable(self) -> Dict[str, Any]:
+        """Disable DLNA service"""
+        success, output = self.controller.stop_service(self.service_name)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {"dlna": {"enabled": False}}
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist DLNA disabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "DLNA disabled" if success else "Failed to disable DLNA",
+            "details": output.strip()
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get DLNA service status"""
+        return self.controller.get_service_status(self.service_name)
+
+    def update_device_name(self, device_name: str) -> Dict[str, Any]:
+        """Update DLNA device name by writing to file and restarting service"""
+        try:
+            # Validate device name
+            if not device_name or len(device_name) > 50:
+                return {
+                    "success": False,
+                    "message": "Invalid device name (must be 1-50 characters)"
+                }
+
+            # Write device name to file
+            try:
+                with open(self.device_name_file, 'w') as f:
+                    f.write(device_name)
+                logger.info(f"Updated DLNA device name file to: {device_name}")
+            except Exception as e:
+                logger.error(f"Failed to write device name file: {e}")
+                return {
+                    "success": False,
+                    "message": f"Failed to write device name file: {str(e)}"
+                }
+
+            # Restart service to apply changes
+            success, output = self.controller.restart_service(self.service_name)
+
+            if not success:
+                logger.error(f"Failed to restart gmrender: {output}")
+
+            # Update settings to persist device name and enabled state
+            if success:
+                try:
+                    self.settings_manager.update_settings({
+                        "integrations": {
+                            "dlna": {
+                                "deviceName": device_name,
+                                "enabled": True
+                            }
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to persist DLNA device name: {e}")
+
+            return {
+                "success": success,
+                "message": f"Device name updated to '{device_name}'" if success else "Failed to restart DLNA service",
+                "device_name": device_name if success else None,
+                "details": output.strip()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to update device name: {e}")
+            return {
+                "success": False,
+                "message": f"Error updating device name: {str(e)}"
+            }
+
+
 def create_integrations_blueprint(
     integration_controller: IntegrationController = None
 ) -> Blueprint:
@@ -716,6 +825,7 @@ def create_integrations_blueprint(
     airplay_controller = AirPlayController(integration_controller)
     bluetooth_controller = BluetoothController(integration_controller)
     spotify_controller = SpotifyController(integration_controller)
+    dlna_controller = DLNAController(integration_controller)
 
     bp = Blueprint('integrations', __name__)
 
@@ -892,6 +1002,56 @@ def create_integrations_blueprint(
             return jsonify(result), status_code
         except Exception as e:
             logger.error(f"Spotify device name update failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # DLNA endpoints
+    @bp.route("/api/integrations/dlna/enable", methods=["POST"])
+    def dlna_enable():
+        """Enable DLNA service"""
+        try:
+            result = dlna_controller.enable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA enable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/dlna/disable", methods=["POST"])
+    def dlna_disable():
+        """Disable DLNA service"""
+        try:
+            result = dlna_controller.disable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA disable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/dlna/status", methods=["GET"])
+    def dlna_status():
+        """Get DLNA service status"""
+        try:
+            result = dlna_controller.get_status()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"DLNA status check failed: {e}")
+            return jsonify({"running": False, "status": "error", "error": str(e)}), 500
+
+    @bp.route("/api/integrations/dlna/device-name", methods=["POST"])
+    def dlna_update_device_name():
+        """Update DLNA device name"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            result = dlna_controller.update_device_name(device_name)
+
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA device name update failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
     return bp

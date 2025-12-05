@@ -23,6 +23,7 @@ const DEFAULT_LOCAL_SETTINGS = {
 
 // Default server settings (should match backend defaults)
 const DEFAULT_SERVER_SETTINGS = {
+  version: 1,  // Version for change detection
   integrations: {
     airplay: {
       enabled: true,
@@ -67,9 +68,11 @@ interface LocalSettings {
 }
 
 class SettingsService {
-  private serverSettings: ServerSettings = DEFAULT_SERVER_SETTINGS;
+  private serverSettings: ServerSettings & { version?: number } = DEFAULT_SERVER_SETTINGS;
   private localSettings: LocalSettings = DEFAULT_LOCAL_SETTINGS;
   private listeners: Array<(settings: Settings) => void> = [];
+  private pollingInterval: number | null = null;
+  private readonly POLL_INTERVAL_MS = 10000; // Poll every 10 seconds
 
   constructor() {
     this.loadLocalSettings();
@@ -84,7 +87,63 @@ class SettingsService {
     } catch (error) {
       console.error('Failed to fetch server settings, using defaults:', error);
     }
+
+    // Start polling for settings changes
+    this.startPolling();
+
     return this.getMergedSettings();
+  }
+
+  /**
+   * Start polling for settings changes
+   */
+  private startPolling(): void {
+    if (this.pollingInterval !== null) {
+      return; // Already polling
+    }
+
+    this.pollingInterval = window.setInterval(async () => {
+      try {
+        await this.checkForUpdates();
+      } catch (error) {
+        // Silently handle errors to avoid spam
+        console.debug('Settings poll failed:', error);
+      }
+    }, this.POLL_INTERVAL_MS);
+
+    console.log('[Settings] Started polling for changes');
+  }
+
+  /**
+   * Stop polling for settings changes
+   */
+  private stopPolling(): void {
+    if (this.pollingInterval !== null) {
+      window.clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+      console.log('[Settings] Stopped polling');
+    }
+  }
+
+  /**
+   * Check for settings updates and refresh if version changed
+   */
+  private async checkForUpdates(): Promise<void> {
+    const response = await fetch(SETTINGS_API_URL);
+    if (!response.ok) {
+      return;
+    }
+
+    const data = await response.json();
+    const serverVersion = data.version || 0;
+    const currentVersion = this.serverSettings.version || 0;
+
+    if (serverVersion > currentVersion) {
+      console.log(`[Settings] Version changed: ${currentVersion} → ${serverVersion}`);
+      await this.fetchServerSettings();
+      const merged = this.getMergedSettings();
+      this.notifyListeners(merged);
+    }
   }
 
   /**
@@ -107,6 +166,7 @@ class SettingsService {
     }
     const data = await response.json();
     this.serverSettings = {
+      version: data.version || 1,
       integrations: data.integrations || DEFAULT_SERVER_SETTINGS.integrations,
       federation: data.federation || DEFAULT_SERVER_SETTINGS.federation,
     };

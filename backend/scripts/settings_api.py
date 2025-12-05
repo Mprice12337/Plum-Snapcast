@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Default settings structure
 DEFAULT_SETTINGS = {
+    "version": 1,  # Increments on every update for change detection
     "integrations": {
         "airplay": {
             "enabled": True,
@@ -104,10 +105,16 @@ class SettingsManager:
 
         # Deep merge new settings into current
         for key in new_settings:
+            if key == 'version':
+                continue  # Don't allow manual version updates
             if key in current and isinstance(current[key], dict) and isinstance(new_settings[key], dict):
                 current[key].update(new_settings[key])
             else:
                 current[key] = new_settings[key]
+
+        # Increment version for change detection
+        current['version'] = current.get('version', 0) + 1
+        logger.info(f"Settings updated to version {current['version']}")
 
         self._save_settings(current)
         return current
