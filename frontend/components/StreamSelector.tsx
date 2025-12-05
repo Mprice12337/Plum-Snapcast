@@ -59,7 +59,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
         <span className="text-3xl font-bold text-[var(--accent-color)] truncate pr-4">
           {currentStream ? currentStream.name : 'Select a Source'}
         </span>
-                <Icon name="chevron-down" className={`text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} aria-hidden />
+                <Icon name="chevron-down" className={`text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} style={{ color: 'inherit' }} aria-hidden />
             </button>
 
             {isOpen && (

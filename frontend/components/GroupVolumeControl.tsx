@@ -16,21 +16,21 @@ export const GroupVolumeControl: React.FC<GroupVolumeControlProps> = ({onAdjust,
                     aria-label="Decrease group volume"
                     className="w-12 h-12 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200"
                 >
-                    <Icon name="volume-low" />
+                    <Icon name="volume-low" style={{ color: 'inherit' }} />
                 </button>
                 <button
                     onClick={onMute}
                     aria-label="Mute group"
                     className="w-12 h-12 flex items-center justify-center rounded-full text-white bg-[var(--accent-color)] hover:bg-[var(--accent-color-hover)] transition-colors duration-200"
                 >
-                    <Icon name="volume-xmark" />
+                    <Icon name="volume-xmark" style={{ color: 'inherit' }} />
                 </button>
                 <button
                     onClick={() => onAdjust('up')}
                     aria-label="Increase group volume"
                     className="w-12 h-12 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200"
                 >
-                    <Icon name="volume-high" />
+                    <Icon name="volume-high" style={{ color: 'inherit' }} />
                 </button>
             </div>
         </div>

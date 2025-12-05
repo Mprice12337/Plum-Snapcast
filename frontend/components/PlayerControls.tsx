@@ -59,7 +59,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             {/* Volume Control - order-1 on mobile, order-2 on desktop */}
             {/* On desktop: flex-1 to fill remaining space (same as text area above) */}
             <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2 md:flex-1 md:max-w-none">
-                <Icon name="volume-low" className="text-[var(--text-secondary)] w-6 text-center" aria-hidden />
+                <Icon name="volume-low" className="text-[var(--text-secondary)] w-6 text-center" style={{ color: 'inherit' }} aria-hidden />
                 <input
                     type="range"
                     min="0"
@@ -70,7 +70,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
                     style={sliderStyle}
                     aria-label="Volume control"
                 />
-                <Icon name="volume-high" className="text-[var(--text-secondary)] w-6 text-center" aria-hidden />
+                <Icon name="volume-high" className="text-[var(--text-secondary)] w-6 text-center" style={{ color: 'inherit' }} aria-hidden />
             </div>
         </div>
     );

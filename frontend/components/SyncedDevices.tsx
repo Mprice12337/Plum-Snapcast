@@ -48,7 +48,7 @@ const SyncedDevice: React.FC<{
             <span className="font-semibold truncate">{client.name}</span>
             <div className="flex items-center gap-3">
                 <div className="flex items-center gap-3 w-full max-w-[180px]">
-                    <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" />
+                    <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" style={{ color: 'inherit' }} />
                     <input
                         type="range"
                         min="0"

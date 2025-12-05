@@ -68,7 +68,7 @@ const ClientDevice: React.FC<{
         <div className="flex items-center gap-3">
             <span className="flex-1 truncate font-semibold">{client.name}</span>
             <div className="flex items-center gap-2 w-40">
-                <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" />
+                <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" style={{ color: 'inherit' }} />
                 <input
                     type="range"
                     min="0"
