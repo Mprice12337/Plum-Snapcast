@@ -15,11 +15,15 @@ export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon, d
     return (
         <label htmlFor={switchId}
                className={`flex items-center justify-between p-2 rounded-lg ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--bg-tertiary)]'}`}>
-            <div className="flex items-center gap-3">
-                {icon && <Icon name={icon.replace('fa-', '') as IconName} className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />}
+            <div className="flex items-center gap-6">
+                {icon && (
+                    <div className="w-8 flex justify-center">
+                        <Icon name={icon.replace('fa-', '') as IconName} className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                    </div>
+                )}
                 <span className="text-base text-[var(--text-secondary)]">{label}</span>
             </div>
-            <div className="relative">
+            <div className="relative ml-4">
                 <input
                     id={switchId}
                     type="checkbox"
