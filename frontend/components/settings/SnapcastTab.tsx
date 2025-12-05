@@ -21,6 +21,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
   const [serverNameMessage, setServerNameMessage] = useState('');
   const [isTogglingFederation, setIsTogglingFederation] = useState(false);
   const [isTogglingAutoDiscover, setIsTogglingAutoDiscover] = useState(false);
+  const [isServerOperationInProgress, setIsServerOperationInProgress] = useState(false);
 
   // Sync local state when settings change externally
   useEffect(() => {
@@ -82,7 +83,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     if (!serverNameChanged) return;
 
     setServerNameStatus('applying');
-    setServerNameMessage('Applying changes...');
+    setServerNameMessage('Applying server name change...');
 
     try {
       onSettingsChange({
@@ -94,7 +95,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
       });
 
       setServerNameStatus('success');
-      setServerNameMessage('Applied');
+      setServerNameMessage('Server name updated successfully');
 
       // Clear success message after 3 seconds
       setTimeout(() => {
@@ -118,27 +119,42 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
   };
 
   const handleAddServer = async (host: string, port: number, name: string) => {
-    const result = await federationService.addServer(host, port, name);
-    if (result.success && result.server) {
-      setServers([...servers, result.server]);
+    setIsServerOperationInProgress(true);
+    try {
+      const result = await federationService.addServer(host, port, name);
+      if (result.success && result.server) {
+        setServers([...servers, result.server]);
+      }
+      return result;
+    } finally {
+      setIsServerOperationInProgress(false);
     }
-    return result;
   };
 
   const handleEditServer = async (serverId: string, host: string, port: number, name: string) => {
-    const result = await federationService.editServer(serverId, host, port, name);
-    if (result.success && result.server) {
-      setServers(servers.map(s => s.id === serverId ? result.server! : s));
+    setIsServerOperationInProgress(true);
+    try {
+      const result = await federationService.editServer(serverId, host, port, name);
+      if (result.success && result.server) {
+        setServers(servers.map(s => s.id === serverId ? result.server! : s));
+      }
+      return result;
+    } finally {
+      setIsServerOperationInProgress(false);
     }
-    return result;
   };
 
   const handleRemoveServer = async (serverId: string) => {
-    const result = await federationService.removeServer(serverId);
-    if (result.success) {
-      setServers(servers.filter(s => s.id !== serverId));
+    setIsServerOperationInProgress(true);
+    try {
+      const result = await federationService.removeServer(serverId);
+      if (result.success) {
+        setServers(servers.filter(s => s.id !== serverId));
+      }
+      return result;
+    } finally {
+      setIsServerOperationInProgress(false);
     }
-    return result;
   };
 
   return (
@@ -246,6 +262,11 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
                   onEditServer={handleEditServer}
                   onRemoveServer={handleRemoveServer}
                 />
+                {isServerOperationInProgress && (
+                  <p className="text-xs text-amber-500 mt-2">
+                    Processing server operation...
+                  </p>
+                )}
               </div>
             </div>
           </>
