@@ -13,7 +13,7 @@ import type {Client, Server, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
-import musicNotePlaceholder from './assets/icons/music-note-placeholder.svg';
+import musicNotePlaceholder from './src/assets/icons/music-note-placeholder.svg';
 
 const VOLUME_STEP = 5;
 
