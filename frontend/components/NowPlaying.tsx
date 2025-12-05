@@ -60,12 +60,12 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, 
                     className="w-48 h-48 md:w-56 md:h-56 rounded-lg shadow-lg object-cover transition-transform duration-300 hover:scale-105"
                 />
             </div>
-            <div className="flex-1 text-center md:text-left w-full md:max-w-[calc(100%-14rem)]">
+            <div className="flex-1 text-center md:text-left min-w-0">
                 <ScrollingText text={currentTrack.title} className="text-3xl font-bold" />
                 <ScrollingText text={currentTrack.artist} className="text-lg text-[var(--text-secondary)] mt-1" />
                 <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-muted)] mt-1" />
 
-                <div className="mt-6 w-full">
+                <div className="mt-6">
                     <div
                         ref={progressBarRef}
                         className={`bg-[var(--border-color)] rounded-full h-2 w-full ${canSeek ? 'cursor-pointer hover:h-3 transition-all' : ''}`}
