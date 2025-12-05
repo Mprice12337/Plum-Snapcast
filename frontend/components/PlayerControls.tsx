@@ -1,5 +1,6 @@
 import React from 'react';
 import type {Stream} from '../types';
+import { Icon, type IconName } from './Icon';
 
 interface PlayerControlsProps {
     stream: Stream;
@@ -9,7 +10,7 @@ interface PlayerControlsProps {
     onSkip: (direction: 'next' | 'prev') => void;
 }
 
-const ControlButton: React.FC<{ onClick?: () => void; icon: string; size?: 'sm' | 'md' | 'lg' }> = ({
+const ControlButton: React.FC<{ onClick?: () => void; icon: IconName; size?: 'sm' | 'md' | 'lg' }> = ({
                                                                                                         onClick,
                                                                                                         icon,
                                                                                                         size = 'md'
@@ -25,7 +26,7 @@ const ControlButton: React.FC<{ onClick?: () => void; icon: string; size?: 'sm' 
             className={`flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200 ${sizeClasses[size]}`}
             aria-label={icon.includes('play') ? 'Play' : icon.includes('pause') ? 'Pause' : icon.includes('backward') ? 'Previous track' : 'Next track'}
         >
-            <i className={`fas ${icon}`}></i>
+            <Icon name={icon} />
         </button>
     );
 };
@@ -50,15 +51,15 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             {/* Media Controls - order-2 on mobile, order-1 on desktop */}
             {/* On desktop: flex-shrink-0 w-56 to match album artwork width (14rem = 224px) */}
             <div className="flex items-center gap-4 order-2 md:order-1 md:flex-shrink-0 md:w-56 justify-center">
-                <ControlButton icon="fa-backward-step" onClick={() => onSkip('prev')}/>
-                <ControlButton icon={stream.isPlaying ? 'fa-pause' : 'fa-play'} onClick={onPlayPause} size="lg"/>
-                <ControlButton icon="fa-forward-step" onClick={() => onSkip('next')}/>
+                <ControlButton icon="backward-step" onClick={() => onSkip('prev')}/>
+                <ControlButton icon={stream.isPlaying ? 'pause' : 'play'} onClick={onPlayPause} size="lg"/>
+                <ControlButton icon="forward-step" onClick={() => onSkip('next')}/>
             </div>
 
             {/* Volume Control - order-1 on mobile, order-2 on desktop */}
             {/* On desktop: flex-1 to fill remaining space (same as text area above) */}
             <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2 md:flex-1 md:max-w-none">
-                <i className="fas fa-volume-down text-[var(--text-secondary)] w-6 text-center" aria-hidden="true"></i>
+                <Icon name="volume-low" className="text-[var(--text-secondary)] w-6 text-center" aria-hidden />
                 <input
                     type="range"
                     min="0"
@@ -69,7 +70,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
                     style={sliderStyle}
                     aria-label="Volume control"
                 />
-                <i className="fas fa-volume-high text-[var(--text-secondary)] w-6 text-center" aria-hidden="true"></i>
+                <Icon name="volume-high" className="text-[var(--text-secondary)] w-6 text-center" aria-hidden />
             </div>
         </div>
     );

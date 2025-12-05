@@ -2,6 +2,7 @@ import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
 import {airplayService, bluetoothService, spotifyService, dlnaService} from '../../services/integrationsService';
+import { Icon } from '../Icon';
 
 interface IntegrationsTabProps {
   settings: SettingsType;
@@ -454,14 +455,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               label="AirPlay"
               checked={settings.integrations.airplay.enabled}
               onChange={handleAirplayToggle}
-              icon="fa-apple"
+              icon="apple"
               disabled={isTogglingAirplay}
             />
             <button
               onClick={() => toggleSection('airplay')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <i className={`fa ${expandedSection === 'airplay' ? 'fa-chevron-up' : 'fa-chevron-down'}`} />
+              <Icon name={expandedSection === 'airplay' ? 'chevron-up' : 'chevron-down'} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -531,14 +532,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               label="Bluetooth"
               checked={settings.integrations.bluetooth.enabled}
               onChange={handleBluetoothToggle}
-              icon="fa-bluetooth"
+              icon="bluetooth"
               disabled={isTogglingBluetooth}
             />
             <button
               onClick={() => toggleSection('bluetooth')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <i className={`fa ${expandedSection === 'bluetooth' ? 'fa-chevron-up' : 'fa-chevron-down'}`} />
+              <Icon name={expandedSection === 'bluetooth' ? 'chevron-up' : 'chevron-down'} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -628,14 +629,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               label="Spotify Connect"
               checked={settings.integrations.spotify.enabled}
               onChange={handleSpotifyToggle}
-              icon="fa-brands fa-spotify"
+              icon="spotify"
               disabled={isTogglingSpotify}
             />
             <button
               onClick={() => toggleSection('spotify')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <i className={`fa ${expandedSection === 'spotify' ? 'fa-chevron-up' : 'fa-chevron-down'}`} />
+              <Icon name={expandedSection === 'spotify' ? 'chevron-up' : 'chevron-down'} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -731,14 +732,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               label="DLNA/UPnP"
               checked={settings.integrations.dlna.enabled}
               onChange={handleDlnaToggle}
-              icon="fa-network-wired"
+              icon="network-wired"
               disabled={isTogglingDlna}
             />
             <button
               onClick={() => toggleSection('dlna')}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <i className={`fa ${expandedSection === 'dlna' ? 'fa-chevron-up' : 'fa-chevron-down'}`} />
+              <Icon name={expandedSection === 'dlna' ? 'chevron-up' : 'chevron-down'} />
             </button>
           </div>
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
@@ -824,7 +825,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             label="Snapcast Stream"
             checked={settings.integrations.snapcast}
             onChange={(val) => handleSimpleChange('snapcast', val)}
-            icon="fa-stream"
+            icon="tower-broadcast"
           />
           <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
             Built-in Snapcast audio stream source

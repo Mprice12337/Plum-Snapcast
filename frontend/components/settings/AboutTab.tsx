@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from '../Icon';
 
 export const AboutTab: React.FC = () => {
   return (
@@ -114,7 +115,7 @@ export const AboutTab: React.FC = () => {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-[var(--accent-color)] hover:underline"
             >
-              <i className="fab fa-github"></i>
+              <Icon name="github" />
               <span>View on GitHub</span>
             </a>
             <a
@@ -123,7 +124,7 @@ export const AboutTab: React.FC = () => {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-[var(--accent-color)] hover:underline"
             >
-              <i className="fas fa-book"></i>
+              <Icon name="book" />
               <span>Snapcast API Documentation</span>
             </a>
           </div>

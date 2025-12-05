@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {Client, Stream} from '../types';
 import {GroupVolumeControl} from './GroupVolumeControl';
+import { Icon } from './Icon';
 
 interface ClientManagerProps {
     clients: Client[];
@@ -67,7 +68,7 @@ const ClientDevice: React.FC<{
         <div className="flex items-center gap-3">
             <span className="flex-1 truncate font-semibold">{client.name}</span>
             <div className="flex items-center gap-2 w-40">
-                <i className="fas fa-volume-high w-4 text-[var(--text-secondary)]"></i>
+                <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" />
                 <input
                     type="range"
                     min="0"
@@ -84,7 +85,7 @@ const ClientDevice: React.FC<{
                     className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
                     title="Change Stream"
                 >
-                    <i className="fas fa-tower-broadcast"></i>
+                    <Icon name="tower-broadcast" />
                 </button>
                 {isSelectorOpen && (
                     <div
@@ -165,7 +166,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
         return (
             <div className="space-y-6">
                 <div className="text-center py-4">
-                    <i className="fas fa-desktop text-4xl text-[var(--icon-muted)] mb-3"></i>
+                    <Icon name="desktop" className="text-4xl text-[var(--icon-muted)] mb-3" />
                     <p className="text-[var(--text-muted)]">No other active devices.</p>
                 </div>
                 {onStartBrowserAudio && !browserAudioActive && (
@@ -174,7 +175,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                             onClick={onStartBrowserAudio}
                             className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                         >
-                            <i className="fas fa-headphones"></i>
+                            <Icon name="headphones" />
                             Listen in Browser
                         </button>
                     </div>
@@ -197,7 +198,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                         <div className="border-b border-[var(--border-color)] pb-3 mb-3">
                             <h3 className="font-bold text-lg truncate text-[var(--text-primary)]">{stream.name}</h3>
                             <p className="text-sm text-[var(--text-secondary)] truncate">
-                                <i className="fas fa-music mr-2 text-[var(--text-muted)]"></i>
+                                <Icon name="music" className="mr-2 text-[var(--text-muted)]" />
                                 {stream.currentTrack.title}
                             </p>
                         </div>
@@ -233,7 +234,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                     className="text-sm bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
                                     title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
                                 >
-                                    <i className="fas fa-plus mr-1"></i>
+                                    <Icon name="plus" className="mr-1" />
                                     Join Stream
                                 </button>
                             </div>
@@ -248,7 +249,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                         onClick={onStartBrowserAudio}
                         className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                     >
-                        <i className="fas fa-headphones"></i>
+                        <Icon name="headphones" />
                         Listen in Browser
                     </button>
                 </div>

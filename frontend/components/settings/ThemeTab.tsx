@@ -1,16 +1,17 @@
 import React from 'react';
 import type {AccentColor, Settings as SettingsType, ThemeMode} from '../../types';
 import {Switch} from '../Switch';
+import { Icon, type IconName } from '../Icon';
 
 interface ThemeTabProps {
   settings: SettingsType;
   onSettingsChange: (newSettings: SettingsType) => void;
 }
 
-const themeModes: { value: ThemeMode; label: string; icon: string }[] = [
-  {value: 'light', label: 'Light', icon: 'fa-sun'},
-  {value: 'dark', label: 'Dark', icon: 'fa-moon'},
-  {value: 'system', label: 'System', icon: 'fa-desktop'},
+const themeModes: { value: ThemeMode; label: string; icon: IconName }[] = [
+  {value: 'light', label: 'Light', icon: 'sun'},
+  {value: 'dark', label: 'Dark', icon: 'moon'},
+  {value: 'system', label: 'System', icon: 'desktop'},
 ];
 
 const accentColors: { name: AccentColor; className: string }[] = [
@@ -83,7 +84,7 @@ export const ThemeTab: React.FC<ThemeTabProps> = ({
                   }
                 `}
               >
-                <i className={`fas ${mode.icon}`}></i>
+                <Icon name={mode.icon} />
                 {mode.label}
               </button>
             ))}

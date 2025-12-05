@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon, type IconName } from './Icon';
 
 interface SwitchProps {
     checked: boolean;
@@ -15,7 +16,7 @@ export const Switch: React.FC<SwitchProps> = ({checked, onChange, label, icon, d
         <label htmlFor={switchId}
                className={`flex items-center justify-between p-2 rounded-lg ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--bg-tertiary)]'}`}>
             <div className="flex items-center gap-3">
-                {icon && <i className={`fas ${icon} text-[var(--text-secondary)]`} aria-hidden="true"></i>}
+                {icon && <Icon name={icon.replace('fa-', '') as IconName} className="text-[var(--text-secondary)]" aria-hidden />}
                 <span className="text-base text-[var(--text-secondary)]">{label}</span>
             </div>
             <div className="relative">

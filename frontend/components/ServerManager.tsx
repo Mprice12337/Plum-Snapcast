@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { Server } from '../types';
+import { Icon } from './Icon';
 
 interface ServerManagerProps {
   servers: Server[];
@@ -57,7 +58,7 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
           onClick={() => setShowAddForm(!showAddForm)}
           className="bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors text-sm"
         >
-          <i className={`fas ${showAddForm ? 'fa-times' : 'fa-plus'} mr-1`}></i>
+          <Icon name={showAddForm ? 'xmark' : 'plus'} className="mr-1" />
           {showAddForm ? 'Cancel' : 'Add Server'}
         </button>
       </div>
@@ -150,7 +151,7 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
                 className="ml-3 text-red-500 hover:text-red-700 transition-colors"
                 title="Remove server"
               >
-                <i className="fas fa-trash"></i>
+                <Icon name="trash" />
               </button>
             )}
           </div>

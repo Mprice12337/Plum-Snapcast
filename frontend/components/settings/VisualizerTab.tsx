@@ -37,7 +37,7 @@ export const VisualizerTab: React.FC<VisualizerTabProps> = ({
           label="Enable Visualizer"
           checked={settings.integrations.visualizer}
           onChange={(val) => handleIntegrationChange('visualizer', val)}
-          icon="fa-waveform-lines"
+          icon="waveform"
         />
 
         {settings.integrations.visualizer && (

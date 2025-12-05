@@ -1,9 +1,10 @@
 import React from 'react';
+import { Icon, type IconName } from './Icon';
 
 export type Tab = {
   id: string;
   label: string;
-  icon: string;
+  icon: IconName;
 };
 
 interface TabBarProps {
@@ -31,7 +32,7 @@ export const TabBar: React.FC<TabBarProps> = ({ tabs, activeTab, onTabChange }) 
           aria-selected={activeTab === tab.id}
           role="tab"
         >
-          <i className={`fas ${tab.icon}`} aria-hidden="true"></i>
+          <Icon name={tab.icon} aria-hidden />
           <span>{tab.label}</span>
         </button>
       ))}

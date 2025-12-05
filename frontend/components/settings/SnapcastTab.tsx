@@ -149,7 +149,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
           label="Multi-Server Control"
           checked={settings.federation.enabled}
           onChange={handleFederationToggle}
-          icon="fa-network-wired"
+          icon="network-wired"
           disabled={isTogglingFederation}
         />
 
@@ -166,7 +166,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
                 label="Auto-Discover Servers"
                 checked={settings.federation.autoDiscover}
                 onChange={handleAutoDiscoverToggle}
-                icon="fa-radar"
+                icon="wifi"
                 disabled={isTogglingAutoDiscover}
               />
 
@@ -251,7 +251,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
             label="Show Offline Devices"
             checked={settings.display.showOfflineDevices}
             onChange={(val) => handleDisplayChange('showOfflineDevices', val)}
-            icon="fa-eye"
+            icon="eye"
           />
           <p className="text-xs text-[var(--text-muted)] pl-8 -mt-2">
             Display devices that are currently disconnected or unreachable

@@ -6,6 +6,7 @@ import {SnapcastTab} from './settings/SnapcastTab';
 import {ThemeTab} from './settings/ThemeTab';
 import {VisualizerTab} from './settings/VisualizerTab';
 import {AboutTab} from './settings/AboutTab';
+import { Icon } from './Icon';
 
 interface SettingsProps {
     settings: SettingsType;
@@ -14,11 +15,11 @@ interface SettingsProps {
 }
 
 const tabs: Tab[] = [
-    {id: 'integrations', label: 'Integrations', icon: 'fa-puzzle-piece'},
-    {id: 'snapcast', label: 'Snapcast', icon: 'fa-network-wired'},
-    {id: 'theme', label: 'Theme', icon: 'fa-palette'},
-    {id: 'visualizer', label: 'Visualizer', icon: 'fa-waveform-lines'},
-    {id: 'about', label: 'About', icon: 'fa-info-circle'},
+    {id: 'integrations', label: 'Integrations', icon: 'puzzle-piece'},
+    {id: 'snapcast', label: 'Snapcast', icon: 'network-wired'},
+    {id: 'theme', label: 'Theme', icon: 'palette'},
+    {id: 'visualizer', label: 'Visualizer', icon: 'waveform'},
+    {id: 'about', label: 'About', icon: 'circle-info'},
 ];
 
 export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, onClose}) => {
@@ -60,7 +61,7 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
                         className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
                         aria-label="Close settings"
                     >
-                        <i className="fas fa-times"></i>
+                        <Icon name="xmark" />
                     </button>
                 </div>
 
