@@ -11,7 +11,9 @@ A comprehensive multi-room audio streaming solution combining Snapcast with a mo
 - **Bluetooth Support**: Pair and stream from Bluetooth devices (A2DP)
 - **Hardware Audio Output**: Integrated snapclient outputs to Raspberry Pi 3.5mm jack
 - **Modern Web Interface**: Real-time control of streams, clients, and volume
+- **Web-based Settings**: Configure integrations, enable/disable services, and customize device names from the browser
 - **Metadata Display**: Real-time track information and album artwork for all sources
+- **Theme Customization**: Dark/light/system modes with multiple accent color options
 
 ## Project Structure
 
@@ -36,6 +38,9 @@ Original React/TypeScript application providing:
 - Real-time audio synchronization management
 - Client device management
 - Volume and playback controls
+- Web-based settings and integration control
+- Dynamic service enable/disable without container restart
+- Theme customization and display preferences
 
 ## Attribution
 
@@ -174,6 +179,23 @@ Edit `docker/.env` to customize:
 - Compatible with any DLNA/UPnP control point (BubbleUPnP, mConnect, Windows Media Player, etc.)
 - Supports metadata (title, artist, album, artwork) and basic playback control
 - Automatically discovered on the local network via Avahi
+
+### Web-Based Settings
+
+Once deployed, you can configure most settings through the web interface without editing configuration files:
+
+1. **Open Settings**: Click the gear icon in the bottom-right corner of the web interface
+2. **Available Settings**:
+   - **Integrations Tab**: Enable/disable and configure AirPlay, Bluetooth, Spotify Connect, and DLNA services
+     - Toggle services on/off without restarting the container
+     - Update device names in real-time
+     - Configure Bluetooth discoverability
+   - **Snapcast Tab**: Manage Snapcast server settings and federation
+   - **Theme Tab**: Customize appearance (dark/light/system mode, accent colors)
+   - **Visualizer Tab**: Enable experimental audio visualizer
+   - **About Tab**: View version information and links to documentation
+
+**Note**: Settings are persisted to `/app/data/settings.json` in the container and survive restarts. Initial configuration from environment variables (`.env` file) is automatically migrated to the settings system on first run.
 
 For more details, see [CLAUDE.md](CLAUDE.md).
 

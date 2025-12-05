@@ -13,6 +13,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from typing import Dict, List
 
 from .discovery import AvahiDiscovery, ServerInfo
@@ -50,9 +51,83 @@ class FederationService:
         # Async loop
         self.loop = None
 
+        # Settings monitoring
+        self.settings_file = "/app/data/settings.json"
+        self.settings_mtime = None
+        self.settings_check_interval = 2  # Check every 2 seconds
+
     def _generate_server_id(self, host: str) -> str:
         """Generate server ID from host"""
         return f"server-{host.replace('.', '-')}"
+
+    def _check_settings_changes(self):
+        """Monitor settings.json for changes and apply them"""
+        if not os.path.exists(self.settings_file):
+            return
+
+        try:
+            # Check if file was modified
+            current_mtime = os.path.getmtime(self.settings_file)
+            if self.settings_mtime is None:
+                self.settings_mtime = current_mtime
+                return
+
+            if current_mtime == self.settings_mtime:
+                return  # No changes
+
+            logger.info("Settings file changed, reloading configuration")
+            self.settings_mtime = current_mtime
+
+            # Load new settings
+            with open(self.settings_file, 'r') as f:
+                settings = json.load(f)
+                federation_settings = settings.get("federation", {})
+
+            # Check for auto-discover changes
+            new_auto_discover = federation_settings.get("autoDiscover", True)
+            if new_auto_discover != self.auto_discover:
+                logger.info(f"Auto-discover changed: {self.auto_discover} -> {new_auto_discover}")
+                self.auto_discover = new_auto_discover
+
+                if self.auto_discover:
+                    # Start discovery
+                    if self.discovery and not hasattr(self.discovery, 'running'):
+                        logger.info("Starting auto-discovery")
+                        self.discovery.start()
+                    elif self.discovery and not self.discovery.running:
+                        logger.info("Starting auto-discovery")
+                        self.discovery.start()
+                else:
+                    # Stop discovery
+                    if self.discovery and hasattr(self.discovery, 'running') and self.discovery.running:
+                        logger.info("Stopping auto-discovery")
+                        self.discovery.stop()
+
+            # Check for local name changes
+            new_local_name = federation_settings.get("localServerName", "Main Server")
+            if new_local_name != self.local_server_name:
+                logger.info(f"Local server name changed: {self.local_server_name} -> {new_local_name}")
+                self.local_server_name = new_local_name
+                # Update the local server connection name
+                if self.ws_manager:
+                    conn = self.ws_manager.get_connection(self.local_server_id)
+                    if conn:
+                        conn.name = new_local_name
+                        logger.info(f"Updated local server connection name to: {new_local_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to check settings changes: {e}")
+
+    def _settings_monitor_loop(self):
+        """Background thread to monitor settings changes"""
+        logger.info("Settings monitor started")
+        while self.running:
+            try:
+                self._check_settings_changes()
+            except Exception as e:
+                logger.error(f"Settings monitor error: {e}")
+            time.sleep(self.settings_check_interval)
+        logger.info("Settings monitor stopped")
 
     async def _on_servers_discovered(self, servers: List[ServerInfo]):
         """Handle newly discovered servers"""
@@ -146,16 +221,22 @@ class FederationService:
         self.running = True
         logger.info("Starting Federation Service")
 
+        # Initialize discovery (start it later based on settings)
+        self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
+            self._on_servers_discovered(servers), self.loop
+        ))
+
         # Start discovery if enabled
         if self.auto_discover:
             logger.info("Starting Avahi discovery")
-            self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
-                self._on_servers_discovered(servers), self.loop
-            ))
             self.discovery.start()
         else:
             logger.info("Auto-discovery disabled")
-            self.discovery = AvahiDiscovery()  # Without callback
+
+        # Start settings monitor thread
+        settings_thread = threading.Thread(target=self._settings_monitor_loop, daemon=True)
+        settings_thread.start()
+        logger.info("Settings monitor thread started")
 
         # Start async event loop in background thread
         def run_async_loop():
@@ -181,7 +262,7 @@ class FederationService:
         time.sleep(2)
 
         # Start REST API (blocks in main thread)
-        self.api = FederationAPI(self.data_aggregator, self.router, port=self.api_port)
+        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port)
         logger.info(f"Starting REST API on port {self.api_port}")
 
         try:
@@ -228,13 +309,14 @@ def get_local_ip() -> str:
 
 
 def load_config() -> Dict:
-    """Load configuration from environment variables"""
+    """Load configuration from environment variables and settings.json"""
     # Auto-detect local IP if not specified
     default_local_host = os.getenv("FEDERATION_LOCAL_HOST")
     if not default_local_host:
         default_local_host = get_local_ip()
         logger.info(f"Auto-detected local IP: {default_local_host}")
 
+    # Start with env vars (for initial setup)
     config = {
         "enabled": os.getenv("FEDERATION_ENABLED", "0") == "1",
         "auto_discover": os.getenv("FEDERATION_AUTO_DISCOVER", "1") == "1",
@@ -243,6 +325,31 @@ def load_config() -> Dict:
         "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
         "manual_servers": []
     }
+
+    # Override with settings.json if it exists (user preferences take precedence)
+    settings_file = "/app/data/settings.json"
+    if os.path.exists(settings_file):
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                federation_settings = settings.get("federation", {})
+
+                # Override enabled status
+                if "enabled" in federation_settings:
+                    config["enabled"] = federation_settings["enabled"]
+
+                # Override auto-discover
+                if "autoDiscover" in federation_settings:
+                    config["auto_discover"] = federation_settings["autoDiscover"]
+                    logger.info(f"Auto-discover from settings.json: {config['auto_discover']}")
+
+                # Override local name
+                if "localServerName" in federation_settings:
+                    config["local_name"] = federation_settings["localServerName"]
+                    logger.info(f"Local server name from settings.json: {config['local_name']}")
+
+        except Exception as e:
+            logger.warning(f"Failed to load settings.json: {e}")
 
     # Parse manual servers from JSON env var
     manual_servers_json = os.getenv("FEDERATION_MANUAL_SERVERS", "")
@@ -274,7 +381,40 @@ def main():
     # Check if federation is enabled
     if not config["enabled"]:
         logger.info("Federation is disabled (FEDERATION_ENABLED=0)")
-        sys.exit(0)
+        logger.info("Starting API server for settings and integrations (without federation features)")
+
+        # Import here to avoid circular imports
+        from flask import Flask
+        from flask_cors import CORS
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from settings_api import create_settings_blueprint, SettingsManager
+        from integrations_api import create_integrations_blueprint, IntegrationController
+
+        # Create minimal Flask app with just settings and integrations APIs
+        app = Flask(__name__)
+        CORS(app)
+
+        # Register settings API
+        settings_manager = SettingsManager()
+        settings_bp = create_settings_blueprint(settings_manager)
+        app.register_blueprint(settings_bp)
+        logger.info("Settings API registered")
+
+        # Register integrations API
+        integration_controller = IntegrationController()
+        integrations_bp = create_integrations_blueprint(integration_controller)
+        app.register_blueprint(integrations_bp)
+        logger.info("Integrations API registered")
+
+        # Start API server
+        api_port = config.get("api_port", 5000)
+        logger.info(f"Starting API server on port {api_port}")
+        try:
+            app.run(host="0.0.0.0", port=api_port, debug=False, threaded=True)
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+            sys.exit(0)
+        return
 
     logger.info("Federation Service Configuration:")
     logger.info(f"  Enabled: {config['enabled']}")

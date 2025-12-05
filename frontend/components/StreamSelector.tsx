@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {Stream} from '../types';
+import { Icon } from './Icon';
 
 interface StreamSelectorProps {
     streams: Stream[];
@@ -58,8 +59,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
         <span className="text-3xl font-bold text-[var(--accent-color)] truncate pr-4">
           {currentStream ? currentStream.name : 'Select a Source'}
         </span>
-                <i className={`fas fa-chevron-down text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
-                   aria-hidden="true"></i>
+                <Icon name="chevron-down" className={`text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} style={{ color: 'inherit' }} aria-hidden />
             </button>
 
             {isOpen && (

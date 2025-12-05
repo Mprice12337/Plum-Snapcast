@@ -203,6 +203,27 @@ class AvahiDiscovery:
             logger.info(f"Manually added server: {server}")
         return server
 
+    def edit_manual_server(self, old_server_id: str, host: str, port: int, name: str) -> ServerInfo:
+        """Edit an existing manually added server"""
+        with self._lock:
+            # Remove old server entry
+            if old_server_id in self.servers:
+                logger.info(f"Removing old server: {self.servers[old_server_id]}")
+                del self.servers[old_server_id]
+
+            # Add new server with updated info
+            server = ServerInfo(host=host, port=port, name=name)
+            self.servers[server.id] = server
+            logger.info(f"Updated server: {server}")
+            return server
+
+    def remove_manual_server(self, server_id: str):
+        """Remove a manually added server"""
+        with self._lock:
+            if server_id in self.servers:
+                logger.info(f"Removing server: {self.servers[server_id]}")
+                del self.servers[server_id]
+
 
 # For testing
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {Client, Stream} from '../types';
 import {GroupVolumeControl} from './GroupVolumeControl';
+import { Icon } from './Icon';
 
 interface SyncedDevicesProps {
     clients: Client[];
@@ -47,7 +48,7 @@ const SyncedDevice: React.FC<{
             <span className="font-semibold truncate">{client.name}</span>
             <div className="flex items-center gap-3">
                 <div className="flex items-center gap-3 w-full max-w-[180px]">
-                    <i className="fas fa-volume-high w-4 text-[var(--text-secondary)]"></i>
+                    <Icon name="volume-high" className="w-4 text-[var(--text-secondary)]" style={{ color: 'inherit' }} />
                     <input
                         type="range"
                         min="0"
@@ -65,7 +66,7 @@ const SyncedDevice: React.FC<{
                         className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
                         title="Change Stream"
                     >
-                        <i className="fas fa-tower-broadcast"></i>
+                        <Icon name="tower-broadcast" style={{ color: 'inherit' }} />
                     </button>
                     {isSelectorOpen && (
                         <div

@@ -214,6 +214,35 @@ export class FederationService {
   }
 
   /**
+   * Edit a server
+   */
+  async editServer(serverId: string, host: string, port: number, name: string): Promise<{ success: boolean; server?: Server; error?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/server/edit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ serverId, host, port, name }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to edit server');
+      }
+
+      return { success: true, server: data.server };
+    } catch (error) {
+      console.error('Failed to edit server:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  /**
    * Remove a server
    */
   async removeServer(serverId: string): Promise<{ success: boolean; error?: string }> {

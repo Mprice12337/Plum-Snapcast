@@ -3,6 +3,14 @@ set -e
 
 echo "Starting Plum Snapcast Server setup..."
 
+# Load settings from settings API/file
+# This will set environment variables based on stored settings
+# Falls back to existing env vars if settings file doesn't exist
+if [ -f /app/scripts/get-settings.py ]; then
+    echo "Loading settings from settings file..."
+    eval "$(python3 /app/scripts/get-settings.py 2>/dev/null || true)"
+fi
+
 # Clean up any stale sockets/pids from previous runs
 # Container runs its own D-Bus and Avahi (fully self-contained)
 rm -rf /var/run/dbus/*
@@ -97,12 +105,11 @@ SNAPCONF
     fi
 
     # Add Bluetooth source to [stream] section
-    if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
-        echo "Adding Bluetooth source..."
-        # Insert source after [stream] line with control script for metadata
-        # Bluetooth audio is typically 44.1kHz/16-bit stereo
-        sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
-    fi
+    # Always add the source - it will only be available when services are running
+    echo "Adding Bluetooth source..."
+    # Insert source after [stream] line with control script for metadata
+    # Bluetooth audio is typically 44.1kHz/16-bit stereo
+    sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
 
     # Add DLNA source to [stream] section
     if [ "${DLNA_ENABLED}" = "1" ]; then
@@ -141,13 +148,9 @@ if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
     sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
 fi
 
-# Enable federation service if configured
-if [ "${FEDERATION_ENABLED}" = "1" ]; then
-    echo "Enabling federation service..."
-    sed -i 's/autostart=false/autostart=true/' /app/supervisord/federation.ini
-else
-    echo "Federation service disabled"
-fi
+# Note: Federation API server always runs to provide Settings API
+# Federation features (multi-server control) are enabled/disabled via settings
+echo "Federation API server enabled (provides settings API)"
 
 echo "Setup complete. Starting supervisord..."
 exec /usr/bin/supervisord -c /app/supervisord/supervisord.conf

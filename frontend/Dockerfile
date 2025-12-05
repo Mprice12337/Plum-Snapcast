@@ -45,6 +45,24 @@ RUN echo 'server { \
         proxy_set_header X-Forwarded-Proto $scheme; \
     } \
     \
+    # Proxy requests to Settings API \
+    location /api/settings { \
+        proxy_pass http://snapcast-host:5001/api/settings; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $scheme; \
+    } \
+    \
+    # Proxy requests to Integrations API \
+    location /api/integrations/ { \
+        proxy_pass http://snapcast-host:5001/api/integrations/; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $scheme; \
+    } \
+    \
     location / { \
         try_files $uri $uri/ /index.html; \
     } \

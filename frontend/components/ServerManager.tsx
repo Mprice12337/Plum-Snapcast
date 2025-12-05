@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import type { Server } from '../types';
+import { Icon } from './Icon';
 
 interface ServerManagerProps {
   servers: Server[];
   onAddServer: (host: string, port: number, name: string) => Promise<{ success: boolean; error?: string }>;
   onRemoveServer: (serverId: string) => Promise<{ success: boolean; error?: string }>;
+  onEditServer?: (serverId: string, host: string, port: number, name: string) => Promise<{ success: boolean; error?: string }>;
 }
 
-export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServer, onRemoveServer }) => {
+export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServer, onRemoveServer, onEditServer }) => {
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     host: '',
     port: '1780',
@@ -23,19 +26,43 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
     setIsSubmitting(true);
 
     try {
-      const result = await onAddServer(formData.host, Number(formData.port), formData.name);
+      let result;
+      if (editingServerId && onEditServer) {
+        result = await onEditServer(editingServerId, formData.host, Number(formData.port), formData.name);
+      } else {
+        result = await onAddServer(formData.host, Number(formData.port), formData.name);
+      }
 
       if (result.success) {
         setFormData({ host: '', port: '1780', name: '' });
         setShowAddForm(false);
+        setEditingServerId(null);
       } else {
-        setError(result.error || 'Failed to add server');
+        setError(result.error || `Failed to ${editingServerId ? 'edit' : 'add'} server`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleEdit = (server: Server) => {
+    setFormData({
+      host: server.host,
+      port: server.port.toString(),
+      name: server.name,
+    });
+    setEditingServerId(server.id);
+    setShowAddForm(true);
+    setError(null);
+  };
+
+  const handleCancelEdit = () => {
+    setFormData({ host: '', port: '1780', name: '' });
+    setEditingServerId(null);
+    setShowAddForm(false);
+    setError(null);
   };
 
   const handleRemove = async (serverId: string, serverName: string) => {
@@ -54,16 +81,19 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
       <div className="flex justify-between items-center">
         <h3 className="font-bold text-lg text-[var(--text-primary)]">Servers</h3>
         <button
-          onClick={() => setShowAddForm(!showAddForm)}
+          onClick={() => showAddForm ? handleCancelEdit() : setShowAddForm(true)}
           className="bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors text-sm"
         >
-          <i className={`fas ${showAddForm ? 'fa-times' : 'fa-plus'} mr-1`}></i>
+          <Icon name={showAddForm ? 'xmark' : 'plus'} className="mr-1" style={{ color: 'inherit' }} />
           {showAddForm ? 'Cancel' : 'Add Server'}
         </button>
       </div>
 
       {showAddForm && (
         <form onSubmit={handleSubmit} className="bg-[var(--bg-tertiary)] p-4 rounded-lg space-y-3">
+          <h4 className="font-semibold text-[var(--text-primary)]">
+            {editingServerId ? 'Edit Server' : 'Add Server'}
+          </h4>
           <div>
             <label className="block text-sm font-semibold text-[var(--text-primary)] mb-1">
               Server Name
@@ -112,7 +142,10 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
             disabled={isSubmitting}
             className="w-full bg-[var(--accent-color)] text-white font-bold py-2 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSubmitting ? 'Adding...' : 'Add Server'}
+            {isSubmitting
+              ? (editingServerId ? 'Saving...' : 'Adding...')
+              : (editingServerId ? 'Save Changes' : 'Add Server')
+            }
           </button>
         </form>
       )}
@@ -145,13 +178,24 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
               </p>
             </div>
             {!server.isLocal && (
-              <button
-                onClick={() => handleRemove(server.id, server.name)}
-                className="ml-3 text-red-500 hover:text-red-700 transition-colors"
-                title="Remove server"
-              >
-                <i className="fas fa-trash"></i>
-              </button>
+              <div className="flex gap-2 ml-3">
+                {onEditServer && (
+                  <button
+                    onClick={() => handleEdit(server)}
+                    className="text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors"
+                    title="Edit server"
+                  >
+                    <Icon name="pen-to-square" style={{ color: 'inherit' }} />
+                  </button>
+                )}
+                <button
+                  onClick={() => handleRemove(server.id, server.name)}
+                  className="text-red-500 hover:text-red-700 transition-colors"
+                  title="Remove server"
+                >
+                  <Icon name="trash" style={{ color: 'inherit' }} />
+                </button>
+              </div>
             )}
           </div>
         ))}

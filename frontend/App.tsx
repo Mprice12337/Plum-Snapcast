@@ -8,9 +8,12 @@ import {Settings as SettingsModal} from './components/Settings';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
+import {settingsService} from './services/settingsService';
 import type {Client, Server, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
+import { Icon } from './components/Icon';
+import musicNotePlaceholder from './src/assets/icons/music-note-placeholder.svg';
 
 const VOLUME_STEP = 5;
 
@@ -31,47 +34,8 @@ const App: React.FC = () => {
     // Use ref to avoid stale closure in polling callback
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
 
-    // Load settings from localStorage or use defaults
-    const [settings, setSettings] = useState<Settings>(() => {
-        const defaultSettings: Settings = {
-            integrations: {
-                airplay: true,
-                spotifyConnect: false,
-                snapcast: true,
-                visualizer: false,
-            },
-            theme: {
-                mode: 'dark',
-                accent: 'purple',
-            },
-            display: {
-                showOfflineDevices: true,
-            },
-            federation: {
-                enabled: false,
-                autoDiscover: true,
-                localServerName: 'Main Server',
-            }
-        };
-
-        try {
-            const saved = localStorage.getItem('snapcast-settings');
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                // Merge with defaults to ensure all fields exist (migration for old settings)
-                return {
-                    integrations: { ...defaultSettings.integrations, ...parsed.integrations },
-                    theme: { ...defaultSettings.theme, ...parsed.theme },
-                    display: { ...defaultSettings.display, ...parsed.display },
-                    federation: { ...defaultSettings.federation, ...parsed.federation },
-                };
-            }
-        } catch (error) {
-            console.error('Failed to load settings from localStorage:', error);
-        }
-
-        return defaultSettings;
-    });
+    // Settings loaded from settingsService (server + local storage)
+    const [settings, setSettings] = useState<Settings>(settingsService.getMergedSettings());
 
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
@@ -84,14 +48,23 @@ const App: React.FC = () => {
     // Capture the target stream when "Listen in Browser" is clicked
     const [targetStreamForBrowserAudio, setTargetStreamForBrowserAudio] = useState<string | null>(null);
 
-    // Persist settings to localStorage whenever they change
+    // Initialize settings from service (fetch from server + local storage)
     useEffect(() => {
-        try {
-            localStorage.setItem('snapcast-settings', JSON.stringify(settings));
-        } catch (error) {
-            console.error('Failed to save settings to localStorage:', error);
-        }
-    }, [settings]);
+        settingsService.init().then((initialSettings) => {
+            setSettings(initialSettings);
+            console.log('[Settings] Initialized:', initialSettings);
+        }).catch((error) => {
+            console.error('[Settings] Failed to initialize:', error);
+        });
+
+        // Subscribe to settings changes
+        const unsubscribe = settingsService.subscribe((updatedSettings) => {
+            setSettings(updatedSettings);
+            console.log('[Settings] Updated:', updatedSettings);
+        });
+
+        return () => unsubscribe();
+    }, []);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -390,7 +363,7 @@ const App: React.FC = () => {
                             updatedTrack.albumArtUrl = resolvedArtUrl;
                         } else if (isNewTrack) {
                             console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
-                            updatedTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+CjxwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
+                            updatedTrack.albumArtUrl = musicNotePlaceholder;
                         } else {
                             console.log(`[Metadata] → Keeping existing artwork (partial update)`);
                         }
@@ -538,7 +511,7 @@ const App: React.FC = () => {
         if (!currentStream) return;
 
         // Check if current stream has placeholder artwork
-        const hasPlaceholder = currentStream.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+        const hasPlaceholder = currentStream.currentTrack.albumArtUrl === musicNotePlaceholder;
 
         if (!hasPlaceholder) return; // No need to retry if we have real artwork
 
@@ -665,7 +638,7 @@ const App: React.FC = () => {
                                         // If transitioning from paused to playing and artwork is placeholder, immediately refresh
                                         // This handles the case where user skips while paused and artwork doesn't arrive until playback resumes
                                         if (!s.isPlaying && isPlaying) {
-                                            const isDefaultArtwork = s.currentTrack.albumArtUrl?.startsWith('data:image/svg+xml;base64');
+                                            const isDefaultArtwork = s.currentTrack.albumArtUrl === musicNotePlaceholder;
                                             if (isDefaultArtwork) {
                                                 console.log(`[Polling] Playback resumed with placeholder artwork - fetching fresh metadata`);
                                                 // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
@@ -721,7 +694,7 @@ const App: React.FC = () => {
                                         updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
                                     } else if (isNewTrack) {
                                         console.log(`[Polling] ⚠ New track without artwork - using placeholder`);
-                                        updatedStream.currentTrack.albumArtUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+CjxwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
+                                        updatedStream.currentTrack.albumArtUrl = musicNotePlaceholder;
                                     } else {
                                         console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
@@ -867,7 +840,7 @@ const App: React.FC = () => {
                     title: metadata.title || 'Unknown Track',
                     artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
                     album: metadata.album || 'Unknown Album',
-                    albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTAwLCAxMDApIHNjYWxlKDEyLjUpIj48cGF0aCBmaWxsPSIjRjBGMEYwIiBkPSJNNCAzdjkuNGMtMC40LTAuMi0wLjktMC40LTEuNS0wLjQtMS40IDAtMi41IDAuOS0yLjUgMnMxLjEgMiAyLjUgMiAyLjUtMC45IDIuNS0ydi03LjNsNy0yLjN2NS4xYy0wLjQtMC4zLTAuOS0wLjUtMS41LTAuNS0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTExbC05IDN6Ij48L3BhdGg+PC9nPjwvc3ZnPg==',
+                    albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
                     duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0
                 },
                 isPlaying: properties.playbackStatus === 'playing',
@@ -1390,7 +1363,7 @@ const App: React.FC = () => {
         if (!currentStream) return;
 
         // Optimistically clear artwork IMMEDIATELY when user clicks skip
-        const defaultArtwork = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiBmaWxsPSIjMkEyQTM2Ii8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEwMCwgMTAwKSBzY2FsZSgxMi41KSI+PGNwYXRoIGZpbGw9IiNGMEYwRjAiIGQ9Ik00IDN2OS40Yy0wLjQtMC4yLTAuOS0wLjQtMS41LTAuNC0xLjQgMC0yLjUgMC45LTIuNSAyczEuMSAyIDIuNSAyIDIuNS0wLjkgMi41LTJ2LTcuM2w3LTIuM3Y1LjFjLTAuNC0wLjMtMC45LTAuNS0xLjUtMC41LTEuNCAwLTIuNSAwLjktMi41IDJzMS4xIDIgMi41IDIgMi41LTAuOSAyLjUtMnYtMTFsLTkgM3oiPjwvcGF0aD4KPC9nPgo8L3N2Zz4K';
+        const defaultArtwork = musicNotePlaceholder;
 
         setStreams(prevStreams =>
             prevStreams.map(s =>
@@ -1465,7 +1438,7 @@ const App: React.FC = () => {
         return (
             <div className="flex items-center justify-center min-h-screen bg-[var(--bg-primary)]">
                 <div className="text-center">
-                    <i className="fas fa-spinner fa-spin text-5xl text-[var(--accent-color)]"></i>
+                    <Icon name="spinner" spin className="text-5xl text-[var(--accent-color)]" />
                     <p className="mt-4 text-lg text-[var(--text-secondary)]">Connecting to Snapcast Server...</p>
                     <p className="mt-2 text-sm text-[var(--text-muted)]">{serverName}</p>
                 </div>
@@ -1477,7 +1450,7 @@ const App: React.FC = () => {
         return (
             <div className="flex items-center justify-center min-h-screen bg-[var(--bg-primary)]">
                 <div className="text-center">
-                    <i className="fas fa-exclamation-triangle text-5xl text-red-400"></i>
+                    <Icon name="triangle-exclamation" className="text-5xl text-red-400" />
                     <p className="mt-4 text-lg text-[var(--text-secondary)]">No clients found</p>
                     <p className="mt-2 text-sm text-[var(--text-muted)]">Unable to load client data from Snapcast
                         server</p>
@@ -1492,7 +1465,7 @@ const App: React.FC = () => {
             {connectionError && (
                 <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
                     <div className="flex items-center">
-                        <i className="fas fa-exclamation-triangle text-red-400 mr-2"></i>
+                        <Icon name="triangle-exclamation" className="text-red-400 mr-2" />
                         <span className="text-red-400">{connectionError}</span>
                     </div>
                 </div>
@@ -1505,7 +1478,7 @@ const App: React.FC = () => {
                         <div className="flex items-center justify-between mb-4">
                             <h1 className="text-xl font-semibold text-[var(--accent-color)]">{serverName}</h1>
                             <div className="flex items-center text-sm text-[var(--text-muted)]">
-                                <i className="fas fa-broadcast-tower mr-2"></i>
+                                <Icon name="tower-broadcast" className="mr-2" />
                                 <span>Connected</span>
                             </div>
                         </div>
@@ -1544,7 +1517,7 @@ const App: React.FC = () => {
                     ) : (
                         <div
                             className="flex-grow flex flex-col items-center justify-center bg-[var(--bg-secondary)] rounded-lg p-8 h-full min-h-[300px]">
-                            <i className="fas fa-music text-6xl text-[var(--text-muted)] mb-4"></i>
+                            <Icon name="music" className="text-6xl text-[var(--text-muted)] mb-4" />
                             <h2 className="text-2xl font-semibold text-[var(--text-secondary)]">No Stream Selected</h2>
                             <p className="text-[var(--text-muted)] mt-2">Choose a source to begin.</p>
                         </div>
@@ -1584,14 +1557,19 @@ const App: React.FC = () => {
                         className="p-2 rounded-full hover:bg-[var(--bg-secondary)]"
                         aria-label="Open Settings"
                     >
-                        <i className="fas fa-cog text-lg"></i>
+                        <Icon name="gear" className="text-lg" />
                     </button>
                 </div>
             </footer>
             {isSettingsOpen && (
                 <SettingsModal
                     settings={settings}
-                    onSettingsChange={setSettings}
+                    onSettingsChange={(newSettings) => {
+                        // Use settingsService to update settings (handles server + local storage)
+                        settingsService.updateSettings(newSettings).catch((error) => {
+                            console.error('[Settings] Failed to update:', error);
+                        });
+                    }}
                     onClose={() => setIsSettingsOpen(false)}
                 />
             )}
