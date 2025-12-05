@@ -175,7 +175,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                             onClick={onStartBrowserAudio}
                             className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                         >
-                            <Icon name="headphones" />
+                            <Icon name="headphones" style={{ color: 'inherit' }} />
                             Listen in Browser
                         </button>
                     </div>
@@ -249,7 +249,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                         onClick={onStartBrowserAudio}
                         className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                     >
-                        <Icon name="headphones" />
+                        <Icon name="headphones" style={{ color: 'inherit' }} />
                         Listen in Browser
                     </button>
                 </div>
