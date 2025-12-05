@@ -85,7 +85,7 @@ const ClientDevice: React.FC<{
                     className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors"
                     title="Change Stream"
                 >
-                    <Icon name="tower-broadcast" />
+                    <Icon name="tower-broadcast" style={{ color: 'inherit' }} />
                 </button>
                 {isSelectorOpen && (
                     <div
