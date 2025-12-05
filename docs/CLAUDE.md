@@ -109,12 +109,19 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 
 ### Design Patterns
 - Single container with supervised processes
-- JSON-RPC 2.0 over WebSocket
+- JSON-RPC 2.0 over WebSocket (Snapcast control)
+- REST APIs for settings and integrations (Flask)
 - FIFO pipes for audio transport
 - React component composition with hooks
 - Client-side audio progress prediction (useAudioSync)
+- Server-side settings persistence (settings.json)
+- Dynamic service control via supervisorctl
 
 **Metadata Flow**: Source → Service → JSON files/D-Bus → Control script → Snapcast properties → WebSocket → Frontend
+
+**Settings Flow**: Frontend → settingsService.ts → settings_api.py → /app/data/settings.json
+
+**Integration Control**: Frontend → integrationsService.ts → integrations_api.py → supervisorctl → Service restart
 
 ---
 
@@ -186,6 +193,46 @@ Server.GetStatus() → { server: { streams: [], groups: [] } }
 Client.SetVolume({ id: string, volume: { percent: number, muted: boolean } })
 Group.SetStream({ id: string, stream_id: string })
 Stream.Control({ id: string, command: "play" | "pause" | "next" | "previous" })
+```
+
+### Settings REST API
+- **Protocol**: HTTP REST (Flask)
+- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/settings`
+- **Implementation**: `backend/scripts/settings_api.py`
+
+**Endpoints**:
+```typescript
+GET  /api/settings → Get current settings
+POST /api/settings → Update settings (partial or full)
+```
+
+### Integrations REST API
+- **Protocol**: HTTP REST (Flask)
+- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/integrations`
+- **Implementation**: `backend/scripts/integrations_api.py`
+
+**Endpoints**:
+```typescript
+POST /api/integrations/airplay/enable
+POST /api/integrations/airplay/disable
+POST /api/integrations/airplay/device-name
+GET  /api/integrations/airplay/status
+
+POST /api/integrations/bluetooth/enable
+POST /api/integrations/bluetooth/disable
+POST /api/integrations/bluetooth/device-name
+POST /api/integrations/bluetooth/settings
+GET  /api/integrations/bluetooth/status
+
+POST /api/integrations/spotify/enable
+POST /api/integrations/spotify/disable
+POST /api/integrations/spotify/device-name
+GET  /api/integrations/spotify/status
+
+POST /api/integrations/dlna/enable
+POST /api/integrations/dlna/disable
+POST /api/integrations/dlna/device-name
+GET  /api/integrations/dlna/status
 ```
 
 ---
@@ -274,6 +321,9 @@ git pull && docker compose pull && docker compose up -d
 9. **Multi-room**: Deploy additional snapclient-only containers, Layer 2 network required
 10. **Bluetooth Album Art**: Not available (needs BlueZ 5.81+, Alpine has 5.70)
 11. **Browser Audio**: Snapweb clients are hidden from UI; browser audio managed through useBrowserAudio hook. Auto-assigns to current stream on click, handles reconnection with stale server state. Always visible when active (ignores offline device filter).
+12. **Settings Persistence**: Settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Environment variables migrated on first run.
+13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
+14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
 
 ---
 
