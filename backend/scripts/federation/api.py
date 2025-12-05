@@ -183,6 +183,33 @@ class FederationAPI:
                 logger.error(f"Add server failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/api/federation/server/edit", methods=["POST"])
+        def edit_server():
+            """Edit a server"""
+            try:
+                data = request.get_json()
+                server_id = data.get("serverId")
+                host = data.get("host")
+                port = data.get("port", 1780)
+                name = data.get("name")
+
+                if not server_id or not host or not name:
+                    return jsonify({"error": "serverId, host, and name required"}), 400
+
+                # Edit server via data aggregator
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(
+                    self.data_aggregator.edit_server(server_id, host, port, name)
+                )
+                loop.close()
+
+                return jsonify({"success": True, "server": result})
+
+            except Exception as e:
+                logger.error(f"Edit server failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/api/federation/server/remove", methods=["POST"])
         def remove_server():
             """Remove a server"""
@@ -367,6 +394,26 @@ class DataAggregator:
 
         return server_info.to_dict()
 
+    async def edit_server(self, old_server_id: str, host: str, port: int, name: str) -> Dict:
+        """Edit an existing manually added server"""
+        # Remove old connection
+        await self.ws_manager.remove_server(old_server_id)
+
+        # Update discovery info
+        server_info = self.discovery.edit_manual_server(old_server_id, host, port, name)
+
+        # Connect to the server with new details
+        await self.ws_manager.add_server(
+            server_id=server_info.id,
+            host=host,
+            port=port,
+            name=name,
+            use_https=False
+        )
+
+        return server_info.to_dict()
+
     async def remove_server(self, server_id: str):
         """Remove a server"""
         await self.ws_manager.remove_server(server_id)
+        self.discovery.remove_manual_server(server_id)

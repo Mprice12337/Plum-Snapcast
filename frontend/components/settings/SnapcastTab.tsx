@@ -125,6 +125,14 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
     return result;
   };
 
+  const handleEditServer = async (serverId: string, host: string, port: number, name: string) => {
+    const result = await federationService.editServer(serverId, host, port, name);
+    if (result.success && result.server) {
+      setServers(servers.map(s => s.id === serverId ? result.server! : s));
+    }
+    return result;
+  };
+
   const handleRemoveServer = async (serverId: string) => {
     const result = await federationService.removeServer(serverId);
     if (result.success) {
@@ -166,7 +174,6 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
                 label="Auto-Discover Servers"
                 checked={settings.federation.autoDiscover}
                 onChange={handleAutoDiscoverToggle}
-                icon="wifi"
                 disabled={isTogglingAutoDiscover}
               />
 
@@ -236,6 +243,7 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
                 <ServerManager
                   servers={servers}
                   onAddServer={handleAddServer}
+                  onEditServer={handleEditServer}
                   onRemoveServer={handleRemoveServer}
                 />
               </div>

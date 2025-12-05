@@ -24,6 +24,7 @@ import paletteIcon from '../src/assets/icons/palette.svg?raw';
 import headphonesIcon from '../src/assets/icons/headphones.svg?raw';
 import plusIcon from '../src/assets/icons/plus.svg?raw';
 import trashIcon from '../src/assets/icons/trash.svg?raw';
+import penToSquareIcon from '../src/assets/icons/pen-to-square.svg?raw';
 import eyeIcon from '../src/assets/icons/eye.svg?raw';
 import circleInfoIcon from '../src/assets/icons/circle-info.svg?raw';
 import puzzlePieceIcon from '../src/assets/icons/puzzle-piece.svg?raw';
@@ -61,6 +62,7 @@ export type IconName =
   | 'headphones'
   | 'plus'
   | 'trash'
+  | 'pen-to-square'
   | 'eye'
   | 'circle-info'
   | 'puzzle-piece'
@@ -98,6 +100,7 @@ const iconMap: Record<IconName, string> = {
   'headphones': headphonesIcon,
   'plus': plusIcon,
   'trash': trashIcon,
+  'pen-to-square': penToSquareIcon,
   'eye': eyeIcon,
   'circle-info': circleInfoIcon,
   'puzzle-piece': puzzlePieceIcon,
