@@ -450,32 +450,51 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
       <div className="space-y-4">
         {/* AirPlay */}
         <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
-          <div className="flex items-center justify-between">
-            <Switch
-              label="AirPlay"
-              checked={settings.integrations.airplay.enabled}
-              onChange={handleAirplayToggle}
-              icon="apple"
-              disabled={isTogglingAirplay}
-            />
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-6">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 flex justify-center">
+                  <Icon name="apple" className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={settings.integrations.airplay.enabled}
+                    onChange={(e) => handleAirplayToggle(e.target.checked)}
+                    disabled={isTogglingAirplay}
+                    id="airplay-toggle"
+                  />
+                  <label
+                    htmlFor="airplay-toggle"
+                    className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.airplay.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingAirplay ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.airplay.enabled ? 'translate-x-6' : ''}`}></div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold text-[var(--text-secondary)]">AirPlay</span>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  AirPlay audio streaming (AirPlay 1 & 2)
+                </p>
+                {isTogglingAirplay && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Processing... this may take up to 60 seconds
+                  </p>
+                )}
+              </div>
+            </div>
             <button
               onClick={() => toggleSection('airplay')}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
             >
               <Icon name={expandedSection === 'airplay' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
-          <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
-            AirPlay audio streaming (AirPlay 1 & 2)
-          </p>
-          {isTogglingAirplay && (
-            <p className="text-xs text-amber-500 ml-8 mt-1">
-              Processing... this may take up to 60 seconds
-            </p>
-          )}
 
           {expandedSection === 'airplay' && (
-            <div className="mt-4 ml-8 space-y-3">
+            <div className="mt-4 ml-14 space-y-3">
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Device Name
@@ -527,32 +546,51 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
         {/* Bluetooth */}
         <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
-          <div className="flex items-center justify-between">
-            <Switch
-              label="Bluetooth"
-              checked={settings.integrations.bluetooth.enabled}
-              onChange={handleBluetoothToggle}
-              icon="bluetooth"
-              disabled={isTogglingBluetooth}
-            />
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-6">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 flex justify-center">
+                  <Icon name="bluetooth" className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={settings.integrations.bluetooth.enabled}
+                    onChange={(e) => handleBluetoothToggle(e.target.checked)}
+                    disabled={isTogglingBluetooth}
+                    id="bluetooth-toggle"
+                  />
+                  <label
+                    htmlFor="bluetooth-toggle"
+                    className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.bluetooth.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingBluetooth ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.bluetooth.enabled ? 'translate-x-6' : ''}`}></div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold text-[var(--text-secondary)]">Bluetooth</span>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  Bluetooth A2DP audio streaming
+                </p>
+                {isTogglingBluetooth && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Processing... this may take up to 60 seconds
+                  </p>
+                )}
+              </div>
+            </div>
             <button
               onClick={() => toggleSection('bluetooth')}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
             >
               <Icon name={expandedSection === 'bluetooth' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
-          <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
-            Bluetooth A2DP audio streaming
-          </p>
-          {isTogglingBluetooth && (
-            <p className="text-xs text-amber-500 ml-8 mt-1">
-              Processing... this may take up to 60 seconds
-            </p>
-          )}
 
           {expandedSection === 'bluetooth' && (
-            <div className="mt-4 ml-8 space-y-3">
+            <div className="mt-4 ml-14 space-y-3">
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Device Name
@@ -624,32 +662,51 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
         {/* Spotify Connect */}
         <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
-          <div className="flex items-center justify-between">
-            <Switch
-              label="Spotify Connect"
-              checked={settings.integrations.spotify.enabled}
-              onChange={handleSpotifyToggle}
-              icon="spotify"
-              disabled={isTogglingSpotify}
-            />
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-6">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 flex justify-center">
+                  <Icon name="spotify" className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={settings.integrations.spotify.enabled}
+                    onChange={(e) => handleSpotifyToggle(e.target.checked)}
+                    disabled={isTogglingSpotify}
+                    id="spotify-toggle"
+                  />
+                  <label
+                    htmlFor="spotify-toggle"
+                    className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.spotify.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingSpotify ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.spotify.enabled ? 'translate-x-6' : ''}`}></div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold text-[var(--text-secondary)]">Spotify Connect</span>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  Stream music directly from Spotify
+                </p>
+                {isTogglingSpotify && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Processing... this may take up to 60 seconds
+                  </p>
+                )}
+              </div>
+            </div>
             <button
               onClick={() => toggleSection('spotify')}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
             >
               <Icon name={expandedSection === 'spotify' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
-          <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
-            Stream music directly from Spotify
-          </p>
-          {isTogglingSpotify && (
-            <p className="text-xs text-amber-500 ml-8 mt-1">
-              Processing... this may take up to 60 seconds
-            </p>
-          )}
 
           {expandedSection === 'spotify' && (
-            <div className="mt-4 ml-8 space-y-3">
+            <div className="mt-4 ml-14 space-y-3">
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Source Name
@@ -727,33 +784,51 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
         {/* DLNA/UPnP */}
         <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
-          <div className="flex items-center justify-between">
-            <Switch
-              label="DLNA/UPnP"
-              checked={settings.integrations.dlna.enabled}
-              onChange={handleDlnaToggle}
-              icon="network-wired"
-              disabled={isTogglingDlna}
-            />
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-6">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 flex justify-center">
+                  <Icon name="network-wired" className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={settings.integrations.dlna.enabled}
+                    onChange={(e) => handleDlnaToggle(e.target.checked)}
+                    disabled={isTogglingDlna}
+                    id="dlna-toggle"
+                  />
+                  <label
+                    htmlFor="dlna-toggle"
+                    className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.dlna.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingDlna ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.dlna.enabled ? 'translate-x-6' : ''}`}></div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold text-[var(--text-secondary)]">DLNA/UPnP</span>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  DLNA/UPnP media renderer
+                </p>
+                {isTogglingDlna && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Processing... this may take up to 60 seconds
+                  </p>
+                )}
+              </div>
+            </div>
             <button
               onClick={() => toggleSection('dlna')}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
             >
               <Icon name={expandedSection === 'dlna' ? 'chevron-up' : 'chevron-down'} className="text-lg" style={{ color: 'inherit' }} />
             </button>
           </div>
-          <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
-            DLNA/UPnP media renderer
-          </p>
-
-          {isTogglingDlna && (
-            <p className="text-xs text-amber-500 ml-8 mt-1">
-              Processing... this may take up to 60 seconds
-            </p>
-          )}
 
           {expandedSection === 'dlna' && (
-            <div className="mt-4 ml-8 space-y-3">
+            <div className="mt-4 ml-14 space-y-3">
               <div>
                 <label className="block text-sm text-[var(--text-secondary)] mb-1">
                   Source Name
