@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 class FederationAPI:
     """REST API server for federation control"""
 
-    def __init__(self, data_aggregator, router, port: int = 5000):
+    def __init__(self, data_aggregator, router, loop, port: int = 5000):
         self.app = Flask(__name__)
         CORS(self.app)  # Enable CORS for frontend access
         self.data_aggregator = data_aggregator
         self.router = router
+        self.loop = loop  # Reference to the async event loop
         self.port = port
         self._setup_routes()
         self._setup_settings_api()
@@ -83,13 +84,12 @@ class FederationAPI:
                 if not client_id or not stream_id:
                     return jsonify({"error": "clientId and streamId required"}), 400
 
-                # Run async router in sync context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(
-                    self.router.route_client(client_id, stream_id)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.router.route_client(client_id, stream_id),
+                    self.loop
                 )
-                loop.close()
+                result = future.result(timeout=30)
 
                 if result.get("success"):
                     return jsonify(result)
@@ -112,13 +112,12 @@ class FederationAPI:
                 if not client_id or volume is None:
                     return jsonify({"error": "clientId and volume required"}), 400
 
-                # Run async router in sync context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(
-                    self.router.set_client_volume(client_id, volume, muted)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.router.set_client_volume(client_id, volume, muted),
+                    self.loop
                 )
-                loop.close()
+                result = future.result(timeout=30)
 
                 if result.get("success"):
                     return jsonify(result)
@@ -140,13 +139,12 @@ class FederationAPI:
                 if not stream_id or not command:
                     return jsonify({"error": "streamId and command required"}), 400
 
-                # Run async router in sync context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(
-                    self.router.control_stream(stream_id, command)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.router.control_stream(stream_id, command),
+                    self.loop
                 )
-                loop.close()
+                result = future.result(timeout=30)
 
                 if result.get("success"):
                     return jsonify(result)
@@ -169,13 +167,12 @@ class FederationAPI:
                 if not host or not name:
                     return jsonify({"error": "host and name required"}), 400
 
-                # Add server via data aggregator
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(
-                    self.data_aggregator.add_manual_server(host, port, name)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.data_aggregator.add_manual_server(host, port, name),
+                    self.loop
                 )
-                loop.close()
+                result = future.result(timeout=30)
 
                 return jsonify({"success": True, "server": result})
 
@@ -196,13 +193,12 @@ class FederationAPI:
                 if not server_id or not host or not name:
                     return jsonify({"error": "serverId, host, and name required"}), 400
 
-                # Edit server via data aggregator
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(
-                    self.data_aggregator.edit_server(server_id, host, port, name)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.data_aggregator.edit_server(server_id, host, port, name),
+                    self.loop
                 )
-                loop.close()
+                result = future.result(timeout=30)
 
                 return jsonify({"success": True, "server": result})
 
@@ -220,13 +216,12 @@ class FederationAPI:
                 if not server_id:
                     return jsonify({"error": "serverId required"}), 400
 
-                # Remove server via data aggregator
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(
-                    self.data_aggregator.remove_server(server_id)
+                # Schedule coroutine on the background event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.data_aggregator.remove_server(server_id),
+                    self.loop
                 )
-                loop.close()
+                future.result(timeout=30)
 
                 return jsonify({"success": True})
 
@@ -384,32 +379,67 @@ class DataAggregator:
         server_info = self.discovery.add_manual_server(host, port, name)
 
         # Connect to the server
-        await self.ws_manager.add_server(
-            server_id=server_info.id,
-            host=host,
-            port=port,
-            name=name,
-            use_https=False
-        )
+        try:
+            await self.ws_manager.add_server(
+                server_id=server_info.id,
+                host=host,
+                port=port,
+                name=name,
+                use_https=False
+            )
+
+            # Wait briefly to ensure connection is fully established
+            await asyncio.sleep(0.5)
+
+            # Verify connection was successful
+            conn = self.ws_manager.get_connection(server_info.id)
+            if conn and conn.connected:
+                logger.info(f"Server {name} successfully connected")
+            else:
+                logger.warning(f"Server {name} connection may not be fully established")
+
+        except Exception as e:
+            logger.error(f"Failed to connect to manually added server {name}: {e}")
+            # Server stays in discovery but not connected
+            raise
 
         return server_info.to_dict()
 
     async def edit_server(self, old_server_id: str, host: str, port: int, name: str) -> Dict:
         """Edit an existing manually added server"""
+        logger.info(f"Editing server {old_server_id}: {host}:{port} ({name})")
+
         # Remove old connection
         await self.ws_manager.remove_server(old_server_id)
+        await asyncio.sleep(0.1)  # Brief pause to ensure cleanup completes
 
         # Update discovery info
         server_info = self.discovery.edit_manual_server(old_server_id, host, port, name)
 
         # Connect to the server with new details
-        await self.ws_manager.add_server(
-            server_id=server_info.id,
-            host=host,
-            port=port,
-            name=name,
-            use_https=False
-        )
+        try:
+            await self.ws_manager.add_server(
+                server_id=server_info.id,
+                host=host,
+                port=port,
+                name=name,
+                use_https=False
+            )
+
+            # Wait briefly to ensure connection is fully established
+            await asyncio.sleep(0.5)
+
+            # Verify connection was successful
+            conn = self.ws_manager.get_connection(server_info.id)
+            if conn and conn.connected:
+                logger.info(f"Server {name} successfully reconnected after edit")
+            else:
+                logger.warning(f"Server {name} connection may not be fully established after edit")
+
+        except Exception as e:
+            logger.error(f"Failed to reconnect to edited server {name}: {e}")
+            # Server stays in discovery but not connected
+            raise
 
         return server_info.to_dict()
 

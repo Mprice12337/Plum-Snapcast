@@ -181,7 +181,7 @@ class FederationService:
         time.sleep(2)
 
         # Start REST API (blocks in main thread)
-        self.api = FederationAPI(self.data_aggregator, self.router, port=self.api_port)
+        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port)
         logger.info(f"Starting REST API on port {self.api_port}")
 
         try:
