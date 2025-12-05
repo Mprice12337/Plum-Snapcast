@@ -16,7 +16,7 @@ interface SettingsProps {
 
 const tabs: Tab[] = [
     {id: 'integrations', label: 'Integrations', icon: 'puzzle-piece'},
-    {id: 'snapcast', label: 'Snapcast', icon: 'network-wired'},
+    {id: 'snapcast', label: 'Snapcast', icon: 'snapcast'},
     {id: 'theme', label: 'Theme', icon: 'palette'},
     {id: 'visualizer', label: 'Visualizer', icon: 'waveform'},
     {id: 'about', label: 'About', icon: 'circle-info'},

@@ -34,6 +34,8 @@ import appleIcon from '../src/assets/icons/apple.svg?raw';
 import bluetoothIcon from '../src/assets/icons/bluetooth.svg?raw';
 import wifiIcon from '../src/assets/icons/wifi.svg?raw';
 import waveformIcon from '../src/assets/icons/waveform.svg?raw';
+import snapcastIcon from '../src/assets/icons/snapcast.svg?raw';
+import snapcastColorIcon from '../src/assets/icons/snapcast-color.svg?raw';
 
 export type IconName =
   | 'play'
@@ -68,7 +70,9 @@ export type IconName =
   | 'apple'
   | 'bluetooth'
   | 'wifi'
-  | 'waveform';
+  | 'waveform'
+  | 'snapcast'
+  | 'snapcast-color';
 
 const iconMap: Record<IconName, string> = {
   'play': playIcon,
@@ -104,6 +108,8 @@ const iconMap: Record<IconName, string> = {
   'bluetooth': bluetoothIcon,
   'wifi': wifiIcon,
   'waveform': waveformIcon,
+  'snapcast': snapcastIcon,
+  'snapcast-color': snapcastColorIcon,
 };
 
 interface IconProps {
