@@ -1,39 +1,39 @@
 import type { CSSProperties } from 'react';
 
-// Import all SVG icons
-import playIcon from '../src/assets/icons/play.svg';
-import pauseIcon from '../src/assets/icons/pause.svg';
-import forwardStepIcon from '../src/assets/icons/forward-step.svg';
-import backwardStepIcon from '../src/assets/icons/backward-step.svg';
-import volumeHighIcon from '../src/assets/icons/volume-high.svg';
-import volumeLowIcon from '../src/assets/icons/volume-low.svg';
-import volumeXmarkIcon from '../src/assets/icons/volume-xmark.svg';
-import chevronDownIcon from '../src/assets/icons/chevron-down.svg';
-import chevronUpIcon from '../src/assets/icons/chevron-up.svg';
-import xmarkIcon from '../src/assets/icons/xmark.svg';
-import gearIcon from '../src/assets/icons/gear.svg';
-import spinnerIcon from '../src/assets/icons/spinner.svg';
-import musicIcon from '../src/assets/icons/music.svg';
-import triangleExclamationIcon from '../src/assets/icons/triangle-exclamation.svg';
-import desktopIcon from '../src/assets/icons/desktop.svg';
-import towerBroadcastIcon from '../src/assets/icons/tower-broadcast.svg';
-import networkWiredIcon from '../src/assets/icons/network-wired.svg';
-import sunIcon from '../src/assets/icons/sun.svg';
-import moonIcon from '../src/assets/icons/moon.svg';
-import paletteIcon from '../src/assets/icons/palette.svg';
-import headphonesIcon from '../src/assets/icons/headphones.svg';
-import plusIcon from '../src/assets/icons/plus.svg';
-import trashIcon from '../src/assets/icons/trash.svg';
-import eyeIcon from '../src/assets/icons/eye.svg';
-import circleInfoIcon from '../src/assets/icons/circle-info.svg';
-import puzzlePieceIcon from '../src/assets/icons/puzzle-piece.svg';
-import bookIcon from '../src/assets/icons/book.svg';
-import githubIcon from '../src/assets/icons/github.svg';
-import spotifyIcon from '../src/assets/icons/spotify.svg';
-import appleIcon from '../src/assets/icons/apple.svg';
-import bluetoothIcon from '../src/assets/icons/bluetooth.svg';
-import wifiIcon from '../src/assets/icons/wifi.svg';
-import waveformIcon from '../src/assets/icons/waveform.svg';
+// Import all SVG icons as raw strings
+import playIcon from '../src/assets/icons/play.svg?raw';
+import pauseIcon from '../src/assets/icons/pause.svg?raw';
+import forwardStepIcon from '../src/assets/icons/forward-step.svg?raw';
+import backwardStepIcon from '../src/assets/icons/backward-step.svg?raw';
+import volumeHighIcon from '../src/assets/icons/volume-high.svg?raw';
+import volumeLowIcon from '../src/assets/icons/volume-low.svg?raw';
+import volumeXmarkIcon from '../src/assets/icons/volume-xmark.svg?raw';
+import chevronDownIcon from '../src/assets/icons/chevron-down.svg?raw';
+import chevronUpIcon from '../src/assets/icons/chevron-up.svg?raw';
+import xmarkIcon from '../src/assets/icons/xmark.svg?raw';
+import gearIcon from '../src/assets/icons/gear.svg?raw';
+import spinnerIcon from '../src/assets/icons/spinner.svg?raw';
+import musicIcon from '../src/assets/icons/music.svg?raw';
+import triangleExclamationIcon from '../src/assets/icons/triangle-exclamation.svg?raw';
+import desktopIcon from '../src/assets/icons/desktop.svg?raw';
+import towerBroadcastIcon from '../src/assets/icons/tower-broadcast.svg?raw';
+import networkWiredIcon from '../src/assets/icons/network-wired.svg?raw';
+import sunIcon from '../src/assets/icons/sun.svg?raw';
+import moonIcon from '../src/assets/icons/moon.svg?raw';
+import paletteIcon from '../src/assets/icons/palette.svg?raw';
+import headphonesIcon from '../src/assets/icons/headphones.svg?raw';
+import plusIcon from '../src/assets/icons/plus.svg?raw';
+import trashIcon from '../src/assets/icons/trash.svg?raw';
+import eyeIcon from '../src/assets/icons/eye.svg?raw';
+import circleInfoIcon from '../src/assets/icons/circle-info.svg?raw';
+import puzzlePieceIcon from '../src/assets/icons/puzzle-piece.svg?raw';
+import bookIcon from '../src/assets/icons/book.svg?raw';
+import githubIcon from '../src/assets/icons/github.svg?raw';
+import spotifyIcon from '../src/assets/icons/spotify.svg?raw';
+import appleIcon from '../src/assets/icons/apple.svg?raw';
+import bluetoothIcon from '../src/assets/icons/bluetooth.svg?raw';
+import wifiIcon from '../src/assets/icons/wifi.svg?raw';
+import waveformIcon from '../src/assets/icons/waveform.svg?raw';
 
 export type IconName =
   | 'play'
@@ -123,23 +123,23 @@ export function Icon({
   'aria-hidden': ariaHidden,
   'aria-label': ariaLabel
 }: IconProps) {
-  const iconSrc = iconMap[name];
+  const iconSvg = iconMap[name];
   const combinedClassName = `icon${spin ? ' icon-spin' : ''}${className ? ` ${className}` : ''}`;
 
   return (
-    <img
-      src={iconSrc}
-      alt={ariaLabel || ''}
+    <span
       className={combinedClassName}
       style={{
         display: 'inline-block',
         width: '1em',
         height: '1em',
         verticalAlign: '-0.125em',
+        fill: 'currentColor',
         ...style
       }}
       aria-hidden={ariaHidden}
       aria-label={ariaLabel}
+      dangerouslySetInnerHTML={{ __html: iconSvg }}
     />
   );
 }
