@@ -149,18 +149,20 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 
 ### Key Environment Variables
 
-**Audio Sources** (see docker/.env.example for full list):
-- `AIRPLAY_CONFIG_ENABLED`, `AIRPLAY_DEVICE_NAME` (default: "Plum Audio")
-- `BLUETOOTH_ENABLED`, `BLUETOOTH_DEVICE_NAME`, `BLUETOOTH_AUTO_PAIR` (default: 0, auto-accept SSP)
-- `SPOTIFY_CONFIG_ENABLED`, `SPOTIFY_DEVICE_NAME`, `SPOTIFY_BITRATE` (default: 320)
-- `DLNA_ENABLED`, `DLNA_DEVICE_NAME`
+**Integration Settings** (AirPlay, Bluetooth, Spotify, DLNA):
+- **Managed via Web UI**: All integration settings are configured through Settings → Integrations
+- **Defaults** (first start without settings.json): AirPlay enabled ("Plum Audio"), all others disabled
+- **Storage**: Settings stored in `/app/data/settings.json`, persists across container restarts
+- **No env vars needed**: Integration configuration has been removed from environment variables
+
+**Plexamp** (separate container, requires env config):
 - `PLEXAMP_ENABLED`, `PLEXAMP_CLAIM_TOKEN` (from https://plex.tv/claim), `PLEXAMP_SERVER_NAME`
 
-**Snapclient**:
+**Snapclient** (hardware-specific):
 - `SNAPCLIENT_ENABLED`, `SNAPCLIENT_SOUNDCARD` (default: hw:Headphones), `SNAPCLIENT_LATENCY`
 
-**Network**:
-- `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000)
+**Network/Infrastructure**:
+- `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000), `FEDERATION_API_PORT` (default: 5001)
 
 **Important Implementation Notes**:
 - **Bluetooth**: No album art (needs BlueZ 5.81+, Alpine has 5.70). SSP only (no PIN codes). Metadata via AVRCP.
@@ -270,10 +272,15 @@ GET  /api/integrations/dlna/status
 ## Common Tasks
 
 ### Adding a New Audio Source
-1. Update `backend/scripts/generate-config.sh`
-2. Add supervisord config (if service needed)
-3. Update `docker/.env.example`
-4. Test: Build → Deploy to RPi → Verify in web UI
+1. Add settings schema to `migrate-env-to-settings.py` (for new integration)
+2. Update `get-settings.py` to export settings as env vars
+3. Update `backend/scripts/setup.sh` to add Snapcast stream source
+4. Add supervisord config (if service needed)
+5. Add integration API endpoints to `integrations_api.py`
+6. Update frontend Settings UI
+7. Test: Build → Deploy to RPi → Verify in web UI
+
+**Note**: Only add to `.env.example` if source requires container-level config (like Plexamp). Most integrations are managed via web UI.
 
 ### Debugging
 
@@ -286,7 +293,7 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 **Common Issues**:
 - No audio: Check `docker exec plum-snapcast-server aplay -l`
 - AirPlay not visible: Verify Avahi running, host Avahi disabled
-- Bluetooth not pairing: Check `bluetoothctl show`, verify `BLUETOOTH_DISCOVERABLE=1`
+- Bluetooth not pairing: Check `bluetoothctl show`, verify discoverable setting in web UI (Settings → Integrations → Bluetooth)
 - D-Bus errors: Ensure host D-Bus socket mounted
 
 ---
@@ -321,7 +328,7 @@ git pull && docker compose pull && docker compose up -d
 9. **Multi-room**: Deploy additional snapclient-only containers, Layer 2 network required
 10. **Bluetooth Album Art**: Not available (needs BlueZ 5.81+, Alpine has 5.70)
 11. **Browser Audio**: Snapweb clients are hidden from UI; browser audio managed through useBrowserAudio hook. Auto-assigns to current stream on click, handles reconnection with stale server state. Always visible when active (ignores offline device filter).
-12. **Settings Persistence**: Settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Environment variables migrated on first run.
+12. **Settings Persistence**: Integration and federation settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Managed exclusively via web UI. No environment variables needed for integrations.
 13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
 14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
 
