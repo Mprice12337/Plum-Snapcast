@@ -12,8 +12,10 @@ A comprehensive multi-room audio streaming solution combining Snapcast with a mo
 - **Hardware Audio Output**: Integrated snapclient outputs to Raspberry Pi 3.5mm jack
 - **Modern Web Interface**: Real-time control of streams, clients, and volume
 - **Web-based Settings**: Configure integrations, enable/disable services, and customize device names from the browser
+- **mDNS Hostname Support**: Access via customizable hostname.local addresses on your local network
 - **Metadata Display**: Real-time track information and album artwork for all sources
 - **Theme Customization**: Dark/light/system modes with multiple accent color options
+- **Dynamic Favicon**: Browser icon updates to match your chosen accent color
 
 ## Project Structure
 
@@ -119,11 +121,15 @@ sudo reboot
 
 After deployment:
 
-- **Web Interface**: http://raspberrypi.local:3000 or http://<pi-ip-address>:3000
+- **Web Interface**:
+  - http://plum-snapcast.local:3000 (default mDNS hostname)
+  - http://raspberrypi.local:3000 (host's mDNS name)
+  - http://<pi-ip-address>:3000
+  - The hostname is configurable in Settings → About
 - **AirPlay Device**: Look for "Plum Audio" in AirPlay devices on iOS/macOS
-- **Spotify Connect**: Look for "Plum Audio" in Spotify's device list (enable by setting `SPOTIFY_CONFIG_ENABLED=1` in `.env`)
-- **DLNA/UPnP Renderer**: Look for "Plum Audio" in your DLNA controller app (BubbleUPnP, mConnect, etc.) (enable by setting `DLNA_ENABLED=1` in `.env`)
-- **Bluetooth Device**: Look for "Plum Audio" in Bluetooth settings on your phone/device (if enabled)
+- **Spotify Connect**: Look for "Plum Audio" in Spotify's device list (enable in Settings → Integrations)
+- **DLNA/UPnP Renderer**: Look for "Plum Audio" in your DLNA controller app (enable in Settings → Integrations)
+- **Bluetooth Device**: Look for "Plum Audio" in Bluetooth settings on your phone/device (enable in Settings → Integrations)
 
 ### Verification
 
@@ -145,30 +151,19 @@ snapserver         RUNNING
 
 ### Configuration
 
-Edit `docker/.env` to customize:
+**Most settings are configured via the web interface** (Settings → Integrations and Settings → About). See the "Web-Based Settings" section below for details.
 
-**AirPlay:**
-- `AIRPLAY_DEVICE_NAME`: Name shown in AirPlay device list (default: "Plum Audio")
+For advanced configuration or infrastructure settings, edit `docker/.env`:
 
-**Spotify Connect:**
-- `SPOTIFY_CONFIG_ENABLED`: Enable Spotify Connect (0=disabled, 1=enabled, default: 0)
-- `SPOTIFY_DEVICE_NAME`: Name shown in Spotify device list (default: "Plum Audio")
-- `SPOTIFY_BITRATE`: Audio quality for Spotify (96, 160, or 320 kbps, default: 320)
-
-**DLNA/UPnP:**
-- `DLNA_ENABLED`: Enable DLNA/UPnP renderer (0=disabled, 1=enabled, default: 0)
-- `DLNA_DEVICE_NAME`: Name shown in DLNA controller apps (default: "Plum Audio")
-- `DLNA_SOURCE_NAME`: Stream name in Snapcast web interface (default: "DLNA")
-- `DLNA_UUID`: Custom UPnP UUID (optional, auto-generated if not set)
-
-**Bluetooth:**
-- `BLUETOOTH_ENABLED`: Enable Bluetooth A2DP audio (default: 0, set to 1 to enable)
-- `BLUETOOTH_DEVICE_NAME`: Name shown in Bluetooth pairing list (default: "Plum Audio")
-- `BLUETOOTH_ADAPTER`: Bluetooth adapter to use (default: hci0)
-
-**General:**
+**Infrastructure:**
 - `FRONTEND_PORT`: Web interface port (default: 3000)
 - `SNAPCLIENT_SOUNDCARD`: ALSA device for audio output (default: hw:Headphones)
+- `TZ`: Timezone (default: America/Los_Angeles)
+
+**Plexamp** (optional, separate container):
+- `PLEXAMP_ENABLED`: Enable Plexamp integration (0=disabled, 1=enabled)
+- `PLEXAMP_CLAIM_TOKEN`: Plex claim token from https://plex.tv/claim
+- `PLEXAMP_SERVER_NAME`: Name shown in Plex (default: "Plum Audio")
 
 **Bluetooth Notes:**
 - Provides track metadata (title, artist, album) and media controls (play, pause, skip)
@@ -189,11 +184,18 @@ Once deployed, you can configure most settings through the web interface without
    - **Integrations Tab**: Enable/disable and configure AirPlay, Bluetooth, Spotify Connect, and DLNA services
      - Toggle services on/off without restarting the container
      - Update device names in real-time
-     - Configure Bluetooth discoverability
+     - Configure Bluetooth discoverability and pairing options
+     - Set Spotify bitrate (96, 160, or 320 kbps)
    - **Snapcast Tab**: Manage Snapcast server settings and federation
+     - Enable multi-server federation for synchronized playback across locations
+     - Configure auto-discovery and local server names
    - **Theme Tab**: Customize appearance (dark/light/system mode, accent colors)
+     - Dynamic favicon updates to match your chosen accent color
    - **Visualizer Tab**: Enable experimental audio visualizer
-   - **About Tab**: View version information and links to documentation
+   - **About Tab**: Configure device identity and view system information
+     - Set device name (displayed in federation and browser title)
+     - Configure mDNS hostname for local network access (e.g., http://your-hostname.local:3000)
+     - View version information and links to documentation
 
 **Note**: Settings are persisted to `/app/data/settings.json` in the container and survive restarts. Initial configuration from environment variables (`.env` file) is automatically migrated to the settings system on first run.
 
