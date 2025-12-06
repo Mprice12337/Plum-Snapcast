@@ -13,7 +13,11 @@ import type {Client, Server, Settings, Stream} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
-import musicNotePlaceholder from './src/assets/icons/music-note-placeholder.svg';
+import {updateFavicon} from './utils/favicon';
+import musicNotePlaceholderRaw from './src/assets/icons/music-note-placeholder.svg?raw';
+
+// Convert raw SVG to data URI for use in img src
+const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNotePlaceholderRaw)}`;
 
 const VOLUME_STEP = 5;
 
@@ -65,6 +69,18 @@ const App: React.FC = () => {
 
         return () => unsubscribe();
     }, []);
+
+    // Update browser title when device name changes
+    useEffect(() => {
+        if (settings.deviceName) {
+            document.title = settings.deviceName;
+        }
+    }, [settings.deviceName]);
+
+    // Update favicon when accent color changes
+    useEffect(() => {
+        updateFavicon(settings.theme.accent);
+    }, [settings.theme.accent]);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -786,6 +802,7 @@ const App: React.FC = () => {
                     name: 'My Device (You)',
                     currentStreamId: null,
                     volume: 75,
+                    connected: true,
                 }]);
             } finally {
                 if (!isCancelled) {
@@ -810,160 +827,203 @@ const App: React.FC = () => {
             return;
         }
 
-        console.log('[Federation] Starting polling...');
+        console.log('[Federation] Waiting for backend to be ready...');
 
-        // Transform federated stream data to match frontend Stream type
-        const transformFederatedStream = (federatedStream: any): Stream => {
-            const metadata = federatedStream.metadata || {};
-            const properties = federatedStream.properties || {};
+        // Poll the backend until it's ready (with timeout)
+        // The backend needs time to restart from minimal mode to full federation mode
+        const startPollingDelayed = async () => {
+            const maxAttempts = 20; // 20 attempts * 500ms = 10 seconds max
+            let attempt = 0;
+            let isReady = false;
 
-            // Extract stream name from federated ID by removing "{serverId}-" prefix
-            // Example: "192-168-7-226-default" -> "default"
-            const extractStreamName = (id: string, serverId: string): string => {
-                const prefix = `${serverId}-`;
-                if (id.startsWith(prefix)) {
-                    return id.substring(prefix.length);
+            while (attempt < maxAttempts && !isReady) {
+                attempt++;
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // Check if federation service is healthy
+                const healthy = await federationService.checkHealth();
+                if (healthy) {
+                    // Backend is healthy, now check if servers are connected
+                    try {
+                        const servers = await federationService.getServers();
+                        const hasConnectedServers = servers.some(s => s.connected);
+
+                        if (hasConnectedServers) {
+                            isReady = true;
+                            console.log(`[Federation] Backend ready with ${servers.length} server(s) after ${attempt * 0.5}s, starting polling...`);
+                        } else if (attempt === maxAttempts) {
+                            console.error('[Federation] Backend did not connect to local server in time');
+                            return; // Exit without starting polling
+                        }
+                    } catch (error) {
+                        // Servers endpoint not ready yet, continue polling
+                        if (attempt === maxAttempts) {
+                            console.error('[Federation] Backend servers endpoint not ready in time');
+                            return;
+                        }
+                    }
+                } else if (attempt === maxAttempts) {
+                    console.error('[Federation] Backend did not become ready in time');
+                    return; // Exit without starting polling
                 }
-                return 'Unknown';
-            };
+            }
 
-            const streamName = extractStreamName(federatedStream.id, federatedStream.serverId);
+            // Transform federated stream data to match frontend Stream type
+            const transformFederatedStream = (federatedStream: any): Stream => {
+                const metadata = federatedStream.metadata || {};
+                const properties = federatedStream.properties || {};
 
-            return {
-                id: federatedStream.id,
-                serverId: federatedStream.serverId,
-                serverName: federatedStream.serverName,
-                name: streamName,
-                sourceDevice: streamName,
-                currentTrack: {
+                // Extract stream name from federated ID by removing "{serverId}-" prefix
+                // Example: "192-168-7-226-default" -> "default"
+                const extractStreamName = (id: string, serverId: string): string => {
+                    const prefix = `${serverId}-`;
+                    if (id.startsWith(prefix)) {
+                        return id.substring(prefix.length);
+                    }
+                    return 'Unknown';
+                };
+
+                const streamName = extractStreamName(federatedStream.id, federatedStream.serverId);
+
+                return {
                     id: federatedStream.id,
-                    title: metadata.title || 'Unknown Track',
-                    artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
-                    album: metadata.album || 'Unknown Album',
-                    albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
-                    duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0
-                },
-                isPlaying: properties.playbackStatus === 'playing',
-                progress: properties.position ? Math.floor(properties.position / 1000) : 0
+                    serverId: federatedStream.serverId,
+                    serverName: federatedStream.serverName,
+                    name: streamName,
+                    sourceDevice: streamName,
+                    currentTrack: {
+                        id: federatedStream.id,
+                        title: metadata.title || 'Unknown Track',
+                        artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
+                        album: metadata.album || 'Unknown Album',
+                        albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
+                        duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0
+                    },
+                    isPlaying: properties.playbackStatus === 'playing',
+                    progress: properties.position ? Math.floor(properties.position / 1000) : 0
+                };
             };
-        };
 
-        // Transform federated client data to ensure names are populated
-        const transformFederatedClient = (federatedClient: any): Client => {
-            // Extract client name from federated ID or use provided name
-            // Federated client IDs may be in format "server-{serverId}-{clientId}"
-            const extractClientName = (client: any): string => {
-                // If client has a name, use it
-                if (client.name && client.name !== '') {
-                    return client.name;
+            // Transform federated client data to ensure names are populated
+            const transformFederatedClient = (federatedClient: any): Client => {
+                // Extract client name from federated ID or use provided name
+                // Federated client IDs may be in format "server-{serverId}-{clientId}"
+                const extractClientName = (client: any): string => {
+                    // If client has a name, use it
+                    if (client.name && client.name !== '') {
+                        return client.name;
+                    }
+                    // Otherwise try to extract from ID
+                    // Format might be: "server-localhost-00:21:6a:7e:3f:ae" or similar
+                    const parts = client.id.split('-');
+                    if (parts.length >= 3) {
+                        // Take everything after "server-{serverId}-"
+                        return parts.slice(2).join('-');
+                    }
+                    return client.id; // Fallback to ID
+                };
+
+                return {
+                    ...federatedClient,
+                    name: extractClientName(federatedClient)
+                };
+            };
+
+            // Helper to detect if a client ID is local (served by this server's WebSocket)
+            // Local clients from federation API have "server-localhost-" prefix but should use WebSocket API
+            const isLocalFederatedClient = (clientId: string): boolean => {
+                return clientId.startsWith('server-localhost-');
+            };
+
+            // Helper to strip federation prefix from local client IDs
+            const stripLocalPrefix = (clientId: string): string => {
+                if (isLocalFederatedClient(clientId)) {
+                    return clientId.replace('server-localhost-', '');
                 }
-                // Otherwise try to extract from ID
-                // Format might be: "server-localhost-00:21:6a:7e:3f:ae" or similar
-                const parts = client.id.split('-');
-                if (parts.length >= 3) {
-                    // Take everything after "server-{serverId}-"
-                    return parts.slice(2).join('-');
+                return clientId;
+            };
+
+            // Start polling for federated data
+            federationService.startPolling((data) => {
+                console.log('[Federation] Received update:', {
+                    servers: data.servers.length,
+                    streams: data.streams.length,
+                    clients: data.clients.length
+                });
+
+                setServers(data.servers);
+
+                // Check if we should ignore polling updates due to recent user changes
+                // Use ref to avoid stale closure
+                const now = Date.now();
+                const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
+                const recentChanges = recentUserChangesRef.current;
+                const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
+
+                if (hasRecentChange) {
+                    console.log(`[Federation] Grace period active: ${recentChanges.type} change for`, recentChanges.data, `(${Math.round((GRACE_PERIOD - (now - recentChanges.timestamp)) / 1000)}s remaining)`);
                 }
-                return client.id; // Fallback to ID
-            };
 
-            return {
-                ...federatedClient,
-                name: extractClientName(federatedClient)
-            };
-        };
+                // Transform and MERGE federated streams (preserve client-side progress tracking)
+                if (data.streams.length > 0) {
+                    setStreams(prevStreams => {
+                        const transformedStreams = data.streams.map(federatedStream => {
+                            const newStream = transformFederatedStream(federatedStream);
 
-        // Helper to detect if a client ID is local (served by this server's WebSocket)
-        // Local clients from federation API have "server-localhost-" prefix but should use WebSocket API
-        const isLocalFederatedClient = (clientId: string): boolean => {
-            return clientId.startsWith('server-localhost-');
-        };
+                            // Find existing stream to preserve client-side progress
+                            const existingStream = prevStreams.find(s => s.id === newStream.id);
 
-        // Helper to strip federation prefix from local client IDs
-        const stripLocalPrefix = (clientId: string): string => {
-            if (isLocalFederatedClient(clientId)) {
-                return clientId.replace('server-localhost-', '');
-            }
-            return clientId;
-        };
+                            if (existingStream && existingStream.isPlaying) {
+                                // Stream is playing - preserve client-side progress for smooth updates
+                                // Accept all other server data (metadata, isPlaying, etc.)
+                                // Use whichever progress is higher (client increments between polls)
+                                // However, if there was a recent playback change for THIS stream, preserve its state
+                                if (hasRecentChange && recentChanges!.type === 'playback' && recentChanges!.data.streamId === newStream.id) {
+                                    console.log(`[Federation] Preserving user-initiated playback state for ${newStream.id} during grace period`);
+                                    return {
+                                        ...newStream,
+                                        isPlaying: existingStream.isPlaying,
+                                        progress: Math.max(newStream.progress, existingStream.progress)
+                                    };
+                                }
 
-        // Start polling for federated data
-        federationService.startPolling((data) => {
-            console.log('[Federation] Received update:', {
-                servers: data.servers.length,
-                streams: data.streams.length,
-                clients: data.clients.length
-            });
-
-            setServers(data.servers);
-
-            // Check if we should ignore polling updates due to recent user changes
-            // Use ref to avoid stale closure
-            const now = Date.now();
-            const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
-            const recentChanges = recentUserChangesRef.current;
-            const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
-
-            if (hasRecentChange) {
-                console.log(`[Federation] Grace period active: ${recentChanges.type} change for`, recentChanges.data, `(${Math.round((GRACE_PERIOD - (now - recentChanges.timestamp)) / 1000)}s remaining)`);
-            }
-
-            // Transform and MERGE federated streams (preserve client-side progress tracking)
-            if (data.streams.length > 0) {
-                setStreams(prevStreams => {
-                    const transformedStreams = data.streams.map(federatedStream => {
-                        const newStream = transformFederatedStream(federatedStream);
-
-                        // Find existing stream to preserve client-side progress
-                        const existingStream = prevStreams.find(s => s.id === newStream.id);
-
-                        if (existingStream && existingStream.isPlaying) {
-                            // Stream is playing - preserve client-side progress for smooth updates
-                            // Accept all other server data (metadata, isPlaying, etc.)
-                            // Use whichever progress is higher (client increments between polls)
-                            // However, if there was a recent playback change for THIS stream, preserve its state
-                            if (hasRecentChange && recentChanges!.type === 'playback' && recentChanges!.data.streamId === newStream.id) {
-                                console.log(`[Federation] Preserving user-initiated playback state for ${newStream.id} during grace period`);
                                 return {
                                     ...newStream,
-                                    isPlaying: existingStream.isPlaying,
                                     progress: Math.max(newStream.progress, existingStream.progress)
                                 };
                             }
 
+                            // New stream or not playing - use server data as-is
+                            return newStream;
+                        });
+
+                        return transformedStreams;
+                    });
+                }
+
+                // Transform and set federated clients
+                if (data.clients.length > 0) {
+                    // If there was a recent client routing change, preserve that client's stream assignment
+                    const transformedClients = data.clients.map(client => {
+                        const transformed = transformFederatedClient(client);
+
+                        if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
+                            console.log(`[Federation] Preserving user-initiated stream routing for ${transformed.id} during grace period`);
                             return {
-                                ...newStream,
-                                progress: Math.max(newStream.progress, existingStream.progress)
+                                ...transformed,
+                                currentStreamId: recentChanges!.data.streamId
                             };
                         }
 
-                        // New stream or not playing - use server data as-is
-                        return newStream;
+                        return transformed;
                     });
+                    setClients(transformedClients);
+                }
+            }, 5000);
+        };
 
-                    return transformedStreams;
-                });
-            }
-
-            // Transform and set federated clients
-            if (data.clients.length > 0) {
-                // If there was a recent client routing change, preserve that client's stream assignment
-                const transformedClients = data.clients.map(client => {
-                    const transformed = transformFederatedClient(client);
-
-                    if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
-                        console.log(`[Federation] Preserving user-initiated stream routing for ${transformed.id} during grace period`);
-                        return {
-                            ...transformed,
-                            currentStreamId: recentChanges!.data.streamId
-                        };
-                    }
-
-                    return transformed;
-                });
-                setClients(transformedClients);
-            }
-        }, 5000);
+        // Call the async function to start polling after delay
+        startPollingDelayed();
 
         return () => {
             federationService.stopPolling();
