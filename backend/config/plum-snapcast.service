@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!--
+  Avahi service file for Plum-Snapcast web interface
+  Advertises the web UI on port 3000 via mDNS
+-->
+
+<service-group>
+
+  <name replace-wildcards="yes">%h Web Interface</name>
+
+  <service>
+    <type>_http._tcp</type>
+    <port>3000</port>
+    <txt-record>path=/</txt-record>
+  </service>
+
+</service-group>

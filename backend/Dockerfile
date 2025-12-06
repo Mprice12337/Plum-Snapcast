@@ -182,13 +182,18 @@ COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/
 COPY config/spotifyd-dbus.conf /etc/dbus-1/system.d/
 
 # Configure Avahi
-RUN mkdir -p /run/avahi-daemon /var/run/dbus && \
+RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
     chmod 755 /run/avahi-daemon /var/run/dbus
 
 # FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
+COPY config/plum-snapcast.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/spotifyd.conf /app/config/
+
+# Make avahi config writable by snapcast user (for hostname updates via settings API)
+RUN chown snapcast:snapcast /etc/avahi/avahi-daemon.conf && \
+    chmod 644 /etc/avahi/avahi-daemon.conf
 
 
 # Create required directories
@@ -237,26 +242,10 @@ EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
 WORKDIR /app
 
 # Environment variables with defaults
+# Note: Integration settings (AirPlay, Bluetooth, Spotify, DLNA, Federation)
+# are managed via web UI and stored in settings.json. Only infrastructure
+# settings, Plexamp (separate container), and Snapclient (hardware) remain here.
 ENV TZ=Etc/UTC \
-    AIRPLAY_CONFIG_ENABLED=1 \
-    AIRPLAY_SOURCE_NAME=Airplay \
-    AIRPLAY_DEVICE_NAME="Plum Audio" \
-    SPOTIFY_CONFIG_ENABLED=0 \
-    SPOTIFY_SOURCE_NAME=Spotify \
-    SPOTIFY_DEVICE_NAME=Snapcast \
-    SPOTIFY_BITRATE=320 \
-    SPOTIFY_ACCESS_TOKEN="" \
-    BLUETOOTH_ENABLED=0 \
-    BLUETOOTH_SOURCE_NAME=Bluetooth \
-    BLUETOOTH_DEVICE_NAME="Plum Audio" \
-    BLUETOOTH_ADAPTER=hci0 \
-    BLUETOOTH_DEVICE_PATH="" \
-    BLUETOOTH_AUTO_PAIR=1 \
-    BLUETOOTH_DISCOVERABLE=1 \
-    DLNA_ENABLED=0 \
-    DLNA_SOURCE_NAME=DLNA \
-    DLNA_DEVICE_NAME="Plum Audio" \
-    DLNA_UUID="" \
     PLEXAMP_ENABLED=0 \
     PLEXAMP_SOURCE_NAME=Plexamp \
     PLEXAMP_CLAIM_TOKEN="" \
@@ -270,17 +259,11 @@ ENV TZ=Etc/UTC \
     META_SOURCES="" \
     HTTPS_ENABLED=1 \
     SKIP_CERT_GENERATION=0 \
-    CERT_SERVER_CN=snapserver \
-    CERT_SERVER_DNS="snapserver snapserver.local" \
     SNAPCLIENT_ENABLED=1 \
     SNAPCLIENT_HOST=localhost \
     SNAPCLIENT_SOUNDCARD=hw:Headphones \
     SNAPCLIENT_LATENCY=0 \
-    FEDERATION_ENABLED=0 \
-    FEDERATION_AUTO_DISCOVER=1 \
-    FEDERATION_LOCAL_NAME="Main Server" \
-    FEDERATION_API_PORT=5000 \
-    FEDERATION_MANUAL_SERVERS=""
+    FEDERATION_API_PORT=5000
 
 # Volume mount points
 VOLUME ["/app/config", "/app/data", "/app/certs"]

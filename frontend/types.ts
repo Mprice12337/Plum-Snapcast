@@ -42,6 +42,8 @@ export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red';
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface Settings {
+    deviceName: string;
+    hostname: string;
     integrations: {
         airplay: {
             enabled: boolean;
@@ -78,6 +80,5 @@ export interface Settings {
     federation: {
         enabled: boolean;
         autoDiscover: boolean;
-        localServerName: string;
     };
 }
