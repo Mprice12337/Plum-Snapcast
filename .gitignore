@@ -5,5 +5,8 @@ node_modules/
 dist/
 build/
 
+# Environment files (only .env.example should be committed)
+docker/.env
+
 # Development resources (not for version control)
 _resources/
