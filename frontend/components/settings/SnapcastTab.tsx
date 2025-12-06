@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import type {Server, Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
 import {ServerManager} from '../ServerManager';
@@ -14,22 +14,10 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
   onSettingsChange,
 }) => {
   const [servers, setServers] = useState<Server[]>([]);
-
-  // Local state for server name changes (like device name pattern)
-  const [localServerName, setLocalServerName] = useState(settings.federation.localServerName);
-  const [serverNameStatus, setServerNameStatus] = useState<'idle' | 'pending' | 'applying' | 'success' | 'error'>('idle');
-  const [serverNameMessage, setServerNameMessage] = useState('');
   const [isTogglingFederation, setIsTogglingFederation] = useState(false);
   const [isTogglingAutoDiscover, setIsTogglingAutoDiscover] = useState(false);
   const [isServerOperationInProgress, setIsServerOperationInProgress] = useState(false);
-
-  // Sync local state when settings change externally
-  useEffect(() => {
-    setLocalServerName(settings.federation.localServerName);
-  }, [settings.federation.localServerName]);
-
-  // Detect pending changes for server name
-  const serverNameChanged = localServerName !== settings.federation.localServerName;
+  const isTogglingFederationRef = useRef(false);
 
   const fetchServers = async () => {
     if (settings.federation.enabled) {
@@ -41,11 +29,16 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
   };
 
   useEffect(() => {
-    fetchServers();
+    // Only auto-fetch if not currently toggling (toggle handler manages the timing)
+    // Use ref to avoid race condition with state updates
+    if (!isTogglingFederationRef.current) {
+      fetchServers();
+    }
   }, [settings.federation.enabled]);
 
   const handleFederationToggle = async (enabled: boolean) => {
     setIsTogglingFederation(true);
+    isTogglingFederationRef.current = true;
     try {
       onSettingsChange({
         ...settings,
@@ -54,11 +47,48 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
           enabled,
         },
       });
+
+      // If enabling federation, wait for backend to restart and be ready
+      if (enabled) {
+        console.log('[Federation] Waiting for backend to be ready...');
+
+        // Poll the backend until it's ready (with timeout)
+        const maxAttempts = 20; // 20 attempts * 500ms = 10 seconds max
+        let attempt = 0;
+        let isReady = false;
+
+        while (attempt < maxAttempts && !isReady) {
+          attempt++;
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Check if federation service is healthy
+          const healthy = await federationService.checkHealth();
+          if (healthy) {
+            // Backend is healthy, now check if servers are connected
+            const serverList = await federationService.getServers();
+            const hasConnectedServers = serverList.some(s => s.connected);
+
+            if (hasConnectedServers) {
+              isReady = true;
+              console.log(`[Federation] Backend ready with ${serverList.length} server(s) after ${attempt * 0.5}s`);
+              // Update UI with the servers
+              setServers(serverList);
+            } else if (attempt === maxAttempts) {
+              console.error('Federation backend did not connect to local server in time');
+              throw new Error('Federation service started but could not connect to local server. Please try again.');
+            }
+          } else if (attempt === maxAttempts) {
+            console.error('Federation backend did not become ready in time');
+            throw new Error('Federation service did not start. Please try again.');
+          }
+        }
+      }
     } catch (error) {
       console.error('Failed to toggle federation:', error);
-      alert('Error toggling Multi-Server Control');
+      alert(error instanceof Error ? error.message : 'Error toggling Multi-Server Control');
     } finally {
       setIsTogglingFederation(false);
+      isTogglingFederationRef.current = false;
     }
   };
 
@@ -77,40 +107,6 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
       alert('Error toggling Auto-Discover');
     } finally {
       setIsTogglingAutoDiscover(false);
-    }
-  };
-
-  const handleApplyServerName = async () => {
-    if (!serverNameChanged) return;
-
-    setServerNameStatus('applying');
-    setServerNameMessage('Applying server name change...');
-
-    try {
-      onSettingsChange({
-        ...settings,
-        federation: {
-          ...settings.federation,
-          localServerName,
-        },
-      });
-
-      // Refresh server list after a delay to show updated name
-      setTimeout(() => {
-        fetchServers();
-      }, 1500);
-
-      setServerNameStatus('success');
-      setServerNameMessage('Server name updated successfully');
-
-      // Clear success message after 3 seconds
-      setTimeout(() => {
-        setServerNameStatus('idle');
-        setServerNameMessage('');
-      }, 3000);
-    } catch (error: any) {
-      setServerNameStatus('error');
-      setServerNameMessage(error.message || 'Error applying changes');
     }
   };
 
@@ -222,60 +218,10 @@ export const SnapcastTab: React.FC<SnapcastTabProps> = ({
                 </p>
               )}
 
-              <div>
-                <label className="block text-sm font-semibold text-[var(--text-primary)] mb-2">
-                  Local Server Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={localServerName}
-                    onChange={(e) => setLocalServerName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && serverNameChanged) {
-                        handleApplyServerName();
-                      }
-                    }}
-                    placeholder="e.g., Main Server"
-                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-color)] pr-20"
-                    disabled={serverNameStatus === 'applying'}
-                  />
-                  {serverNameChanged && (
-                    <button
-                      onClick={handleApplyServerName}
-                      disabled={serverNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] text-white rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {serverNameStatus === 'applying' ? 'Applying...' : 'Apply'}
-                    </button>
-                  )}
-                </div>
-
-                {/* Status feedback */}
-                {serverNameMessage && (
-                  <p className={`text-xs mt-1 ${
-                    serverNameStatus === 'success'
-                      ? 'text-green-500'
-                      : serverNameStatus === 'error'
-                      ? 'text-red-500'
-                      : 'text-[var(--text-muted)]'
-                  }`}>
-                    {serverNameMessage}
-                  </p>
-                )}
-
-                {/* Pending changes indicator */}
-                {serverNameChanged && !serverNameMessage && (
-                  <p className="text-xs text-amber-500 mt-1">
-                    Pending changes - press Enter or click Apply
-                  </p>
-                )}
-
-                {!serverNameChanged && !serverNameMessage && (
-                  <p className="text-xs text-[var(--text-muted)] mt-1">
-                    This name will be visible to other servers on your network
-                  </p>
-                )}
+              <div className="pt-2">
+                <p className="text-sm text-[var(--text-muted)] mb-4">
+                  Server name is set in Settings → About → Device Settings. Other servers will see this device as "{settings.deviceName}".
+                </p>
               </div>
 
               <div>

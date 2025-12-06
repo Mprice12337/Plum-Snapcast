@@ -20,15 +20,20 @@ export class FederationService {
   }
 
   /**
-   * Health check - verify federation service is running
+   * Health check - verify federation service is running in full mode
+   * Note: This is called during polling, so failures are expected and silent
    */
   async checkHealth(): Promise<boolean> {
     try {
       const response = await fetch(`${this.baseUrl.replace('/federation', '')}/health`);
+      if (!response.ok) {
+        return false;
+      }
       const data = await response.json();
-      return data.status === 'healthy';
+      // Only return true if in full federation mode (not minimal mode)
+      return data.status === 'healthy' && data.service === 'federation';
     } catch (error) {
-      console.error('Federation health check failed:', error);
+      // Silent failure - this is expected during backend restarts
       return false;
     }
   }

@@ -35,7 +35,7 @@ class FederationService:
         self.running = False
 
         # Get configuration
-        self.local_server_name = config.get("local_name", "Main Server")
+        self.local_server_name = config.get("local_name", "Plum Snapcast")
         self.auto_discover = config.get("auto_discover", True)
         self.manual_servers = config.get("manual_servers", [])
         self.api_port = config.get("api_port", 5000)
@@ -54,7 +54,7 @@ class FederationService:
         # Settings monitoring
         self.settings_file = "/app/data/settings.json"
         self.settings_mtime = None
-        self.settings_check_interval = 2  # Check every 2 seconds
+        self.settings_check_interval = 1  # Check every 1 second
 
     def _generate_server_id(self, host: str) -> str:
         """Generate server ID from host"""
@@ -83,6 +83,14 @@ class FederationService:
                 settings = json.load(f)
                 federation_settings = settings.get("federation", {})
 
+            # Check if federation was disabled (requires restart to switch to minimal mode)
+            new_enabled = federation_settings.get("enabled", False)
+            if not new_enabled:
+                logger.warning("Federation disabled via settings - restarting service in minimal mode")
+                logger.warning("Service will restart automatically via supervisord")
+                self.stop()
+                sys.exit(0)
+
             # Check for auto-discover changes
             new_auto_discover = federation_settings.get("autoDiscover", True)
             if new_auto_discover != self.auto_discover:
@@ -103,8 +111,8 @@ class FederationService:
                         logger.info("Stopping auto-discovery")
                         self.discovery.stop()
 
-            # Check for local name changes
-            new_local_name = federation_settings.get("localServerName", "Main Server")
+            # Check for device name changes (used as local server name)
+            new_local_name = settings.get("deviceName", "Plum Snapcast")
             if new_local_name != self.local_server_name:
                 logger.info(f"Local server name changed: {self.local_server_name} -> {new_local_name}")
                 self.local_server_name = new_local_name
@@ -320,36 +328,49 @@ def load_config() -> Dict:
     config = {
         "enabled": os.getenv("FEDERATION_ENABLED", "0") == "1",
         "auto_discover": os.getenv("FEDERATION_AUTO_DISCOVER", "1") == "1",
-        "local_name": os.getenv("FEDERATION_LOCAL_NAME", "Main Server"),
+        "local_name": os.getenv("DEVICE_NAME", "Plum Snapcast"),
         "local_host": default_local_host,
         "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
         "manual_servers": []
     }
 
     # Override with settings.json if it exists (user preferences take precedence)
+    # Import here to avoid circular dependencies
     settings_file = "/app/data/settings.json"
-    if os.path.exists(settings_file):
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                federation_settings = settings.get("federation", {})
+    try:
+        # Use SettingsManager to ensure settings.json is created with defaults
+        import sys
+        sys.path.insert(0, '/app/scripts')
+        from settings_api import SettingsManager
 
-                # Override enabled status
-                if "enabled" in federation_settings:
-                    config["enabled"] = federation_settings["enabled"]
+        logger.info("Loading settings using SettingsManager...")
+        settings_manager = SettingsManager(settings_file)
+        settings = settings_manager.get_settings()
+        logger.info(f"Settings loaded successfully. DeviceName: {settings.get('deviceName', 'NOT FOUND')}")
 
-                # Override auto-discover
-                if "autoDiscover" in federation_settings:
-                    config["auto_discover"] = federation_settings["autoDiscover"]
-                    logger.info(f"Auto-discover from settings.json: {config['auto_discover']}")
+        federation_settings = settings.get("federation", {})
 
-                # Override local name
-                if "localServerName" in federation_settings:
-                    config["local_name"] = federation_settings["localServerName"]
-                    logger.info(f"Local server name from settings.json: {config['local_name']}")
+        # Override enabled status
+        if "enabled" in federation_settings:
+            config["enabled"] = federation_settings["enabled"]
 
-        except Exception as e:
-            logger.warning(f"Failed to load settings.json: {e}")
+        # Override auto-discover
+        if "autoDiscover" in federation_settings:
+            config["auto_discover"] = federation_settings["autoDiscover"]
+            logger.info(f"Auto-discover from settings.json: {config['auto_discover']}")
+
+        # Use deviceName as local server name
+        if "deviceName" in settings:
+            config["local_name"] = settings["deviceName"]
+            logger.info(f"Local server name from settings.json deviceName: {config['local_name']}")
+        else:
+            logger.warning(f"deviceName not found in settings! Using env var fallback: {config['local_name']}")
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to load settings.json: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.warning(f"Falling back to env var for local_name: {config['local_name']}")
 
     # Parse manual servers from JSON env var
     manual_servers_json = os.getenv("FEDERATION_MANUAL_SERVERS", "")
@@ -380,11 +401,11 @@ def main():
 
     # Check if federation is enabled
     if not config["enabled"]:
-        logger.info("Federation is disabled (FEDERATION_ENABLED=0)")
+        logger.info("Federation is disabled")
         logger.info("Starting API server for settings and integrations (without federation features)")
 
         # Import here to avoid circular imports
-        from flask import Flask
+        from flask import Flask, jsonify
         from flask_cors import CORS
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from settings_api import create_settings_blueprint, SettingsManager
@@ -393,6 +414,12 @@ def main():
         # Create minimal Flask app with just settings and integrations APIs
         app = Flask(__name__)
         CORS(app)
+
+        # Add health endpoint (returns different status than full federation mode)
+        @app.route("/api/health", methods=["GET"])
+        def health():
+            """Health check endpoint - minimal mode"""
+            return jsonify({"status": "healthy", "service": "minimal", "federation": False})
 
         # Register settings API
         settings_manager = SettingsManager()
@@ -406,6 +433,39 @@ def main():
         app.register_blueprint(integrations_bp)
         logger.info("Integrations API registered")
 
+        # Start settings monitor to watch for federation being enabled
+        settings_file = "/app/data/settings.json"
+        settings_mtime = None
+        running = True
+
+        def minimal_mode_settings_monitor():
+            """Monitor for federation being enabled, restart if needed"""
+            nonlocal settings_mtime, running
+            logger.info("Minimal mode settings monitor started")
+            while running:
+                try:
+                    if os.path.exists(settings_file):
+                        current_mtime = os.path.getmtime(settings_file)
+                        if settings_mtime is None:
+                            settings_mtime = current_mtime
+                        elif current_mtime != settings_mtime:
+                            settings_mtime = current_mtime
+                            with open(settings_file, 'r') as f:
+                                settings = json.load(f)
+                                federation_enabled = settings.get("federation", {}).get("enabled", False)
+                                if federation_enabled:
+                                    logger.warning("Federation enabled via settings - restarting service in full mode")
+                                    logger.warning("Service will restart automatically via supervisord")
+                                    running = False
+                                    os._exit(0)  # Force exit to trigger supervisord restart
+                except Exception as e:
+                    logger.error(f"Minimal mode settings monitor error: {e}")
+                time.sleep(1)  # Check every 1 second
+
+        monitor_thread = threading.Thread(target=minimal_mode_settings_monitor, daemon=True)
+        monitor_thread.start()
+        logger.info("Minimal mode settings monitor thread started")
+
         # Start API server
         api_port = config.get("api_port", 5000)
         logger.info(f"Starting API server on port {api_port}")
@@ -413,6 +473,7 @@ def main():
             app.run(host="0.0.0.0", port=api_port, debug=False, threaded=True)
         except KeyboardInterrupt:
             logger.info("Received shutdown signal")
+            running = False
             sys.exit(0)
         return
 
