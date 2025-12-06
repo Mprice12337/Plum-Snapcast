@@ -36,7 +36,7 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
             case 'visualizer':
                 return <VisualizerTab settings={settings} onSettingsChange={onSettingsChange} />;
             case 'about':
-                return <AboutTab />;
+                return <AboutTab settings={settings} onSettingsChange={onSettingsChange} />;
             default:
                 return null;
         }

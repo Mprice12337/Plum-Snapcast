@@ -24,6 +24,8 @@ const DEFAULT_LOCAL_SETTINGS = {
 // Default server settings (should match backend defaults)
 const DEFAULT_SERVER_SETTINGS = {
   version: 1,  // Version for change detection
+  deviceName: 'Plum Snapcast',
+  hostname: 'plum-snapcast',
   integrations: {
     airplay: {
       enabled: true,
@@ -53,11 +55,12 @@ const DEFAULT_SERVER_SETTINGS = {
   federation: {
     enabled: false,
     autoDiscover: true,
-    localServerName: 'Snapcast Server',
   },
 };
 
 interface ServerSettings {
+  deviceName: Settings['deviceName'];
+  hostname: Settings['hostname'];
   integrations: Settings['integrations'];
   federation: Settings['federation'];
 }
@@ -167,6 +170,8 @@ class SettingsService {
     const data = await response.json();
     this.serverSettings = {
       version: data.version || 1,
+      deviceName: data.deviceName || DEFAULT_SERVER_SETTINGS.deviceName,
+      hostname: data.hostname || DEFAULT_SERVER_SETTINGS.hostname,
       integrations: data.integrations || DEFAULT_SERVER_SETTINGS.integrations,
       federation: data.federation || DEFAULT_SERVER_SETTINGS.federation,
     };
@@ -223,6 +228,8 @@ class SettingsService {
 
       const data = await response.json();
       this.serverSettings = {
+        deviceName: data.deviceName || this.serverSettings.deviceName,
+        hostname: data.hostname || this.serverSettings.hostname,
         integrations: data.integrations || this.serverSettings.integrations,
         federation: data.federation || this.serverSettings.federation,
       };
@@ -267,6 +274,12 @@ class SettingsService {
     const serverUpdates: Partial<ServerSettings> = {};
     const localUpdates: Partial<LocalSettings> = {};
 
+    if (updates.deviceName !== undefined) {
+      serverUpdates.deviceName = updates.deviceName;
+    }
+    if (updates.hostname !== undefined) {
+      serverUpdates.hostname = updates.hostname;
+    }
     if (updates.integrations) {
       serverUpdates.integrations = updates.integrations;
     }

@@ -17,44 +17,23 @@ services:
     # - /dev/hci0:/dev/hci0
     environment:
       - TZ=${TZ:-America/Los_Angeles}
-      - AIRPLAY_CONFIG_ENABLED=1
-      - AIRPLAY_SOURCE_NAME=Airplay
-      - AIRPLAY_DEVICE_NAME=${AIRPLAY_DEVICE_NAME:-Plum Audio}
-      - BLUETOOTH_ENABLED=${BLUETOOTH_ENABLED:-0}
-      - BLUETOOTH_SOURCE_NAME=Bluetooth
-      - BLUETOOTH_DEVICE_NAME=${BLUETOOTH_DEVICE_NAME:-Plum Audio}
-      - BLUETOOTH_ADAPTER=${BLUETOOTH_ADAPTER:-hci0}
-      - BLUETOOTH_DEVICE_PATH=${BLUETOOTH_DEVICE_PATH:-}
-      - BLUETOOTH_AUTO_PAIR=${BLUETOOTH_AUTO_PAIR:-1}
-      - BLUETOOTH_DISCOVERABLE=${BLUETOOTH_DISCOVERABLE:-1}
-      - SPOTIFY_CONFIG_ENABLED=${SPOTIFY_CONFIG_ENABLED:-0}
-      - SPOTIFY_SOURCE_NAME=Spotify
-      - SPOTIFY_DEVICE_NAME=${SPOTIFY_DEVICE_NAME:-Plum Audio}
-      - SPOTIFY_BITRATE=${SPOTIFY_BITRATE:-320}
-      - SPOTIFY_ACCESS_TOKEN=${SPOTIFY_ACCESS_TOKEN:-}
-      - DLNA_ENABLED=${DLNA_ENABLED:-0}
-      - DLNA_SOURCE_NAME=${DLNA_SOURCE_NAME:-DLNA}
-      - DLNA_DEVICE_NAME=${DLNA_DEVICE_NAME:-Plum Audio}
-      - DLNA_UUID=${DLNA_UUID:-}
+      # Plexamp settings (separate container, requires env config)
       - PLEXAMP_ENABLED=${PLEXAMP_ENABLED:-0}
       - PLEXAMP_SOURCE_NAME=${PLEXAMP_SOURCE_NAME:-Plexamp}
       - PLEXAMP_CLAIM_TOKEN=${PLEXAMP_CLAIM_TOKEN:-}
       - PLEXAMP_SERVER_NAME=${PLEXAMP_SERVER_NAME:-Plum Audio}
+      # Infrastructure settings
       - PIPE_CONFIG_ENABLED=0
       - META_CONFIG_ENABLED=0
       - HTTPS_ENABLED=1
       - SKIP_CERT_GENERATION=0
-      - CERT_SERVER_CN=snapserver
-      - CERT_SERVER_DNS=snapserver snapserver.local ${HOSTNAME:-raspberrypi}.local
+      # Snapclient settings (hardware-specific)
       - SNAPCLIENT_ENABLED=1
       - SNAPCLIENT_HOST=localhost
       - SNAPCLIENT_SOUNDCARD=${SNAPCLIENT_SOUNDCARD:-hw:Headphones}
       - SNAPCLIENT_LATENCY=0
-      - FEDERATION_ENABLED=${FEDERATION_ENABLED:-0}
-      - FEDERATION_AUTO_DISCOVER=${FEDERATION_AUTO_DISCOVER:-1}
-      - FEDERATION_LOCAL_NAME=${FEDERATION_LOCAL_NAME:-Main Server}
+      # Federation API port (integration/federation settings managed via web UI)
       - FEDERATION_API_PORT=${FEDERATION_API_PORT:-5001}
-      - FEDERATION_MANUAL_SERVERS=${FEDERATION_MANUAL_SERVERS:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - snapcast-config:/app/config

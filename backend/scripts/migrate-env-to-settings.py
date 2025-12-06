@@ -36,8 +36,20 @@ def main():
         print(f"\n• No existing settings file found at {SETTINGS_FILE}")
         print("  Creating new settings from environment variables...")
 
+    # Helper to sanitize hostname from device name
+    def sanitize_hostname(device_name):
+        """Convert device name to valid hostname (lowercase, alphanumeric + hyphens)"""
+        hostname = device_name.lower()
+        hostname = ''.join(c if c.isalnum() or c == '-' else '-' for c in hostname)
+        hostname = hostname.strip('-')
+        hostname = hostname[:63]  # DNS label max length
+        return hostname if hostname else "plum-snapcast"
+
     # Build settings from environment variables
+    default_device_name = "Plum Snapcast"
     settings = {
+        "deviceName": existing_settings.get("deviceName", default_device_name),
+        "hostname": existing_settings.get("hostname", sanitize_hostname(default_device_name)),
         "integrations": {
             "airplay": {
                 "enabled": bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True),
@@ -66,8 +78,8 @@ def main():
         },
         "federation": {
             "enabled": bool_from_env(os.getenv("FEDERATION_ENABLED"), False),
-            "autoDiscover": bool_from_env(os.getenv("FEDERATION_AUTO_DISCOVER"), True),
-            "localServerName": os.getenv("FEDERATION_LOCAL_NAME", "Snapcast Server")
+            "autoDiscover": bool_from_env(os.getenv("FEDERATION_AUTO_DISCOVER"), True)
+            # localServerName removed - now uses deviceName
         }
     }
 
