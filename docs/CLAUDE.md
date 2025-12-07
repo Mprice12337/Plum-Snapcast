@@ -116,12 +116,18 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - Client-side audio progress prediction (useAudioSync)
 - Server-side settings persistence (settings.json)
 - Dynamic service control via supervisorctl
+- Dynamic stream lifecycle management (AirPlay)
 
 **Metadata Flow**: Source → Service → JSON files/D-Bus → Control script → Snapcast properties → WebSocket → Frontend
 
 **Settings Flow**: Frontend → settingsService.ts → settings_api.py → /app/data/settings.json
 
 **Integration Control**: Frontend → integrationsService.ts → integrations_api.py → supervisorctl → Service restart
+
+**Dynamic Stream Management** (AirPlay):
+- **Always Discoverable**: shairport-sync runs continuously → AirPlay visible on network
+- **Stream Lifecycle**: stream-lifecycle-manager monitors metadata events → Creates Snapcast stream on client connect (`pbeg`) → Removes after 5min idle timeout on disconnect (`pend`)
+- **Benefits**: Reduces clutter (no empty streams), maintains discoverability, smart timeout prevents premature removal
 
 ---
 

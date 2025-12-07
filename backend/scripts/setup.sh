@@ -90,11 +90,11 @@ port = 1704
 datadir = /app/data
 SNAPCONF
 
-    # Add AirPlay source to [stream] section
+    # AirPlay source is now managed dynamically by stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on client activity
+    # This keeps AirPlay discoverable but only creates Snapcast stream when active
     if [ "${AIRPLAY_CONFIG_ENABLED}" = "1" ]; then
-        echo "Adding AirPlay source..."
-        # Insert source after [stream] line with control script for metadata
-        sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+        echo "AirPlay stream managed dynamically by lifecycle manager"
     fi
 
     # Add Spotify source to [stream] section
