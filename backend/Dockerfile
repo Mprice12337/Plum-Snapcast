@@ -224,6 +224,10 @@ COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
     chown -R snapcast:snapcast /app
 
+# Copy control scripts to Snapserver plug-ins directory (required for dynamic stream management)
+RUN cp /app/scripts/airplay-control-script.py /usr/share/snapserver/plug-ins/ && \
+    chmod +x /usr/share/snapserver/plug-ins/airplay-control-script.py
+
 # Replace snapweb index.html with redirect to port 3000
 # This preserves API/WebSocket functionality on /jsonrpc while redirecting browsers to our React GUI
 COPY config/redirect-index.html /usr/share/snapserver/snapweb/index.html

@@ -37,7 +37,7 @@ IDLE_TIMEOUT = 300  # 5 minutes - time to wait after stream ends before removing
 # Stream configuration
 AIRPLAY_STREAM_ID = "AirPlay"
 AIRPLAY_FIFO_PATH = "/tmp/snapfifo"
-AIRPLAY_CONTROL_SCRIPT = "/app/scripts/airplay-control-script.py"
+AIRPLAY_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/airplay-control-script.py"
 
 
 class StreamState(Enum):

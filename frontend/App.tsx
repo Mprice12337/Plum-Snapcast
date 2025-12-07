@@ -427,28 +427,44 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
             // Handle refresh signal - fetch latest state for all streams
             if (playbackStatus === 'REFRESH') {
+                console.log('[PlaybackState] REFRESH signal - refetching full server status');
                 // Fetch latest state for all streams
                 const serverStatus = await snapcastService.getServerStatus();
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
-                    setStreams(prevStreams =>
-                        prevStreams.map(stream => {
-                            // Strip federation prefix for server stream lookup
-                            const localStreamId = getLocalStreamId(stream.id);
+                    // Get all current stream IDs (without federation prefix)
+                    const currentStreamIds = new Set(streams.map(s => getLocalStreamId(s.id)));
+                    const newStreamIds = new Set(serverStatus.server.streams.map((s: any) => s.id));
 
-                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
-                            if (serverStream) {
-                                const isPlaying = snapcastService.isStreamPlaying(serverStream);
-                                if (stream.isPlaying !== isPlaying) {
-                                    console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                    // Check if streams have been added or removed
+                    const streamsAdded = [...newStreamIds].some(id => !currentStreamIds.has(id));
+                    const streamsRemoved = [...currentStreamIds].some(id => !newStreamIds.has(id));
+
+                    if (streamsAdded || streamsRemoved) {
+                        console.log('[PlaybackState] Stream list changed - refetching all data');
+                        // If streams were added/removed, refetch everything
+                        await fetchData();
+                    } else {
+                        // Just update playback state for existing streams
+                        setStreams(prevStreams =>
+                            prevStreams.map(stream => {
+                                // Strip federation prefix for server stream lookup
+                                const localStreamId = getLocalStreamId(stream.id);
+
+                                const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
+                                if (serverStream) {
+                                    const isPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (stream.isPlaying !== isPlaying) {
+                                        console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                    }
+                                    return {
+                                        ...stream,
+                                        isPlaying: isPlaying
+                                    };
                                 }
-                                return {
-                                    ...stream,
-                                    isPlaying: isPlaying
-                                };
-                            }
-                            return stream;
-                        })
-                    );
+                                return stream;
+                            })
+                        );
+                    }
                 }
                 return;
             }
