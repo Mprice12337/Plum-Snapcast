@@ -136,13 +136,14 @@ class SnapserverClient:
 class StreamLifecycleManager:
     """Manages AirPlay stream lifecycle based on client activity"""
 
-    def __init__(self, snapserver_client: SnapserverClient):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
         self.client = snapserver_client
+        self.idle_timeout = idle_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
 
-        log("Initialized - starting in IDLE state")
+        log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
     def on_stream_begin(self):
         """Handle pbeg (play stream begin) event"""
@@ -168,7 +169,7 @@ class StreamLifecycleManager:
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
                 # Client disconnected - start timeout before removal
-                log(f"Event: Stream END (pend) - State: ACTIVE → TIMEOUT ({IDLE_TIMEOUT}s)")
+                log(f"Event: Stream END (pend) - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
                 self._start_timeout()
                 self.state = StreamState.TIMEOUT
 
@@ -206,10 +207,10 @@ class StreamLifecycleManager:
         self._cancel_timeout()
 
         # Start new timer
-        self.timeout_timer = threading.Timer(IDLE_TIMEOUT, self._on_timeout_expired)
+        self.timeout_timer = threading.Timer(self.idle_timeout, self._on_timeout_expired)
         self.timeout_timer.daemon = True
         self.timeout_timer.start()
-        log(f"Timeout timer started ({IDLE_TIMEOUT}s)")
+        log(f"Timeout timer started ({self.idle_timeout}s)")
 
     def _cancel_timeout(self):
         """Cancel pending timeout timer"""
@@ -312,28 +313,27 @@ class MetadataMonitor:
 
 def main():
     parser = argparse.ArgumentParser(description='Stream lifecycle manager for Snapcast')
-    parser.add_argument('--snapserver-host', default=SNAPSERVER_HOST, help='Snapserver host')
-    parser.add_argument('--snapserver-port', type=int, default=SNAPSERVER_PORT, help='Snapserver port')
-    parser.add_argument('--idle-timeout', type=int, default=IDLE_TIMEOUT, help='Idle timeout in seconds')
+    parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
+    parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
+    parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
 
     args = parser.parse_args()
 
-    # Update globals
-    global SNAPSERVER_HOST, SNAPSERVER_PORT, IDLE_TIMEOUT
-    SNAPSERVER_HOST = args.snapserver_host
-    SNAPSERVER_PORT = args.snapserver_port
-    IDLE_TIMEOUT = args.idle_timeout
+    # Use local variables instead of modifying globals
+    snapserver_host = args.snapserver_host
+    snapserver_port = args.snapserver_port
+    idle_timeout = args.idle_timeout
 
     log("=== Stream Lifecycle Manager Starting ===")
-    log(f"Snapserver: {SNAPSERVER_HOST}:{SNAPSERVER_PORT}")
-    log(f"Idle timeout: {IDLE_TIMEOUT}s")
+    log(f"Snapserver: {snapserver_host}:{snapserver_port}")
+    log(f"Idle timeout: {idle_timeout}s")
     log(f"Monitoring: {METADATA_PIPE}")
 
     # Create Snapserver client
-    snapserver = SnapserverClient(SNAPSERVER_HOST, SNAPSERVER_PORT)
+    snapserver = SnapserverClient(snapserver_host, snapserver_port)
 
     # Create lifecycle manager
-    lifecycle = StreamLifecycleManager(snapserver)
+    lifecycle = StreamLifecycleManager(snapserver, idle_timeout)
 
     # Create metadata monitor
     monitor = MetadataMonitor(lifecycle)
