@@ -220,8 +220,16 @@ class BluetoothController:
 
     def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
         self.controller = integration_controller
-        # Bluetooth requires multiple services
-        self.services = ["bluetoothd", "bluetooth-init", "bluealsa", "bluealsa-aplay", "bluetooth-monitor"]
+        # Bluetooth requires multiple services including dynamic lifecycle management
+        self.services = [
+            "bluetoothd",
+            "bluetooth-init",
+            "bluealsa",
+            "bluealsa-aplay",
+            "bluetooth-monitor",
+            "bluetooth-fifo-keeper",
+            "bluetooth-stream-lifecycle-manager"
+        ]
         self.adapter = "hci0"
         self.settings_manager = settings_manager or SettingsManager()
 
