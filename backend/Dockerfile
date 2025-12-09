@@ -181,6 +181,10 @@ RUN mkdir -p /etc/dbus-1/system.d
 COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/
 COPY config/spotifyd-dbus.conf /etc/dbus-1/system.d/
 
+# Copy BlueZ configuration for "Just Works" pairing support (iOS devices)
+RUN mkdir -p /etc/bluetooth
+COPY config/main.conf /etc/bluetooth/main.conf
+
 # Configure Avahi
 RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
     chmod 755 /run/avahi-daemon /var/run/dbus
