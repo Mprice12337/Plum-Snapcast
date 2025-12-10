@@ -4,8 +4,8 @@ Bluetooth Connection Monitor
 Monitors Bluetooth device connections and resets discoverable mode when devices disconnect.
 This ensures the adapter stays discoverable for new devices when "Always discoverable" is enabled.
 
-Also removes paired devices after they've been disconnected for a timeout period, allowing
-devices that have "forgotten" the pairing on their side to successfully re-pair.
+Pairing persistence is handled by the bluetooth-stream-lifecycle-manager via BlueZ trust/pair.
+Paired devices remain indefinitely until manually removed by the user.
 """
 
 import json
@@ -13,7 +13,6 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
 
 # Setup logging
 logging.basicConfig(
@@ -23,7 +22,6 @@ logging.basicConfig(
 logger = logging.getLogger("bt-monitor")
 
 SETTINGS_FILE = Path("/app/data/settings.json")
-DISCONNECT_TIMEOUT = 60  # Remove devices after 60 seconds of being disconnected
 
 
 def get_discoverable_setting():
@@ -67,56 +65,6 @@ def get_connected_devices():
     return []
 
 
-def get_paired_devices():
-    """Get list of all paired Bluetooth devices"""
-    try:
-        result = subprocess.run(
-            ["bluetoothctl", "devices", "Paired"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-
-        if result.returncode == 0:
-            # Parse output - format is "Device XX:XX:XX:XX:XX:XX DeviceName"
-            devices = []
-            for line in result.stdout.strip().split('\n'):
-                if line.startswith('Device '):
-                    parts = line.split(maxsplit=2)
-                    if len(parts) >= 2:
-                        mac = parts[1]
-                        name = parts[2] if len(parts) > 2 else "Unknown"
-                        devices.append((mac, name))
-            return devices
-
-    except Exception as e:
-        logger.error(f"Failed to get paired devices: {e}")
-
-    return []
-
-
-def remove_device(mac: str):
-    """Remove a device from the paired devices list"""
-    try:
-        result = subprocess.run(
-            ["bluetoothctl", "remove", mac],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        if result.returncode == 0:
-            logger.info(f"Successfully removed device {mac}")
-            return True
-        else:
-            logger.error(f"Failed to remove device {mac}: {result.stderr}")
-            return False
-
-    except Exception as e:
-        logger.error(f"Failed to remove device {mac}: {e}")
-        return False
-
-
 def set_discoverable():
     """Set the Bluetooth adapter to discoverable mode"""
     try:
@@ -145,10 +93,9 @@ def main():
     """Main monitoring loop"""
     logger.info("Bluetooth connection monitor starting")
     logger.info("Monitoring for device disconnections to reset discoverable mode")
-    logger.info(f"Devices will be removed after {DISCONNECT_TIMEOUT} seconds of being disconnected")
+    logger.info("Pairing persistence is managed by bluetooth-stream-lifecycle-manager")
 
     previous_devices = set()
-    disconnect_times = {}  # Track when devices disconnected
 
     while True:
         try:
@@ -169,10 +116,6 @@ def main():
                 logger.info(f"Detected device disconnection: {disconnected}")
                 logger.info("Resetting adapter to discoverable mode")
 
-                # Track disconnection time for these devices
-                for mac in disconnected:
-                    disconnect_times[mac] = datetime.now()
-
                 # Wait a moment for the connection to fully close
                 time.sleep(2)
 
@@ -183,25 +126,6 @@ def main():
             newly_connected = current_devices - previous_devices
             if newly_connected:
                 logger.info(f"Detected device connection: {newly_connected}")
-                # Remove from disconnect tracking if they reconnected
-                for mac in newly_connected:
-                    if mac in disconnect_times:
-                        del disconnect_times[mac]
-
-            # Check for devices that have been disconnected too long
-            now = datetime.now()
-            devices_to_remove = []
-            for mac, disconnect_time in list(disconnect_times.items()):
-                if now - disconnect_time > timedelta(seconds=DISCONNECT_TIMEOUT):
-                    devices_to_remove.append(mac)
-
-            # Remove devices that have been disconnected too long
-            for mac in devices_to_remove:
-                logger.info(f"Device {mac} has been disconnected for {DISCONNECT_TIMEOUT}s, removing from paired list")
-                if remove_device(mac):
-                    del disconnect_times[mac]
-                    # Also ensure adapter is still discoverable after removing device
-                    set_discoverable()
 
             previous_devices = current_devices
 

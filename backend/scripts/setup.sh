@@ -97,26 +97,23 @@ SNAPCONF
         echo "AirPlay stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Spotify source to [stream] section
+    # Spotify source is now managed dynamically by spotify-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on playback state
+    # This keeps Spotify Connect discoverable but only creates Snapcast stream when playing
     if [ "${SPOTIFY_CONFIG_ENABLED}" = "1" ]; then
-        echo "Adding Spotify source..."
-        # Insert source after [stream] line with control script for metadata
-        sed -i '/^\[stream\]/a source = pipe:///tmp/spotifyfifo?name='"${SPOTIFY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/spotify-control-script.py' /app/config/snapserver.conf
+        echo "Spotify stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Bluetooth source to [stream] section
-    # Always add the source - it will only be available when services are running
-    echo "Adding Bluetooth source..."
-    # Insert source after [stream] line with control script for metadata
-    # Bluetooth audio is typically 44.1kHz/16-bit stereo
-    sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
+    # Bluetooth source is now managed dynamically by bluetooth-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on device connections
+    # This keeps Bluetooth discoverable but only creates Snapcast stream when devices connect
+    if [ "${BLUETOOTH_CONFIG_ENABLED}" = "1" ]; then
+        echo "Bluetooth stream managed dynamically by lifecycle manager"
+    fi
 
-    # Add DLNA source to [stream] section
+    # DLNA source is now managed dynamically by dlna-stream-lifecycle-manager
     if [ "${DLNA_ENABLED}" = "1" ]; then
-        echo "Adding DLNA/UPnP source..."
-        # Insert source after [stream] line with control script for metadata
-        # DLNA audio is typically 44.1kHz/16-bit stereo (can vary based on source)
-        sed -i '/^\[stream\]/a source = pipe:///tmp/dlna-fifo?name='"${DLNA_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/dlna-control-script.py' /app/config/snapserver.conf
+        echo "DLNA stream managed dynamically by lifecycle manager"
     fi
 
     # Add Plexamp source to [stream] section
@@ -143,10 +140,12 @@ if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then
     fi
 fi
 
-# Update shairport-sync device name
+# Update shairport-sync device name and copy config to /etc
 if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
     sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
 fi
+# Copy shairport-sync config to /etc (even if name wasn't updated)
+cp /app/config/shairport-sync.conf /etc/shairport-sync.conf
 
 # Note: Federation API server always runs to provide Settings API
 # Federation features (multi-server control) are enabled/disabled via settings

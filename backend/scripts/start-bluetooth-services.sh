@@ -84,6 +84,13 @@ if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
     start_service bluetooth-monitor
     sleep 1
 
+    # Start dynamic stream lifecycle management
+    start_service bluetooth-fifo-keeper
+    sleep 1
+
+    start_service bluetooth-stream-lifecycle-manager
+    sleep 2
+
     echo "==========================================="
     echo "Bluetooth services startup complete!"
     echo "==========================================="

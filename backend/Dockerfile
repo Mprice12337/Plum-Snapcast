@@ -233,8 +233,12 @@ RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
 # Copy control scripts to Snapserver plug-ins directory (required for dynamic stream management)
 RUN cp /app/scripts/airplay-control-script.py /usr/share/snapserver/plug-ins/ && \
     cp /app/scripts/bluetooth-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/spotify-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/dlna-control-script.py /usr/share/snapserver/plug-ins/ && \
     chmod +x /usr/share/snapserver/plug-ins/airplay-control-script.py && \
-    chmod +x /usr/share/snapserver/plug-ins/bluetooth-control-script.py
+    chmod +x /usr/share/snapserver/plug-ins/bluetooth-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/spotify-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/dlna-control-script.py
 
 # Replace snapweb index.html with redirect to port 3000
 # This preserves API/WebSocket functionality on /jsonrpc while redirecting browsers to our React GUI

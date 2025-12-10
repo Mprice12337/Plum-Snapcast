@@ -1,60 +1,67 @@
 #!/usr/bin/env python3
 """
-Stream Lifecycle Manager for Plum-Snapcast
+Spotify Stream Lifecycle Manager for Plum-Snapcast
 
-Manages dynamic creation/removal of Snapcast streams based on source activity.
-Keeps audio services (AirPlay, Spotify, etc.) always discoverable but only
-creates Snapcast streams when clients are actively connected/playing.
+Manages dynamic creation/removal of Snapcast Spotify stream based on playback state.
+Keeps Spotify Connect always discoverable/available but only creates Snapcast stream
+when audio is actively playing.
 
 Features:
-- Hybrid detection approach for reliability:
-  * Monitors shairport-sync metadata pipe for instant session detection (pbeg, pend, disc, mden)
-  * Monitors Snapcast WebSocket for stream status changes (playing/idle)
-- Adds AirPlay stream to Snapserver when client connects
-- Removes stream after idle timeout when client disconnects
+- Monitors spotifyd D-Bus MPRIS interface for PlaybackStatus changes
+- Adds Spotify stream to Snapserver when playback starts (Playing)
+- Removes stream after idle timeout when playback stops (Paused/Stopped)
 - Event-driven timeout management (no polling)
 - Communicates with Snapserver via JSON-RPC 2.0 (HTTP + WebSocket)
+- Coordinates with FIFO keeper to prevent spotifyd blocking
 """
 
 import argparse
-import base64
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
 from enum import Enum
-from pathlib import Path
 from typing import Optional
 import http.client
 import websocket
 
+# Try to import D-Bus - graceful fallback if not available
+try:
+    import dbus
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+    DBUS_AVAILABLE = True
+except ImportError:
+    DBUS_AVAILABLE = False
+    print("[Warning] D-Bus not available - Spotify lifecycle management disabled", file=sys.stderr)
+
 # Configuration
-METADATA_PIPE = "/tmp/shairport-sync-metadata"
 SNAPSERVER_HOST = "localhost"
 SNAPSERVER_PORT = 1780
-LOG_FILE = "/tmp/stream-lifecycle-manager.log"
+LOG_FILE = "/tmp/spotify-stream-lifecycle-manager.log"
 
 # Timeout configuration (in seconds)
-IDLE_TIMEOUT = 300  # 5 minutes - time to wait after stream ends before removing
+IDLE_TIMEOUT = 300  # 5 minutes - time to wait after playback stops before removing stream
 
 # Stream configuration
-AIRPLAY_STREAM_ID = "AirPlay"
-AIRPLAY_FIFO_PATH = "/tmp/snapfifo"
-AIRPLAY_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/airplay-control-script.py"
+SPOTIFY_STREAM_ID = "Spotify"
+SPOTIFY_FIFO_PATH = "/tmp/spotifyfifo"
+SPOTIFY_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/spotify-control-script.py"
 
 
 class StreamState(Enum):
     """Stream lifecycle states"""
-    IDLE = "idle"           # No stream exists, no client connected
-    ACTIVE = "active"       # Stream exists, client connected/playing
-    TIMEOUT = "timeout"     # Client disconnected, waiting before removal
+    IDLE = "idle"           # No stream exists, no playback
+    ACTIVE = "active"       # Stream exists, actively playing
+    TIMEOUT = "timeout"     # Playback stopped, waiting before removal
 
 
 def log(message: str):
     """Log to both stderr and a file"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    log_msg = f"{timestamp} [Lifecycle] {message}"
+    log_msg = f"{timestamp} [Spotify-Lifecycle] {message}"
     print(log_msg, file=sys.stderr, flush=True)
     try:
         with open(LOG_FILE, 'a') as f:
@@ -173,8 +180,8 @@ class SnapcastWebSocketMonitor:
                 stream = params.get("stream", {})
                 status = stream.get("status")
 
-                # Only process updates for our AirPlay stream
-                if stream_id == AIRPLAY_STREAM_ID and status:
+                # Only process updates for our Spotify stream
+                if stream_id == SPOTIFY_STREAM_ID and status:
                     log(f"WebSocket: Stream status update - {stream_id} = {status}")
 
                     if status == "idle":
@@ -232,7 +239,7 @@ class SnapcastWebSocketMonitor:
 
 
 class StreamLifecycleManager:
-    """Manages AirPlay stream lifecycle based on client activity"""
+    """Manages Spotify stream lifecycle based on playback state"""
 
     def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
         self.client = snapserver_client
@@ -243,39 +250,39 @@ class StreamLifecycleManager:
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
-    def on_stream_begin(self):
-        """Handle pbeg (play stream begin) event"""
+    def on_playback_started(self):
+        """Handle spotifyd playback started (Playing)"""
         with self.state_lock:
             if self.state == StreamState.IDLE:
                 # No stream exists - create it
-                log("Event: Stream BEGIN (pbeg) - State: IDLE → ACTIVE")
+                log("Event: Playback STARTED - State: IDLE → ACTIVE")
                 self._add_stream()
                 self.state = StreamState.ACTIVE
 
             elif self.state == StreamState.TIMEOUT:
                 # Stream exists but in timeout - cancel removal
-                log("Event: Stream BEGIN (pbeg) - State: TIMEOUT → ACTIVE")
+                log("Event: Playback STARTED - State: TIMEOUT → ACTIVE")
                 self._cancel_timeout()
                 self.state = StreamState.ACTIVE
 
             elif self.state == StreamState.ACTIVE:
                 # Stream already active
-                log("Event: Stream BEGIN (pbeg) - State: ACTIVE (no change)")
+                log("Event: Playback STARTED - State: ACTIVE (no change)")
 
-    def on_stream_end(self):
-        """Handle pend (play stream end) event"""
+    def on_playback_stopped(self):
+        """Handle spotifyd playback stopped (Paused/Stopped)"""
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
-                # Client disconnected - start timeout before removal
-                log(f"Event: Stream END (pend) - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
+                # Playback stopped - start timeout before removal
+                log(f"Event: Playback STOPPED - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
                 self._start_timeout()
                 self.state = StreamState.TIMEOUT
 
             elif self.state == StreamState.IDLE:
-                log("Event: Stream END (pend) - State: IDLE (no stream to remove)")
+                log("Event: Playback STOPPED - State: IDLE (no stream to remove)")
 
             elif self.state == StreamState.TIMEOUT:
-                log("Event: Stream END (pend) - State: TIMEOUT (already waiting)")
+                log("Event: Playback STOPPED - State: TIMEOUT (already waiting)")
 
     def on_status_idle(self):
         """Handle Snapcast status change to 'idle'"""
@@ -309,15 +316,15 @@ class StreamLifecycleManager:
                 log(f"Event: Status PLAYING (Snapcast) - State: {self.state.value} (no action)")
 
     def _add_stream(self):
-        """Add AirPlay stream to Snapserver"""
+        """Add Spotify stream to Snapserver"""
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
         stream_uri = (
-            f"pipe://{AIRPLAY_FIFO_PATH}"
-            f"?name={AIRPLAY_STREAM_ID}"
+            f"pipe://{SPOTIFY_FIFO_PATH}"
+            f"?name={SPOTIFY_STREAM_ID}"
             f"&sampleformat=44100:16:2"
             f"&codec=pcm"
-            f"&controlscript={AIRPLAY_CONTROL_SCRIPT}"
+            f"&controlscript={SPOTIFY_CONTROL_SCRIPT}"
         )
 
         # Add stream first - Snapserver will start reading from FIFO
@@ -328,19 +335,18 @@ class StreamLifecycleManager:
             return
 
         # Now stop FIFO keeper - Snapserver has taken over as the reader
-        # The keeper's current cat operation will complete and Snapserver becomes the primary reader
         self._stop_fifo_keeper()
 
     def _remove_stream(self):
-        """Remove AirPlay stream from Snapserver"""
-        success = self.client.remove_stream(AIRPLAY_STREAM_ID)
+        """Remove Spotify stream from Snapserver"""
+        success = self.client.remove_stream(SPOTIFY_STREAM_ID)
         if not success:
             log("ERROR: Failed to remove stream")
 
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
-        # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
+        # Start FIFO keeper to prevent spotifyd from blocking
         self._start_fifo_keeper()
 
     def _start_timeout(self):
@@ -373,40 +379,61 @@ class StreamLifecycleManager:
 
     def _stop_fifo_keeper(self):
         """Stop FIFO keeper via supervisorctl"""
-        import subprocess
         try:
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'airplay-fifo-keeper'],
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'spotify-fifo-keeper'],
                 capture_output=True,
+                text=True,
                 timeout=5
             )
-            log("FIFO keeper stopped")
+            if result.returncode == 0:
+                log("FIFO keeper stopped")
+            else:
+                log(f"FIFO keeper stop returned code {result.returncode}: {result.stdout} {result.stderr}")
         except Exception as e:
             log(f"Failed to stop FIFO keeper: {e}")
 
     def _start_fifo_keeper(self):
-        """Start FIFO keeper via supervisorctl"""
-        import subprocess
+        """Start FIFO keeper via supervisorctl
+
+        Uses restart instead of start to handle cases where the service
+        is in a failed/stopped state and won't start with 'start' command.
+        """
         try:
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'airplay-fifo-keeper'],
+            # First check if it's already running
+            status_result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'status', 'spotify-fifo-keeper'],
                 capture_output=True,
+                text=True,
                 timeout=5
             )
-            log("FIFO keeper started")
+
+            # Use restart to ensure it starts even if in weird state
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'spotify-fifo-keeper'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0 or 'started' in result.stdout.lower():
+                log("FIFO keeper started")
+            else:
+                log(f"FIFO keeper start returned code {result.returncode}")
+                log(f"  stdout: {result.stdout.strip()}")
+                log(f"  stderr: {result.stderr.strip()}")
+
         except Exception as e:
             log(f"Failed to start FIFO keeper: {e}")
 
     def _cleanup_control_scripts(self):
-        """Kill orphaned AirPlay control script processes
+        """Kill orphaned Spotify control script processes
 
         Snapcast spawns control scripts when streams are dynamically added but doesn't
-        clean them up when streams are removed. This causes multiple control scripts
-        to compete for FIFO reads, resulting in choppy audio.
+        clean them up when streams are removed.
         """
-        import subprocess
         try:
-            # Find all airplay-control-script.py processes
+            # Find all spotify-control-script.py processes
             result = subprocess.run(
                 ['ps', 'aux'],
                 capture_output=True,
@@ -416,7 +443,7 @@ class StreamLifecycleManager:
 
             killed_count = 0
             for line in result.stdout.splitlines():
-                if 'airplay-control-script.py' in line and 'grep' not in line:
+                if 'spotify-control-script.py' in line and 'grep' not in line:
                     # Extract PID (second column in ps aux output)
                     parts = line.split()
                     if len(parts) >= 2:
@@ -437,99 +464,148 @@ class StreamLifecycleManager:
             log(f"Failed to cleanup control scripts: {e}")
 
 
-class MetadataMonitor:
-    """Monitor shairport-sync metadata pipe for session events"""
+class SpotifyPlaybackMonitor:
+    """Monitor spotifyd D-Bus MPRIS interface for playback state changes"""
 
     def __init__(self, lifecycle_manager: StreamLifecycleManager):
         self.manager = lifecycle_manager
+        self.bus = None
+        self.current_playback_status = None
 
-    def parse_item(self, item_xml: str):
-        """Parse XML item and detect session events"""
+        if not DBUS_AVAILABLE:
+            log("[Spotify] D-Bus not available - monitoring disabled")
+            return
+
+        # Initialize D-Bus
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        # Use session bus if available, otherwise system bus
         try:
-            root = ET.fromstring(item_xml)
+            self.bus = dbus.SessionBus()
+            log("[Spotify] D-Bus monitor initialized (Session Bus)")
+        except:
+            try:
+                self.bus = dbus.SystemBus()
+                log("[Spotify] D-Bus monitor initialized (System Bus)")
+            except:
+                log("[Spotify] Failed to connect to any D-Bus")
+                self.bus = None
 
-            # Extract type and code
-            type_elem = root.find("type")
-            code_elem = root.find("code")
-            if code_elem is None:
+    def _properties_changed_handler(self, interface, changed, invalidated, sender):
+        """Handle D-Bus PropertiesChanged signals"""
+        try:
+            # We're interested in MediaPlayer2.Player interface
+            if interface != 'org.mpris.MediaPlayer2.Player':
                 return
 
-            item_type = bytes.fromhex(type_elem.text).decode('ascii', errors='ignore') if type_elem is not None else ""
-            code = bytes.fromhex(code_elem.text).decode('ascii', errors='ignore')
+            # Check if PlaybackStatus property changed
+            if 'PlaybackStatus' in changed:
+                playback_status = str(changed['PlaybackStatus']).lower()
+                log(f"[DBus] PlaybackStatus changed: {playback_status}")
 
-            # Check for session control events (ssnc type)
-            if item_type == "ssnc":
-                if code == "pbeg":
-                    # Play stream begin - client connected
-                    log("Metadata: pbeg (play stream begin)")
-                    self.manager.on_stream_begin()
+                if playback_status == 'playing':
+                    # Playback started
+                    if self.current_playback_status != 'playing':
+                        self.current_playback_status = 'playing'
+                        log(f"[DBus] Spotify started playing")
+                        self.manager.on_playback_started()
+                elif playback_status in ['paused', 'stopped']:
+                    # Playback stopped
+                    if self.current_playback_status == 'playing':
+                        self.current_playback_status = playback_status
+                        log(f"[DBus] Spotify stopped/paused")
+                        self.manager.on_playback_stopped()
 
-                elif code == "pend":
-                    # Play stream end - client disconnected
-                    log("Metadata: pend (play stream end)")
-                    self.manager.on_stream_end()
-
-                elif code == "disc":
-                    # Client disconnected (alternative to pend for abrupt disconnects)
-                    log("Metadata: disc (client disconnected)")
-                    self.manager.on_stream_end()
-
-                elif code == "mden":
-                    # Metadata end - session ending
-                    log("Metadata: mden (metadata stream end)")
-                    self.manager.on_stream_end()
-
-        except ET.ParseError:
-            # Expected when buffer cuts mid-XML
-            pass
         except Exception as e:
-            log(f"Parse error: {e}")
+            log(f"[Error] Properties changed handler failed: {e}")
 
-    def run(self):
-        """Monitor metadata pipe"""
-        log(f"Starting metadata monitor: {METADATA_PIPE}")
+    def _scan_for_players(self):
+        """Scan for existing spotifyd player on D-Bus"""
+        if not self.bus:
+            return
 
-        # Wait for pipe
-        while not Path(METADATA_PIPE).exists():
-            log(f"Waiting for metadata pipe: {METADATA_PIPE}")
-            time.sleep(1)
-
-        log(f"Metadata pipe found: {METADATA_PIPE}")
-
-        # Read pipe line-by-line
-        tmp = ""
         try:
-            while True:
-                with open(METADATA_PIPE, 'r') as pipe:
-                    for line in pipe:
-                        strip_line = line.strip()
+            # Get list of all D-Bus names
+            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
+            all_names = bus_interface.ListNames()
 
-                        if strip_line.endswith("</item>"):
-                            # Complete item
-                            item_xml = tmp + strip_line
-                            self.parse_item(item_xml)
-                            tmp = ""
+            # Look for any service starting with org.mpris.MediaPlayer2.spotifyd or librespot
+            prefixes = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
 
-                        elif strip_line.startswith("<item>"):
-                            # New item starting
-                            if tmp:
-                                # Previous item incomplete - try to close it
-                                item_xml = tmp + "</item>"
-                                self.parse_item(item_xml)
-                            tmp = strip_line
+            for name in all_names:
+                for prefix in prefixes:
+                    if name.startswith(prefix):
+                        try:
+                            player_obj = self.bus.get_object(name, '/org/mpris/MediaPlayer2')
+                            player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
 
-                        else:
-                            # Middle of item
-                            tmp += strip_line
+                            log(f"[DBus] ✓ Found Spotify player: {name}")
+
+                            # Get current playback status
+                            try:
+                                status = player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                                playback_status = str(status).lower()
+                                self.current_playback_status = playback_status
+                                log(f"[DBus] Current playback status: {playback_status}")
+
+                                # If already playing, trigger stream creation
+                                if playback_status == 'playing':
+                                    log(f"[DBus] Spotify already playing - creating stream")
+                                    self.manager.on_playback_started()
+
+                            except Exception as e:
+                                log(f"[DBus] Failed to get current playback status: {e}")
+
+                            return
+
+                        except dbus.DBusException as e:
+                            log(f"[DBus] Failed to connect to {name}: {e}")
+                            continue
+
+            log("[DBus] No Spotify player found yet (will monitor for connections)")
 
         except Exception as e:
-            log(f"Metadata monitor crashed: {e}")
-            import traceback
-            log(f"{traceback.format_exc()}")
+            log(f"[Error] Player scan failed: {e}")
+
+    def start(self):
+        """Start monitoring D-Bus for Spotify playback state changes"""
+        if not DBUS_AVAILABLE or not self.bus:
+            return
+
+        log("[Spotify] Starting playback state monitoring...")
+
+        try:
+            # Subscribe to PropertiesChanged signals from MPRIS
+            self.bus.add_signal_receiver(
+                self._properties_changed_handler,
+                dbus_interface='org.freedesktop.DBus.Properties',
+                signal_name='PropertiesChanged',
+                sender_keyword='sender'
+            )
+
+            log("[Spotify] Subscribed to MPRIS D-Bus signals")
+
+            # Scan for already running Spotify player
+            self._scan_for_players()
+
+            # Start GLib main loop in a thread
+            self.loop = GLib.MainLoop()
+            self.loop_thread = threading.Thread(target=self.loop.run, daemon=True)
+            self.loop_thread.start()
+
+            log("[Spotify] GLib main loop started")
+
+        except Exception as e:
+            log(f"[Error] Failed to start Spotify monitor: {e}")
+
+    def stop(self):
+        """Stop monitoring"""
+        if hasattr(self, 'loop'):
+            self.loop.quit()
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Stream lifecycle manager for Snapcast')
+    parser = argparse.ArgumentParser(description='Spotify stream lifecycle manager for Snapcast')
     parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
     parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
     parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
@@ -541,10 +617,14 @@ def main():
     snapserver_port = args.snapserver_port
     idle_timeout = args.idle_timeout
 
-    log("=== Stream Lifecycle Manager Starting ===")
+    log("=== Spotify Stream Lifecycle Manager Starting ===")
     log(f"Snapserver: {snapserver_host}:{snapserver_port}")
     log(f"Idle timeout: {idle_timeout}s")
-    log(f"Monitoring: {METADATA_PIPE}")
+    log("Monitoring spotifyd D-Bus MPRIS for PlaybackStatus changes")
+
+    if not DBUS_AVAILABLE:
+        log("ERROR: D-Bus not available - cannot monitor Spotify playback")
+        sys.exit(1)
 
     # Create Snapserver client
     snapserver = SnapserverClient(snapserver_host, snapserver_port)
@@ -556,20 +636,27 @@ def main():
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
     ws_monitor.start()
 
-    # Create metadata monitor
-    monitor = MetadataMonitor(lifecycle)
+    # Create and start Spotify playback monitor
+    spotify_monitor = SpotifyPlaybackMonitor(lifecycle)
 
     # Run monitor (blocks)
     try:
-        monitor.run()
+        spotify_monitor.start()
+
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+
     except KeyboardInterrupt:
         log("Shutting down...")
         ws_monitor.stop()
+        spotify_monitor.stop()
     except Exception as e:
         log(f"Fatal error: {e}")
         import traceback
         log(f"{traceback.format_exc()}")
         ws_monitor.stop()
+        spotify_monitor.stop()
 
 
 if __name__ == "__main__":
