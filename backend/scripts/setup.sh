@@ -121,6 +121,11 @@ SNAPCONF
     # This keeps Plexamp available but only creates Snapcast stream when playing
     if [ "${PLEXAMP_CONFIG_ENABLED}" = "1" ]; then
         echo "Plexamp stream managed dynamically by lifecycle manager"
+        # Enable autostart for the lifecycle manager
+        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
+    else
+        # Ensure autostart is disabled when Plexamp is not enabled
+        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
     fi
 fi
 
