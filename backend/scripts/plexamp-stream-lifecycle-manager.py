@@ -349,13 +349,16 @@ class StreamLifecycleManager:
         Check if Plexamp playback is active.
         Uses Snapcast stream status to detect actual audio flow.
         """
-        # Check if stream exists and is actively playing (not idle)
+        # Check stream status from Snapcast
         stream_status = self.snapserver.get_stream_status(self.stream_id)
-        if stream_status and stream_status != "idle":
-            return True
 
-        # If stream doesn't exist or is idle, check if Plexamp has a queue
-        # This helps detect when playback is about to start
+        # If stream exists, use Snapcast status to determine activity
+        # "idle" = no audio data flowing, "playing" = audio flowing
+        if stream_status is not None:
+            return stream_status != "idle"
+
+        # If stream doesn't exist (status is None), check if Plexamp has a queue
+        # This helps detect when playback is about to start (IDLE → ACTIVE transition)
         return self.plexamp_monitor.is_playing()
 
     def handle_idle_state(self):
