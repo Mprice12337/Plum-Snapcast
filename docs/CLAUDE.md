@@ -174,7 +174,7 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - **Bluetooth**: No album art (needs BlueZ 5.81+, Alpine has 5.70). SSP only (no PIN codes). Metadata via AVRCP.
 - **Spotify**: Uses spotifyd (not librespot) for D-Bus MPRIS. Patched with-avahi to avoid port conflicts. Album art cached to `/usr/share/snapserver/snapweb/coverart/`
 - **DLNA/UPnP**: gmrender-resurrect, GStreamer pipeline to 44.1kHz/16-bit stereo. Metadata from UPnP AVTransport.
-- **Plexamp**: Separate Debian container (glibc). Monitors PlayQueue.json for metadata. HTTP API for controls at localhost:32500. S16_LE/44.1kHz/stereo conversion via ALSA. Start with `docker compose --profile plexamp up -d`
+- **Plexamp**: Separate Debian container (glibc). Monitors PlayQueue.json for metadata. HTTP API for controls at localhost:32500. S16_LE/44.1kHz/stereo conversion via ALSA. Pinned to version 4.11.3 (4.12.x has HTTP server deadlock bug). Start with `docker compose --profile plexamp up -d`
 
 ### Network Architecture
 

@@ -38,11 +38,9 @@ RUN mkdir -p /opt/plexamp /app/plexamp /tmp/plexamp && \
 
 # Download and install Plexamp headless
 WORKDIR /tmp/plexamp
-RUN PLEXAMP_VERSION=$(curl -s https://plexamp.plex.tv/headless/version.json | jq -r '.latestVersion') && \
-    echo "Detected Plexamp version: ${PLEXAMP_VERSION}" && \
-    if [ -z "${PLEXAMP_VERSION}" ] || [ "${PLEXAMP_VERSION}" = "null" ]; then \
-        echo "ERROR: Failed to detect Plexamp version"; exit 1; \
-    fi && \
+# Pin to version 4.11.3 (4.12.x versions have HTTP server deadlock bug)
+RUN PLEXAMP_VERSION="4.11.3" && \
+    echo "Using pinned Plexamp version: ${PLEXAMP_VERSION}" && \
     echo "Downloading Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2..." && \
     curl -fSL "https://plexamp.plex.tv/headless/Plexamp-Linux-headless-v${PLEXAMP_VERSION}.tar.bz2" -o plexamp.tar.bz2 && \
     mkdir -p /opt/plexamp && \
