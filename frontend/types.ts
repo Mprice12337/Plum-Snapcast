@@ -67,6 +67,11 @@ export interface Settings {
             sourceName: string;
             deviceName: string;
         };
+        plexamp: {
+            available: boolean;
+            enabled: boolean;
+            sourceName: string;
+        };
         snapcast: boolean;
         visualizer: boolean;
     };

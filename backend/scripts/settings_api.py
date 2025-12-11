@@ -43,6 +43,11 @@ DEFAULT_SETTINGS = {
             "sourceName": "DLNA",
             "deviceName": "Plum Audio"
         },
+        "plexamp": {
+            "available": False,  # Determined by PLEXAMP_ENABLED env var
+            "enabled": False,    # User toggle (only when available)
+            "sourceName": "Plexamp"
+        },
         "snapcast": True,
         "visualizer": False
     },

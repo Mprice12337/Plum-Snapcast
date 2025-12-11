@@ -75,6 +75,13 @@ def main():
     print(f"export DLNA_SOURCE_NAME=\"{dlna.get('sourceName', 'DLNA')}\"")
     print(f"export DLNA_DEVICE_NAME=\"{dlna.get('deviceName', 'Plum Audio')}\"")
 
+    # Plexamp settings (only enable if both available AND enabled)
+    plexamp = integrations.get('plexamp', {})
+    plexamp_available = plexamp.get('available', False)
+    plexamp_enabled = plexamp.get('enabled', False)
+    print(f"export PLEXAMP_CONFIG_ENABLED={bool_to_env(plexamp_available and plexamp_enabled)}")
+    print(f"export PLEXAMP_SOURCE_NAME=\"{plexamp.get('sourceName', 'Plexamp')}\"")
+
     # Federation settings (global server settings, not browser-local)
     federation = settings.get('federation', {})
     print(f"export FEDERATION_ENABLED={bool_to_env(federation.get('enabled', False))}")
@@ -84,8 +91,8 @@ def main():
     device_name = settings.get('deviceName', 'Plum Snapcast')
     print(f"export DEVICE_NAME=\"{device_name}\"")
 
-    # Note: Plexamp settings remain in environment variables as per architecture decision
-    # Snapclient, network, and other settings also remain in environment variables
+    # Note: Snapclient, network, and other infrastructure settings remain in environment variables
+    # Plexamp availability is determined by PLEXAMP_ENABLED env var (checked in migrate script)
 
 if __name__ == "__main__":
     main()

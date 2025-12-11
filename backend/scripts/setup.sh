@@ -116,13 +116,11 @@ SNAPCONF
         echo "DLNA stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Plexamp source to [stream] section
-    # Note: Plexamp runs in separate Debian container, outputs to shared FIFO volume
-    if [ "${PLEXAMP_ENABLED}" = "1" ]; then
-        echo "Adding Plexamp source (sidecar container)..."
-        # Insert source after [stream] line with control script for metadata
-        # Plexamp outputs 44.1kHz/16-bit stereo (CD quality)
-        sed -i '/^\[stream\]/a source = pipe:///tmp/snapcast-fifos/plexamp-fifo?name='"${PLEXAMP_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/plexamp-control-script.py' /app/config/snapserver.conf
+    # Plexamp source is now managed dynamically by plexamp-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on playback state
+    # This keeps Plexamp available but only creates Snapcast stream when playing
+    if [ "${PLEXAMP_CONFIG_ENABLED}" = "1" ]; then
+        echo "Plexamp stream managed dynamically by lifecycle manager"
     fi
 fi
 

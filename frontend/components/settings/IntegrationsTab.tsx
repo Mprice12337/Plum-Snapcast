@@ -1,7 +1,7 @@
 import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
 import {Switch} from '../Switch';
-import {airplayService, bluetoothService, spotifyService, dlnaService} from '../../services/integrationsService';
+import {airplayService, bluetoothService, spotifyService, dlnaService, plexampService} from '../../services/integrationsService';
 import { Icon } from '../Icon';
 
 interface IntegrationsTabProps {
@@ -40,6 +40,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [dlnaNameStatus, setDlnaNameStatus] = useState<ApplyStatus>('idle');
   const [dlnaNameMessage, setDlnaNameMessage] = useState('');
   const [isTogglingDlna, setIsTogglingDlna] = useState(false);
+
+  // Plexamp state
+  const [isTogglingPlexamp, setIsTogglingPlexamp] = useState(false);
 
   // Update local state when settings change externally
   useEffect(() => {
@@ -424,6 +427,34 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         },
       },
     });
+  };
+
+  const handlePlexampToggle = async (enabled: boolean) => {
+    setIsTogglingPlexamp(true);
+    try {
+      const result = enabled
+        ? await plexampService.enable()
+        : await plexampService.disable();
+
+      if (result.success) {
+        onSettingsChange({
+          ...settings,
+          integrations: {
+            ...settings.integrations,
+            plexamp: {
+              ...settings.integrations.plexamp,
+              enabled,
+            },
+          },
+        });
+      } else {
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} Plexamp: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} Plexamp: ${error.message}`);
+    } finally {
+      setIsTogglingPlexamp(false);
+    }
   };
 
   const handleSimpleChange = (key: 'snapcast' | 'visualizer', value: boolean) => {
@@ -894,6 +925,51 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           )}
         </div>
 
+        {/* Plexamp */}
+        <div className={`p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)] ${!settings.integrations.plexamp.available ? 'opacity-50' : ''}`}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-6">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 flex justify-center">
+                  <Icon name="compact-disc" className="text-lg text-[var(--text-secondary)]" style={{ color: 'inherit' }} aria-hidden />
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={settings.integrations.plexamp.enabled}
+                    onChange={(e) => handlePlexampToggle(e.target.checked)}
+                    disabled={!settings.integrations.plexamp.available || isTogglingPlexamp}
+                    id="plexamp-toggle"
+                  />
+                  <label
+                    htmlFor="plexamp-toggle"
+                    className={`block w-12 h-6 rounded-full transition ${!settings.integrations.plexamp.available || isTogglingPlexamp ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${settings.integrations.plexamp.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'}`}
+                  >
+                    <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.plexamp.enabled ? 'translate-x-6' : ''}`}></div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold text-[var(--text-secondary)]">Plexamp</span>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  Plex music player integration
+                </p>
+                {!settings.integrations.plexamp.available && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Not configured - set PLEXAMP_ENABLED in .env file
+                  </p>
+                )}
+                {isTogglingPlexamp && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Processing... this may take up to 60 seconds
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Snapcast Stream */}
         <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
           <Switch
@@ -910,8 +986,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
       <div className="pt-4 mt-6 border-t border-[var(--border-color)]">
         <p className="text-xs text-[var(--text-muted)] italic">
-          Note: Plexamp configuration remains in environment variables (.env file).
-          Changes to these integration settings will be applied after container restart.
+          Note: Changes to integration settings will be applied after service restart.
         </p>
       </div>
     </div>
