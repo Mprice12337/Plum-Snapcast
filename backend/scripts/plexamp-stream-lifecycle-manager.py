@@ -202,8 +202,15 @@ class PlexampMonitor:
 
     def __init__(self):
         self.playqueue_file = PLEXAMP_PLAYQUEUE_FILE
-        self.last_modified = 0
-        log(f"Plexamp monitor initialized: {PLEXAMP_API_HOST}:{PLEXAMP_API_PORT}")
+        # Initialize last_modified to current file mtime (or current time if file doesn't exist)
+        # This ensures we only detect activity from changes AFTER monitor starts
+        if os.path.exists(self.playqueue_file):
+            self.last_modified = os.path.getmtime(self.playqueue_file)
+            log(f"Plexamp monitor initialized: existing PlayQueue.json (mtime: {self.last_modified})")
+        else:
+            self.last_modified = time.time()
+            log(f"Plexamp monitor initialized: no existing PlayQueue.json")
+        log(f"Plexamp API: {PLEXAMP_API_HOST}:{PLEXAMP_API_PORT}")
 
     def get_playback_state(self) -> Optional[Dict]:
         """
