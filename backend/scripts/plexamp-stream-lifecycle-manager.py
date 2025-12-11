@@ -303,9 +303,10 @@ class PlexampMonitor:
     def is_playing(self) -> bool:
         """
         Check if Plexamp has active playback.
-        Uses Plexamp's HTTP API to determine playback state.
+        Uses PlayQueue.json file instead of HTTP API to avoid deadlock bug.
         """
-        return self.check_plexamp_api_status()
+        state = self.get_playback_state()
+        return state is not None and state.get("has_queue", False)
 
 
 class StreamLifecycleManager:
