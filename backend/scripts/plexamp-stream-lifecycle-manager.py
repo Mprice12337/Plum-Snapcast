@@ -181,7 +181,7 @@ class SnapserverClient:
         """Remove Plexamp stream from Snapserver"""
         try:
             log(f"[RemoveStream] Removing Plexamp stream: {stream_id}")
-            result = self._send_request("Stream.DeleteStream", {"id": stream_id})
+            result = self._send_request("Stream.RemoveStream", {"id": stream_id})
 
             if result:
                 log(f"[RemoveStream] ✓ Plexamp stream removed successfully")
