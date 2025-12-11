@@ -130,6 +130,27 @@ class SnapserverClient:
             log(f"Error checking stream existence: {e}")
             return False
 
+    def get_stream_status(self, stream_id: str) -> Optional[str]:
+        """
+        Get stream status from Snapserver.
+        Returns status string: "idle", "playing", or None if stream doesn't exist.
+        """
+        try:
+            result = self._send_request("Server.GetStatus")
+            if not result or "server" not in result:
+                return None
+
+            streams = result.get("server", {}).get("streams", [])
+            for stream in streams:
+                if stream.get("id") == stream_id:
+                    return stream.get("status", "unknown")
+
+            return None
+
+        except Exception as e:
+            log(f"Error checking stream status: {e}")
+            return None
+
     def add_stream(self, stream_id: str) -> bool:
         """Add Plexamp stream to Snapserver"""
         try:
@@ -324,7 +345,17 @@ class StreamLifecycleManager:
         log("Stream lifecycle manager initialized")
 
     def check_activity(self) -> bool:
-        """Check if Plexamp playback is active"""
+        """
+        Check if Plexamp playback is active.
+        Uses Snapcast stream status to detect actual audio flow.
+        """
+        # Check if stream exists and is actively playing (not idle)
+        stream_status = self.snapserver.get_stream_status(self.stream_id)
+        if stream_status and stream_status != "idle":
+            return True
+
+        # If stream doesn't exist or is idle, check if Plexamp has a queue
+        # This helps detect when playback is about to start
         return self.plexamp_monitor.is_playing()
 
     def handle_idle_state(self):
