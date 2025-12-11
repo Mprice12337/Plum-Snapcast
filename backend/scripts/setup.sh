@@ -119,7 +119,7 @@ SNAPCONF
     # Plexamp source is now managed dynamically by plexamp-stream-lifecycle-manager
     # The lifecycle manager will add/remove the stream based on playback state
     # This keeps Plexamp available but only creates Snapcast stream when playing
-    if [ "${PLEXAMP_CONFIG_ENABLED}" = "1" ]; then
+    if [ "${PLEXAMP_ENABLED}" = "1" ]; then
         echo "Plexamp stream managed dynamically by lifecycle manager"
         # Enable autostart for the lifecycle manager
         sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
