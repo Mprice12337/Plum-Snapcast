@@ -224,7 +224,10 @@ class PlexampMonitor:
 
             # Extract playback info from Plexamp PlayQueue structure
             # PlayQueue.json has structure: {"version":1,"data":{"MediaContainer":{...}}}
-            media_container = data.get("data", {}).get("MediaContainer", {})
+            data_obj = data.get("data")
+            if data_obj is None:
+                return None
+            media_container = data_obj.get("MediaContainer", {})
 
             # Check if there's an active queue
             queue_size = media_container.get("size", 0)
