@@ -218,6 +218,13 @@ class PlexampMonitor:
             # Check if file has been modified since last check
             current_mtime = os.path.getmtime(self.playqueue_file)
 
+            # If file hasn't been modified since last check, don't consider it new activity
+            if current_mtime <= self.last_modified:
+                return None
+
+            # Update last modified time
+            self.last_modified = current_mtime
+
             # Read and parse the file
             with open(self.playqueue_file, 'r') as f:
                 data = json.load(f)
