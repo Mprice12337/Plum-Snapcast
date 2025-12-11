@@ -29,7 +29,6 @@ import time
 import subprocess
 from enum import Enum
 from typing import Dict, Optional
-from xml.etree import ElementTree as ET
 
 # ===== CONFIGURATION =====
 PLEXAMP_STREAM_ID = "Plexamp"
@@ -262,71 +261,13 @@ class PlexampMonitor:
             log(f"Error reading PlayQueue.json: {e}")
             return None
 
-    def check_plexamp_api_status(self) -> bool:
-        """
-        Check if Plexamp is actively playing via its HTTP API.
-        Returns True if playback is active (playing state), False otherwise.
-        Uses subprocess curl to avoid HTTP deadlock issue with Python's urllib.
-        """
-        try:
-            # Query Plexamp's timeline API for playback state (returns XML)
-            url = f"http://{PLEXAMP_API_HOST}:{PLEXAMP_API_PORT}/player/timeline/poll?wait=0"
-
-            # Use curl instead of urllib to avoid uWebSockets deadlock
-            # -s: silent, -m 3: max 3 seconds timeout, --fail: fail on HTTP errors
-            result = subprocess.run(
-                ['curl', '-s', '-m', '3', url],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            # Check if curl succeeded
-            if result.returncode != 0:
-                log(f"[API Check] curl failed with code {result.returncode}")
-                return False
-
-            data = result.stdout
-
-            # Handle empty response (Plexamp is idle)
-            if not data or not data.strip():
-                # Empty response means no active playback
-                return False
-
-            timeline = ET.fromstring(data)
-
-            # Parse timeline XML for music state
-            # <MediaContainer><Timeline type="music" state="playing|paused|stopped" /></MediaContainer>
-            for elem in timeline.findall('.//Timeline[@type="music"]'):
-                state = elem.get('state', 'stopped').lower()
-                is_playing = state == 'playing'
-
-                if is_playing:
-                    log(f"[API Check] Plexamp is playing (state={state})")
-                else:
-                    log(f"[API Check] Plexamp is not playing (state={state})")
-
-                return is_playing
-
-            # No music timeline found - treat as idle
-            return False
-
-        except subprocess.TimeoutExpired:
-            log(f"[API Check] Request timed out after 5 seconds")
-            return False
-        except ET.ParseError:
-            # Invalid or empty XML - treat as idle (no playback)
-            return False
-        except Exception as e:
-            log(f"[API Check] Unexpected error: {type(e).__name__}: {e}")
-            return False
-
     def is_playing(self) -> bool:
         """
         Check if Plexamp has active playback.
-        Uses Plexamp HTTP API to check actual playback state.
+        Uses PlayQueue.json file monitoring to avoid HTTP API deadlock.
         """
-        return self.check_plexamp_api_status()
+        playback_state = self.get_playback_state()
+        return playback_state is not None and playback_state.get('has_queue', False)
 
 
 class StreamLifecycleManager:
