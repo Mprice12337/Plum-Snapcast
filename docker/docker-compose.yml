@@ -86,7 +86,7 @@ services:
     environment:
       - TZ=${TZ:-America/Los_Angeles}
       - PLEXAMP_CLAIM_TOKEN=${PLEXAMP_CLAIM_TOKEN:-}
-      - PLEXAMP_PLAYER_NAME=${PLEXAMP_SERVER_NAME:-Plum Audio}
+      - PLEXAMP_PLAYER_NAME=${PLEXAMP_SERVER_NAME:-Office Plexamp}
     volumes:
       - plexamp-data:/app/plexamp
       - snapcast-fifos:/tmp/snapcast-fifos
