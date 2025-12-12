@@ -238,6 +238,11 @@ class StreamLifecycleManager:
     def _add_stream(self):
         """Add DLNA stream to Snapserver"""
         try:
+            # CRITICAL: Clean up any orphaned control scripts BEFORE adding new stream
+            # Snapcast doesn't clean these up automatically, and multiple control scripts
+            # competing for FIFO reads causes choppy/sped-up audio
+            self._cleanup_control_scripts()
+
             # Construct stream URI with DLNA-specific parameters
             # DLNA outputs 44.1kHz/16-bit stereo via gmrender's GStreamer pipeline
             stream_uri = (

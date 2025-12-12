@@ -153,6 +153,11 @@ class SnapserverClient:
     def add_stream(self, stream_id: str) -> bool:
         """Add Plexamp stream to Snapserver"""
         try:
+            # CRITICAL: Clean up any orphaned control scripts BEFORE adding new stream
+            # Snapcast doesn't clean these up automatically, and multiple control scripts
+            # competing for FIFO reads causes choppy/sped-up audio
+            self._cleanup_plexamp_control_scripts()
+
             # Stream URI format: pipe:///tmp/snapcast-fifos/plexamp-fifo?name=Plexamp&sampleformat=44100:16:2&codec=pcm&controlscript=/usr/share/snapserver/plug-ins/plexamp-control-script.py
             stream_uri = (
                 f"pipe://{PLEXAMP_FIFO_PATH}"
@@ -192,6 +197,44 @@ class SnapserverClient:
         except Exception as e:
             log(f"[RemoveStream] Exception: {e}")
             return False
+
+    def _cleanup_plexamp_control_scripts(self):
+        """Kill orphaned Plexamp control script processes
+
+        Snapcast spawns control scripts when streams are dynamically added but doesn't
+        clean them up when streams are removed. This causes multiple control scripts
+        to compete for FIFO reads, resulting in choppy audio.
+        """
+        try:
+            # Find all plexamp-control-script.py processes
+            result = subprocess.run(
+                ['ps', 'aux'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            killed_count = 0
+            for line in result.stdout.splitlines():
+                if 'plexamp-control-script.py' in line and 'grep' not in line:
+                    # Extract PID (second column in ps aux output)
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1])
+                            subprocess.run(['kill', str(pid)], timeout=2)
+                            killed_count += 1
+                            log(f"Killed orphaned control script: PID {pid}")
+                        except (ValueError, subprocess.TimeoutExpired):
+                            pass
+
+            if killed_count == 0:
+                log("No orphaned control scripts found")
+            else:
+                log(f"Cleaned up {killed_count} orphaned control script(s)")
+
+        except Exception as e:
+            log(f"Failed to cleanup control scripts: {e}")
 
 
 class PlexampMonitor:
@@ -314,14 +357,23 @@ class StreamLifecycleManager:
         if stream_status is not None:
             return stream_status != "idle"
 
-        # If stream doesn't exist (status is None), check if Plexamp has a queue
-        # This helps detect when playback is about to start (IDLE → ACTIVE transition)
-        return self.plexamp_monitor.is_playing()
+        # If stream doesn't exist, don't check for activity
+        # Stream creation is handled separately in handle_idle_state
+        return False
+
+    def check_new_activity(self) -> bool:
+        """
+        Check if there's NEW Plexamp activity (file modification).
+        Only used in IDLE state to detect when to create stream.
+        """
+        playback_state = self.plexamp_monitor.get_playback_state()
+        return playback_state is not None and playback_state.get('has_queue', False)
 
     def handle_idle_state(self):
-        """Handle IDLE state: monitor for activity"""
-        if self.check_activity():
-            log("[IDLE → ACTIVE] Playback detected, creating stream")
+        """Handle IDLE state: monitor for new activity"""
+        # Only create stream if there's NEW activity (PlayQueue.json modified)
+        if self.check_new_activity():
+            log("[IDLE → ACTIVE] New playback detected, creating stream")
             if self.snapserver.add_stream(self.stream_id):
                 self.state = StreamState.ACTIVE
                 self.idle_timer = 0

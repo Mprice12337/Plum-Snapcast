@@ -317,6 +317,11 @@ class StreamLifecycleManager:
 
     def _add_stream(self):
         """Add Bluetooth stream to Snapserver"""
+        # CRITICAL: Clean up any orphaned control scripts BEFORE adding new stream
+        # Snapcast doesn't clean these up automatically, and multiple control scripts
+        # competing for FIFO reads causes choppy/sped-up audio
+        self._cleanup_control_scripts()
+
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
         stream_uri = (

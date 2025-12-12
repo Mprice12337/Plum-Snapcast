@@ -285,38 +285,34 @@ class StreamLifecycleManager:
                 log("Event: Playback STOPPED - State: TIMEOUT (already waiting)")
 
     def on_status_idle(self):
-        """Handle Snapcast status change to 'idle'"""
-        with self.state_lock:
-            if self.state == StreamState.ACTIVE:
-                # Stream went idle - start timeout before removal
-                log(f"Event: Status IDLE (Snapcast) - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
-                self._start_timeout()
-                self.state = StreamState.TIMEOUT
-            elif self.state == StreamState.TIMEOUT:
-                # Already in timeout - restart timer
-                log(f"Event: Status IDLE (Snapcast) - State: TIMEOUT (restarting timer)")
-                self._start_timeout()
-            else:
-                log(f"Event: Status IDLE (Snapcast) - State: {self.state.value} (no action)")
+        """Handle Snapcast status change to 'idle' - DISABLED
+
+        WebSocket status monitoring is disabled for Spotify because Snapserver reports
+        unstable status during active streaming (rapid idle/playing flips), causing
+        state thrashing. We rely exclusively on D-Bus MPRIS events (PlaybackStatus)
+        which are reliable and only fire on actual playback state changes.
+        """
+        # DISABLED - do nothing
+        pass
 
     def on_status_playing(self):
-        """Handle Snapcast status change to 'playing'"""
-        with self.state_lock:
-            if self.state == StreamState.TIMEOUT:
-                # Stream started playing again - cancel removal
-                log("Event: Status PLAYING (Snapcast) - State: TIMEOUT → ACTIVE")
-                self._cancel_timeout()
-                self.state = StreamState.ACTIVE
-            elif self.state == StreamState.IDLE:
-                # Stream doesn't exist but Snapcast says playing - create it
-                log("Event: Status PLAYING (Snapcast) - State: IDLE → ACTIVE")
-                self._add_stream()
-                self.state = StreamState.ACTIVE
-            else:
-                log(f"Event: Status PLAYING (Snapcast) - State: {self.state.value} (no action)")
+        """Handle Snapcast status change to 'playing' - DISABLED
+
+        WebSocket status monitoring is disabled for Spotify because Snapserver reports
+        unstable status during active streaming (rapid idle/playing flips), causing
+        state thrashing. We rely exclusively on D-Bus MPRIS events (PlaybackStatus)
+        which are reliable and only fire on actual playback state changes.
+        """
+        # DISABLED - do nothing
+        pass
 
     def _add_stream(self):
         """Add Spotify stream to Snapserver"""
+        # CRITICAL: Clean up any orphaned control scripts BEFORE adding new stream
+        # Snapcast doesn't clean these up automatically, and multiple control scripts
+        # competing for FIFO reads causes choppy/sped-up audio
+        self._cleanup_control_scripts()
+
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
         stream_uri = (
