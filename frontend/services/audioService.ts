@@ -16,21 +16,21 @@ export enum DeviceType {
 export interface AudioDevice {
   card: number;
   device: number;
-  hwId: string;
-  hwName: string | null;
-  cardName: string;
-  deviceName: string;
+  hw_id: string;
+  hw_name: string | null;
+  card_name: string;
+  device_name: string;
   type: DeviceType;
-  friendlyName: string;
-  isAvailable: boolean;
+  friendly_name: string;
+  is_available: boolean;
 }
 
 export interface CurrentOutputDevice {
-  hwId: string;
-  hwName: string | null;
-  friendlyName: string;
+  hw_id: string;
+  hw_name: string | null;
+  friendly_name: string;
   type: DeviceType;
-  isAvailable: boolean;
+  is_available: boolean;
 }
 
 export interface SetOutputDeviceResult {
@@ -38,10 +38,10 @@ export interface SetOutputDeviceResult {
   message?: string;
   error?: string;
   device?: {
-    hwId: string;
-    friendlyName: string;
+    hw_id: string;
+    friendly_name: string;
   };
-  fallbackDevice?: string;
+  fallback_device?: string;
   details?: string;
 }
 
@@ -49,8 +49,8 @@ export interface TestDeviceResult {
   success: boolean;
   message: string;
   device?: {
-    hwId: string;
-    friendlyName: string;
+    hw_id: string;
+    friendly_name: string;
   };
 }
 

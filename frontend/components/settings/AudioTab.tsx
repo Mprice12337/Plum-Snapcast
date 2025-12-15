@@ -37,9 +37,9 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       // Load current device
       const current = await audioService.getCurrentOutputDevice();
       console.log('[AudioTab] Current device:', current);
-      console.log('[AudioTab] Setting currentDevice to:', current.hwId);
-      setCurrentDevice(current.hwId);
-      setSelectedDevice(current.hwId);
+      console.log('[AudioTab] Setting currentDevice to:', current.hw_id);
+      setCurrentDevice(current.hw_id);
+      setSelectedDevice(current.hw_id);
 
       setLoadingState('success');
     } catch (error) {
@@ -159,25 +159,25 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
           <div className="space-y-4">
             <div className="space-y-2">
               {outputDevices.map((device) => {
-                console.log(`[AudioTab] Rendering device ${device.hwId}: currentDevice=${currentDevice}, match=${currentDevice === device.hwId}, isAvailable=${device.isAvailable}, isLoading=${loadingState === 'loading'}`);
+                console.log(`[AudioTab] Rendering device ${device.hw_id}: currentDevice=${currentDevice}, match=${currentDevice === device.hw_id}, isAvailable=${device.is_available}, isLoading=${loadingState === 'loading'}`);
                 return (<label
-                  key={device.hwId}
+                  key={device.hw_id}
                   className={`
                     flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all
-                    ${selectedDevice === device.hwId
+                    ${selectedDevice === device.hw_id
                       ? 'bg-[var(--accent-color)]/10 border-[var(--accent-color)]'
                       : 'bg-[var(--bg-tertiary)] border-[var(--border-color)] hover:border-[var(--text-secondary)]'
                     }
-                    ${!device.isAvailable ? 'opacity-50 cursor-not-allowed' : ''}
+                    ${!device.is_available ? 'opacity-50 cursor-not-allowed' : ''}
                   `}
                 >
                   <input
                     type="radio"
                     name="audioDevice"
-                    value={device.hwId}
-                    checked={selectedDevice === device.hwId}
+                    value={device.hw_id}
+                    checked={selectedDevice === device.hw_id}
                     onChange={(e) => setSelectedDevice(e.target.value)}
-                    disabled={!device.isAvailable || isLoading}
+                    disabled={!device.is_available || isLoading}
                     className="w-4 h-4 text-[var(--accent-color)] focus:ring-[var(--accent-color)]"
                   />
                   <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -185,15 +185,15 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                          {device.friendlyName}
+                          {device.friendly_name}
                         </span>
                         {getDeviceTypeBadge(device.type)}
                       </div>
                       <span className="text-xs text-[var(--text-secondary)] font-mono">
-                        {device.hwId}
+                        {device.hw_id}
                       </span>
                     </div>
-                    {currentDevice === device.hwId && (
+                    {currentDevice === device.hw_id && (
                       <span className="text-xs text-green-400 font-medium flex-shrink-0">
                         Current
                       </span>
