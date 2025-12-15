@@ -31,10 +31,13 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
     try {
       // Load available devices
       const devices = await audioService.getOutputDevices();
+      console.log('[AudioTab] Loaded devices:', devices);
       setOutputDevices(devices);
 
       // Load current device
       const current = await audioService.getCurrentOutputDevice();
+      console.log('[AudioTab] Current device:', current);
+      console.log('[AudioTab] Setting currentDevice to:', current.hwId);
       setCurrentDevice(current.hwId);
       setSelectedDevice(current.hwId);
 
@@ -155,8 +158,9 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
         {loadingState === 'success' && outputDevices.length > 0 && (
           <div className="space-y-4">
             <div className="space-y-2">
-              {outputDevices.map((device) => (
-                <label
+              {outputDevices.map((device) => {
+                console.log(`[AudioTab] Rendering device ${device.hwId}: currentDevice=${currentDevice}, match=${currentDevice === device.hwId}, isAvailable=${device.isAvailable}, isLoading=${loadingState === 'loading'}`);
+                return (<label
                   key={device.hwId}
                   className={`
                     flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all
@@ -196,7 +200,8 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                     )}
                   </div>
                 </label>
-              ))}
+              );
+              })}
             </div>
 
             {hasChanges && (
