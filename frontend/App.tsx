@@ -162,6 +162,9 @@ const App: React.FC = () => {
         /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
     ) || clients.find(c => c.id !== browserClientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
+    // Treat none-* streams the same as no stream selected (hide controls)
+    const isNoneStream = currentStream?.id?.startsWith('none-') ?? false;
+    const shouldShowControls = currentStream && !isNoneStream;
 
     // Auto-assign browser audio client to user's current stream when it connects
     useEffect(() => {
@@ -1627,7 +1630,7 @@ const App: React.FC = () => {
                             federationEnabled={settings.federation.enabled}
                         />
                     </div>
-                    {currentStream ? (
+                    {shouldShowControls ? (
                         <div className="flex-grow flex flex-col">
                             <div className="space-y-6">
                                 <NowPlaying

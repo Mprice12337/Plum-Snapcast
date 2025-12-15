@@ -600,7 +600,14 @@ class SpotifyController:
 
     def enable(self) -> Dict[str, Any]:
         """Enable Spotify service"""
+        # Start spotifyd first
         success, output = self.controller.start_service(self.service_name)
+
+        # Also start the lifecycle manager (it monitors spotifyd and creates/removes streams)
+        lifecycle_success, lifecycle_output = self.controller.start_service("spotify-stream-lifecycle-manager")
+
+        # Also start the fifo keeper
+        fifo_success, fifo_output = self.controller.start_service("spotify-fifo-keeper")
 
         # Update settings to persist state
         if success:
@@ -616,13 +623,20 @@ class SpotifyController:
                 logger.error(f"Failed to persist Spotify enabled state: {e}")
 
         return {
-            "success": success,
-            "message": "Spotify enabled" if success else "Failed to enable Spotify",
-            "details": output.strip()
+            "success": success and lifecycle_success,
+            "message": "Spotify enabled" if (success and lifecycle_success) else "Failed to enable Spotify",
+            "details": f"spotifyd: {output.strip()}\nlifecycle-manager: {lifecycle_output.strip()}\nfifo-keeper: {fifo_output.strip()}"
         }
 
     def disable(self) -> Dict[str, Any]:
         """Disable Spotify service"""
+        # Stop the lifecycle manager first
+        lifecycle_success, lifecycle_output = self.controller.stop_service("spotify-stream-lifecycle-manager")
+
+        # Stop the fifo keeper
+        fifo_success, fifo_output = self.controller.stop_service("spotify-fifo-keeper")
+
+        # Stop spotifyd last
         success, output = self.controller.stop_service(self.service_name)
 
         # Update settings to persist state
@@ -641,7 +655,7 @@ class SpotifyController:
         return {
             "success": success,
             "message": "Spotify disabled" if success else "Failed to disable Spotify",
-            "details": output.strip()
+            "details": f"spotifyd: {output.strip()}\nlifecycle-manager: {lifecycle_output.strip()}\nfifo-keeper: {fifo_output.strip()}"
         }
 
     def get_status(self) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ Provides GET/POST endpoints for server-side settings storage
 Settings are stored in /app/data/settings.json
 """
 
+import copy
 import json
 import logging
 import os
@@ -73,7 +74,15 @@ class SettingsManager:
         if not os.path.exists(self.settings_file):
             logger.info(f"Creating settings file at {self.settings_file}")
             os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
-            self._save_settings(DEFAULT_SETTINGS)
+
+            # Initialize settings with defaults, but check environment for Plexamp availability
+            initial_settings = copy.deepcopy(DEFAULT_SETTINGS)
+            plexamp_enabled = os.getenv("PLEXAMP_ENABLED", "0").strip() in ("1", "true", "True", "TRUE", "yes", "Yes", "YES")
+            initial_settings["integrations"]["plexamp"]["available"] = plexamp_enabled
+            initial_settings["integrations"]["plexamp"]["enabled"] = plexamp_enabled
+            logger.info(f"Initializing Plexamp: available={plexamp_enabled}, enabled={plexamp_enabled}")
+
+            self._save_settings(initial_settings)
 
     def _save_settings(self, settings: Dict[str, Any]):
         """Save settings to JSON file"""
@@ -92,7 +101,7 @@ class SettingsManager:
                 settings = json.load(f)
 
             # Merge with defaults to ensure all keys exist
-            merged = DEFAULT_SETTINGS.copy()
+            merged = copy.deepcopy(DEFAULT_SETTINGS)
             for key in merged:
                 if key in settings:
                     if isinstance(merged[key], dict):
@@ -100,13 +109,28 @@ class SettingsManager:
                     else:
                         merged[key] = settings[key]
 
+            # Always sync Plexamp availability from environment variable
+            # This ensures settings stay in sync with docker-compose configuration
+            plexamp_enabled = os.getenv("PLEXAMP_ENABLED", "0").strip() in ("1", "true", "True", "TRUE", "yes", "Yes", "YES")
+            if merged["integrations"]["plexamp"]["available"] != plexamp_enabled:
+                logger.info(f"Syncing Plexamp availability from environment: {plexamp_enabled}")
+                merged["integrations"]["plexamp"]["available"] = plexamp_enabled
+                # If Plexamp becomes unavailable, disable it
+                if not plexamp_enabled:
+                    merged["integrations"]["plexamp"]["enabled"] = False
+                # If Plexamp becomes available and was previously unavailable, enable it by default
+                elif not settings.get("integrations", {}).get("plexamp", {}).get("available", False):
+                    merged["integrations"]["plexamp"]["enabled"] = True
+                # Save the synced settings
+                self._save_settings(merged)
+
             return merged
         except FileNotFoundError:
             logger.warning("Settings file not found, using defaults")
-            return DEFAULT_SETTINGS.copy()
+            return copy.deepcopy(DEFAULT_SETTINGS)
         except Exception as e:
             logger.error(f"Failed to load settings: {e}")
-            return DEFAULT_SETTINGS.copy()
+            return copy.deepcopy(DEFAULT_SETTINGS)
 
     def update_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
         """Update settings (partial or full update)"""

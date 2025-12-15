@@ -143,6 +143,65 @@ class SnapserverClient:
         """Get server status"""
         return self._call_rpc("Server.GetStatus")
 
+    def set_group_stream(self, group_id: str, stream_id: str) -> bool:
+        """Set a group's stream"""
+        log(f"Setting group {group_id} to stream {stream_id}")
+        result = self._call_rpc("Group.SetStream", {"id": group_id, "stream_id": stream_id})
+
+        if result:
+            log(f"✓ Group {group_id} moved to stream {stream_id}")
+            return True
+        else:
+            log(f"✗ Failed to set group stream")
+            return False
+
+    def move_clients_to_fallback_stream(self, from_stream_id: str) -> bool:
+        """Move all clients from a stream to the default 'none' fallback stream
+
+        This is called before removing a stream to ensure clients don't become orphaned.
+        """
+        try:
+            status = self.get_status()
+            if not status or 'server' not in status:
+                log("ERROR: Could not get server status for client reassignment")
+                return False
+
+            # Find the none stream (first one that starts with 'none-')
+            none_stream_id = None
+            if 'streams' in status['server']:
+                for stream in status['server']['streams']:
+                    if stream['id'].startswith('none-'):
+                        none_stream_id = stream['id']
+                        break
+
+            if not none_stream_id:
+                log("WARNING: No 'none' stream found - clients will be orphaned")
+                return False
+
+            # Find all groups currently on the stream being removed
+            moved_count = 0
+            if 'groups' in status['server']:
+                for group in status['server']['groups']:
+                    if group.get('stream_id') == from_stream_id:
+                        # Move this group to the none stream
+                        if self.set_group_stream(group['id'], none_stream_id):
+                            moved_count += 1
+                            client_names = [c.get('config', {}).get('name', c['id']) for c in group.get('clients', [])]
+                            log(f"✓ Moved group {group['id']} ({len(client_names)} client(s): {', '.join(client_names)}) to fallback stream '{none_stream_id}'")
+
+            if moved_count > 0:
+                log(f"✓ Successfully moved {moved_count} group(s) to fallback stream")
+                return True
+            else:
+                log(f"No clients were on stream '{from_stream_id}' - no reassignment needed")
+                return True
+
+        except Exception as e:
+            log(f"ERROR: Failed to move clients to fallback stream: {e}")
+            import traceback
+            log(traceback.format_exc())
+            return False
+
 
 class SnapcastWebSocketMonitor:
     """Monitor Snapcast WebSocket for stream status updates"""
@@ -322,6 +381,11 @@ class StreamLifecycleManager:
         # competing for FIFO reads causes choppy/sped-up audio
         self._cleanup_control_scripts()
 
+        # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
+        # If both cat and snapserver read simultaneously, audio data gets split between them
+        # causing choppy/corrupt audio. Brief gap with no reader is better than two readers.
+        self._stop_fifo_keeper()
+
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
         stream_uri = (
@@ -332,18 +396,22 @@ class StreamLifecycleManager:
             f"&controlscript={BLUETOOTH_CONTROL_SCRIPT}"
         )
 
-        # Add stream first - Snapserver will start reading from FIFO
+        # Now add stream - Snapserver will immediately start reading from FIFO
         success = self.client.add_stream(stream_uri)
         if not success:
             log("ERROR: Failed to add stream")
-            # TODO: Implement retry logic
+            # Restart fifo keeper if stream creation failed
+            self._start_fifo_keeper()
             return
-
-        # Now stop FIFO keeper - Snapserver has taken over as the reader
-        self._stop_fifo_keeper()
 
     def _remove_stream(self):
         """Remove Bluetooth stream from Snapserver"""
+        # CRITICAL: Move all clients to fallback 'none' stream BEFORE removing this stream
+        # This prevents clients from becoming orphaned when the stream disappears
+        log(f"Moving clients from '{BLUETOOTH_STREAM_ID}' to fallback stream before removal...")
+        self.client.move_clients_to_fallback_stream(BLUETOOTH_STREAM_ID)
+
+        # Now remove the stream
         success = self.client.remove_stream(BLUETOOTH_STREAM_ID)
         if not success:
             log("ERROR: Failed to remove stream")

@@ -322,20 +322,22 @@ class PlexampMetadataMonitor:
             return None
 
     def _poll_loop(self):
-        """Background thread that polls PlayQueue.json file and timeline API
+        """Background thread that polls PlayQueue.json file for metadata and state
 
-        Note: We send position updates when the timeline position changes significantly,
-        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
-        to increment position smoothly between server updates.
+        IMPORTANT: HTTP API polling removed to prevent deadlock bug in Plexamp 4.11.3+
+        We rely solely on PlayQueue.json file for metadata and infer playback state.
 
-        Position changes occur when:
-        - Track starts (position resets to 0 or start offset)
-        - User seeks/scrubs from Plexamp app or Plex client
-        - Previous/next button pressed
+        The frontend uses client-side sync (useAudioSync) to increment position
+        smoothly between server updates.
+
+        State detection:
+        - Playing: PlayQueue.json exists with valid queue data
+        - Stopped: PlayQueue.json doesn't exist or is empty
+        - Position: Reset to 0 on track changes (accurate position not available without HTTP API)
         """
-        log("[Plexamp] Starting PlayQueue monitoring...")
+        log("[Plexamp] Starting PlayQueue monitoring (HTTP API polling disabled to prevent deadlock)")
 
-        last_position_value = None
+        last_has_queue = False
 
         while self.running:
             try:
@@ -353,61 +355,25 @@ class PlexampMetadataMonitor:
                         self.store.update(**metadata)
                         metadata_updated = True
 
-                # Query timeline API for position and playback state
-                timeline = self.get_timeline()
-                if timeline:
-                    position_ms = timeline.get('position')
-                    playback_status = timeline.get('playback_status', 'Stopped')
+                        # Infer playback state from queue existence
+                        # Note: Without HTTP API, we can't distinguish between Playing/Paused
+                        # so we assume Playing when queue exists
+                        current_has_queue = True
+                        if not last_has_queue:
+                            log("[PlayQueue] Playback started (queue detected)")
+                            self.store.update(playback_status='Playing', position=0)
+                            metadata_updated = True
+                        last_has_queue = True
+                else:
+                    # No queue data means stopped
+                    if last_has_queue:
+                        log("[PlayQueue] Playback stopped (no queue)")
+                        self.store.update(playback_status='Stopped', position=0)
+                        metadata_updated = True
+                    last_has_queue = False
 
-                    # ALWAYS update store with latest position so Snapcast properties stay current
-                    # This ensures page refresh gets correct position
-                    self.store.update(**timeline)
-
-                    # Determine if we should send notification to frontend
-                    # Only notify on significant changes to prevent progress bar jumping
-                    send_update = False
-
-                    if last_position_value is None:
-                        # Initial connection
-                        log(f"[Timeline] Position: {position_ms}ms (initial)")
-                        send_update = True
-                        last_position_value = position_ms
-                    elif metadata_updated:
-                        # New track detected via PlayQueue
-                        log(f"[Timeline] Position: {position_ms}ms (track_change)")
-                        send_update = True
-                        last_position_value = position_ms
-                    elif position_ms is not None and last_position_value is not None:
-                        # Check for actual seeks (position went backwards, or jumped forward significantly)
-                        position_delta = position_ms - last_position_value
-
-                        # Only notify for:
-                        # 1. Backward seeks (position went back by >1s)
-                        # 2. Large forward jumps (>10s forward seek)
-                        is_backward_seek = position_delta < -1000
-                        is_forward_seek = position_delta > 10000
-
-                        if is_backward_seek or is_forward_seek:
-                            reason = "track_change" if position_ms < 5000 else "seek"
-                            log(f"[Timeline] Position: {last_position_value}ms → {position_ms}ms (delta: {position_delta}ms, {reason})")
-                            send_update = True
-                        last_position_value = position_ms
-
-                    # Check if playback state changed
-                    if 'playback_status' in timeline:
-                        current_status = timeline['playback_status']
-                        previous_status = getattr(self, '_last_playback_status', None)
-                        if previous_status is None or previous_status != current_status:
-                            log(f"[Timeline] Playback state: {previous_status} → {current_status}")
-                            send_update = True
-                        self._last_playback_status = current_status
-
-                    # Send notification on significant changes
-                    if send_update and playback_status != 'Stopped':
-                        if self.on_update:
-                            self.on_update()
-                elif metadata_updated:
-                    # Send update for metadata even without timeline
+                # Send notification on changes
+                if metadata_updated:
                     if self.on_update:
                         self.on_update()
 
@@ -462,14 +428,8 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipNext')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Next command sent (status={response.status})")
-
-                # Immediately poll timeline to update position/state after command
-                time.sleep(0.1)  # Brief delay for Plexamp to process command
-                timeline = self.get_timeline()
-                if timeline:
-                    self.store.update(**timeline)
-                    log("[Control] Updated position after next track command")
-
+                # Note: Position/state will be updated by PlayQueue.json monitor
+                # Avoid HTTP API polling here to prevent deadlock
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Next command failed: {e}")
@@ -481,14 +441,8 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request('http://127.0.0.1:32500/player/playback/skipPrevious')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Previous command sent (status={response.status})")
-
-                # Immediately poll timeline to update position/state after command
-                time.sleep(0.1)  # Brief delay for Plexamp to process command
-                timeline = self.get_timeline()
-                if timeline:
-                    self.store.update(**timeline)
-                    log("[Control] Updated position after previous track command")
-
+                # Note: Position/state will be updated by PlayQueue.json monitor
+                # Avoid HTTP API polling here to prevent deadlock
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Previous command failed: {e}")

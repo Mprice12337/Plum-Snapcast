@@ -124,10 +124,12 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 
 **Integration Control**: Frontend → integrationsService.ts → integrations_api.py → supervisorctl → Service restart
 
-**Dynamic Stream Management** (AirPlay):
-- **Always Discoverable**: shairport-sync runs continuously → AirPlay visible on network
-- **Stream Lifecycle**: stream-lifecycle-manager monitors metadata events → Creates Snapcast stream on client connect (`pbeg`) → Removes after 5min idle timeout on disconnect (`pend`)
-- **Benefits**: Reduces clutter (no empty streams), maintains discoverability, smart timeout prevents premature removal
+**Dynamic Stream Lifecycle Management** (All Integrations):
+- **Framework**: All audio integrations use dynamic stream lifecycle management
+- **Always Discoverable**: Services run continuously → Integrations visible on network (AirPlay discoverable, Bluetooth pairable, Spotify Connect available, etc.)
+- **Stream Lifecycle**: Lifecycle managers monitor activity → Create Snapcast stream when active → Remove after idle timeout when inactive
+- **FIFO Management**: FIFO keepers prevent audio service blocking when no Snapcast stream exists
+- **Benefits**: Reduces clutter (no empty streams), maintains discoverability, smart idle timeouts, automatic cleanup of control scripts
 
 ---
 
@@ -337,6 +339,7 @@ git pull && docker compose pull && docker compose up -d
 12. **Settings Persistence**: Integration and federation settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Managed exclusively via web UI. No environment variables needed for integrations.
 13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
 14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
+15. **Dynamic Stream Lifecycle**: All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use lifecycle managers to dynamically create/remove Snapcast streams based on activity. Lifecycle managers monitor metadata/events, create streams on activity, and remove after idle timeout. FIFO keepers prevent audio service blocking when no stream exists. See `_resources/DYNAMIC-STREAM-LIFECYCLE-FRAMEWORK.md` for implementation details.
 
 ---
 

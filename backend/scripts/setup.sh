@@ -27,6 +27,12 @@ if [ ! -p /tmp/snapfifo ]; then
     chmod 666 /tmp/snapfifo
 fi
 
+if [ ! -p /tmp/none-fifo ]; then
+    echo "Creating None stream FIFO pipe..."
+    mkfifo /tmp/none-fifo
+    chmod 666 /tmp/none-fifo
+fi
+
 if [ ! -p /tmp/shairport-sync-metadata ]; then
     echo "Creating AirPlay metadata pipe..."
     mkfifo /tmp/shairport-sync-metadata
@@ -66,9 +72,21 @@ echo "Artwork cache directory ready at /tmp/shairport-sync/.cache/coverart"
 # Generate snapserver configuration if it doesn't exist
 if [ ! -f /app/config/snapserver.conf ]; then
     echo "Generating snapserver.conf..."
+
+    # Get unique name for none stream (from setting or hostname)
+    NONE_STREAM_NAME="${NONE_STREAM_NAME:-$(hostname)}"
+    NONE_STREAM_ID="none-${NONE_STREAM_NAME}"
+
+    echo "Creating none stream: ${NONE_STREAM_ID}"
+
     cat > /app/config/snapserver.conf << SNAPCONF
 [stream]
 port = 1705
+# None stream - placeholder for local announcements (e.g., Home Assistant)
+# Uses unique name to avoid conflicts in federated setups
+# Uses dedicated FIFO to avoid conflicts with dynamic streams (AirPlay, Spotify, etc.)
+# Frontend filters out all "none-*" streams except the local one
+source = pipe:///tmp/none-fifo?name=${NONE_STREAM_ID}&sampleformat=48000:16:2&codec=pcm
 
 [http]
 enabled = true

@@ -43,6 +43,11 @@ const SyncedDevice: React.FC<{
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
+    // Filter out "none" streams from dropdown options (they're just fallback streams)
+    const selectableStreams = React.useMemo(() => {
+        return streams.filter(s => !s.id.startsWith('none-'));
+    }, [streams]);
+
     return (
         <div className="flex items-center justify-between gap-4 p-2 rounded-lg hover:bg-[var(--bg-tertiary)]">
             <span className="font-semibold truncate">{client.name}</span>
@@ -80,7 +85,7 @@ const SyncedDevice: React.FC<{
                                         Disconnect
                                     </button>
                                 </li>
-                                {streams.map(s => (
+                                {selectableStreams.map(s => (
                                     <li key={s.id} role="option" aria-selected={client.currentStreamId === s.id}>
                                         <button
                                             onClick={() => handleSelectStream(s.id)}

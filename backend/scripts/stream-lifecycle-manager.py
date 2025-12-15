@@ -136,6 +136,65 @@ class SnapserverClient:
         """Get server status"""
         return self._call_rpc("Server.GetStatus")
 
+    def set_group_stream(self, group_id: str, stream_id: str) -> bool:
+        """Set a group's stream"""
+        log(f"Setting group {group_id} to stream {stream_id}")
+        result = self._call_rpc("Group.SetStream", {"id": group_id, "stream_id": stream_id})
+
+        if result:
+            log(f"✓ Group {group_id} moved to stream {stream_id}")
+            return True
+        else:
+            log(f"✗ Failed to set group stream")
+            return False
+
+    def move_clients_to_fallback_stream(self, from_stream_id: str) -> bool:
+        """Move all clients from a stream to the default 'none' fallback stream
+
+        This is called before removing a stream to ensure clients don't become orphaned.
+        """
+        try:
+            status = self.get_status()
+            if not status or 'server' not in status:
+                log("ERROR: Could not get server status for client reassignment")
+                return False
+
+            # Find the none stream (first one that starts with 'none-')
+            none_stream_id = None
+            if 'streams' in status['server']:
+                for stream in status['server']['streams']:
+                    if stream['id'].startswith('none-'):
+                        none_stream_id = stream['id']
+                        break
+
+            if not none_stream_id:
+                log("WARNING: No 'none' stream found - clients will be orphaned")
+                return False
+
+            # Find all groups currently on the stream being removed
+            moved_count = 0
+            if 'groups' in status['server']:
+                for group in status['server']['groups']:
+                    if group.get('stream_id') == from_stream_id:
+                        # Move this group to the none stream
+                        if self.set_group_stream(group['id'], none_stream_id):
+                            moved_count += 1
+                            client_names = [c.get('config', {}).get('name', c['id']) for c in group.get('clients', [])]
+                            log(f"✓ Moved group {group['id']} ({len(client_names)} client(s): {', '.join(client_names)}) to fallback stream '{none_stream_id}'")
+
+            if moved_count > 0:
+                log(f"✓ Successfully moved {moved_count} group(s) to fallback stream")
+                return True
+            else:
+                log(f"No clients were on stream '{from_stream_id}' - no reassignment needed")
+                return True
+
+        except Exception as e:
+            log(f"ERROR: Failed to move clients to fallback stream: {e}")
+            import traceback
+            log(traceback.format_exc())
+            return False
+
 
 class SnapcastWebSocketMonitor:
     """Monitor Snapcast WebSocket for stream status updates"""
@@ -241,11 +300,18 @@ class StreamLifecycleManager:
         self.state_lock = threading.Lock()
         self.timeout_timer = None
 
+        # Fallback idle detection (for when pend event isn't generated)
+        self.consecutive_idle_count = 0
+        self.idle_threshold = 60  # 60 consecutive idle status updates (~5 minutes at 5s intervals)
+
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
     def on_stream_begin(self):
         """Handle pbeg (play stream begin) event"""
         with self.state_lock:
+            # Reset idle counter on new connection
+            self.consecutive_idle_count = 0
+
             if self.state == StreamState.IDLE:
                 # No stream exists - create it
                 log("Event: Stream BEGIN (pbeg) - State: IDLE → ACTIVE")
@@ -270,6 +336,7 @@ class StreamLifecycleManager:
                 log(f"Event: Stream END (pend) - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
                 self._start_timeout()
                 self.state = StreamState.TIMEOUT
+                self.consecutive_idle_count = 0  # Reset counter
 
             elif self.state == StreamState.IDLE:
                 log("Event: Stream END (pend) - State: IDLE (no stream to remove)")
@@ -278,26 +345,32 @@ class StreamLifecycleManager:
                 log("Event: Stream END (pend) - State: TIMEOUT (already waiting)")
 
     def on_status_idle(self):
-        """Handle Snapcast status change to 'idle' - DISABLED
+        """Handle Snapcast status change to 'idle'
 
-        WebSocket status monitoring is disabled for AirPlay because Snapserver reports
-        unstable status during active streaming (rapid idle/playing flips), causing
-        state thrashing and choppy audio. We rely exclusively on metadata pipe events
-        (pbeg/pend) which are reliable and only fire on actual client connect/disconnect.
+        Implements fallback timeout for when pend event isn't generated (ungraceful disconnect).
+        If stream is ACTIVE and has been idle for sustained period, start timeout.
+        We ignore rapid idle/playing flips during playback (normal behavior).
         """
-        # DISABLED - do nothing
-        pass
+        with self.state_lock:
+            if self.state == StreamState.ACTIVE:
+                self.consecutive_idle_count += 1
+
+                # If idle for sustained period (no pend event received), trigger timeout
+                if self.consecutive_idle_count >= self.idle_threshold:
+                    log(f"Fallback: Stream idle for {self.consecutive_idle_count} updates → starting timeout")
+                    self._start_timeout()
+                    self.state = StreamState.TIMEOUT
+                    self.consecutive_idle_count = 0
 
     def on_status_playing(self):
-        """Handle Snapcast status change to 'playing' - DISABLED
+        """Handle Snapcast status change to 'playing'
 
-        WebSocket status monitoring is disabled for AirPlay because Snapserver reports
-        unstable status during active streaming (rapid idle/playing flips), causing
-        state thrashing and choppy audio. We rely exclusively on metadata pipe events
-        (pbeg/pend) which are reliable and only fire on actual client connect/disconnect.
+        Resets idle counter - indicates stream is actively playing.
         """
-        # DISABLED - do nothing
-        pass
+        with self.state_lock:
+            # Reset idle counter when playing
+            if self.consecutive_idle_count > 0:
+                self.consecutive_idle_count = 0
 
     def _add_stream(self):
         """Add AirPlay stream to Snapserver"""
@@ -305,6 +378,16 @@ class StreamLifecycleManager:
         # Snapcast doesn't clean these up automatically, and multiple control scripts
         # competing for FIFO reads causes choppy/sped-up audio
         self._cleanup_control_scripts()
+
+        # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
+        # If both cat and snapserver read simultaneously, audio data gets split between them
+        # causing choppy/corrupt audio. Brief gap with no reader is better than two readers.
+        self._stop_fifo_keeper()
+
+        # NOTE: We do NOT remove the none stream here
+        # The none stream reads from /tmp/none-fifo (for HA announcements)
+        # AirPlay stream reads from /tmp/snapfifo (shairport-sync output)
+        # They use different FIFOs so no conflict - none stream can stay active
 
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
@@ -316,19 +399,22 @@ class StreamLifecycleManager:
             f"&controlscript={AIRPLAY_CONTROL_SCRIPT}"
         )
 
-        # Add stream first - Snapserver will start reading from FIFO
+        # Now add stream - Snapserver will immediately start reading from FIFO
         success = self.client.add_stream(stream_uri)
         if not success:
             log("ERROR: Failed to add stream")
-            # TODO: Implement retry logic
+            # Restart fifo keeper if stream creation failed
+            self._start_fifo_keeper()
             return
-
-        # Now stop FIFO keeper - Snapserver has taken over as the reader
-        # The keeper's current cat operation will complete and Snapserver becomes the primary reader
-        self._stop_fifo_keeper()
 
     def _remove_stream(self):
         """Remove AirPlay stream from Snapserver"""
+        # CRITICAL: Move all clients to fallback 'none' stream BEFORE removing this stream
+        # This prevents clients from becoming orphaned when the stream disappears
+        log(f"Moving clients from '{AIRPLAY_STREAM_ID}' to fallback stream before removal...")
+        self.client.move_clients_to_fallback_stream(AIRPLAY_STREAM_ID)
+
+        # Now remove the stream
         success = self.client.remove_stream(AIRPLAY_STREAM_ID)
         if not success:
             log("ERROR: Failed to remove stream")
@@ -392,6 +478,31 @@ class StreamLifecycleManager:
             log("FIFO keeper started")
         except Exception as e:
             log(f"Failed to start FIFO keeper: {e}")
+
+    def _remove_none_stream(self):
+        """Remove the none stream if it exists
+
+        The none stream (none-{hostname}) is a placeholder that reads from /tmp/snapfifo.
+        When a dynamic stream (AirPlay, Spotify, etc.) connects, we remove the none stream
+        to prevent multiple readers from splitting audio data.
+        """
+        try:
+            # Check if any none-* stream exists
+            status = self.client.get_status()
+            if status and 'server' in status and 'streams' in status['server']:
+                streams = status['server']['streams']
+                none_streams = [s for s in streams if s['id'].startswith('none-')]
+
+                for stream in none_streams:
+                    stream_id = stream['id']
+                    log(f"Removing none stream '{stream_id}' to prevent FIFO conflict")
+                    success = self.client.remove_stream(stream_id)
+                    if success:
+                        log(f"Successfully removed '{stream_id}' stream")
+                    else:
+                        log(f"WARNING: Failed to remove '{stream_id}' stream")
+        except Exception as e:
+            log(f"Error checking/removing none stream: {e}")
 
     def _cleanup_control_scripts(self):
         """Kill orphaned AirPlay control script processes
