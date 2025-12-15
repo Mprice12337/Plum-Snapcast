@@ -17,7 +17,7 @@ interface SettingsProps {
 
 const tabs: Tab[] = [
     {id: 'integrations', label: 'Integrations', icon: 'puzzle-piece'},
-    {id: 'audio', label: 'Audio', icon: 'speaker'},
+    {id: 'audio', label: 'Audio', icon: 'volume-high'},
     {id: 'snapcast', label: 'Snapcast', icon: 'snapcast'},
     {id: 'theme', label: 'Theme', icon: 'palette'},
     {id: 'visualizer', label: 'Visualizer', icon: 'waveform'},
