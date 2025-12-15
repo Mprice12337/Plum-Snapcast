@@ -2,6 +2,7 @@ import React, {useState} from 'react';
 import type {Settings as SettingsType} from '../types';
 import {TabBar, type Tab} from './TabBar';
 import {IntegrationsTab} from './settings/IntegrationsTab';
+import {AudioTab} from './settings/AudioTab';
 import {SnapcastTab} from './settings/SnapcastTab';
 import {ThemeTab} from './settings/ThemeTab';
 import {VisualizerTab} from './settings/VisualizerTab';
@@ -16,6 +17,7 @@ interface SettingsProps {
 
 const tabs: Tab[] = [
     {id: 'integrations', label: 'Integrations', icon: 'puzzle-piece'},
+    {id: 'audio', label: 'Audio', icon: 'speaker'},
     {id: 'snapcast', label: 'Snapcast', icon: 'snapcast'},
     {id: 'theme', label: 'Theme', icon: 'palette'},
     {id: 'visualizer', label: 'Visualizer', icon: 'waveform'},
@@ -29,6 +31,8 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
         switch (activeTab) {
             case 'integrations':
                 return <IntegrationsTab settings={settings} onSettingsChange={onSettingsChange} />;
+            case 'audio':
+                return <AudioTab settings={settings} onSettingsChange={onSettingsChange} />;
             case 'snapcast':
                 return <SnapcastTab settings={settings} onSettingsChange={onSettingsChange} />;
             case 'theme':

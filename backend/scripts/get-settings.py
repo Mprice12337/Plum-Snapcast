@@ -91,6 +91,11 @@ def main():
     device_name = settings.get('deviceName', 'Plum Snapcast')
     print(f"export DEVICE_NAME=\"{device_name}\"")
 
+    # Audio settings
+    audio = settings.get('audio', {})
+    audio_output = audio.get('output', {})
+    print(f"export AUDIO_OUTPUT_DEVICE=\"{audio_output.get('device', 'hw:Headphones')}\"")
+
     # Note: Snapclient, network, and other infrastructure settings remain in environment variables
     # Plexamp availability is determined by PLEXAMP_ENABLED env var (checked in migrate script)
 

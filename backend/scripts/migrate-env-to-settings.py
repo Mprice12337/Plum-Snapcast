@@ -87,6 +87,17 @@ def main():
             "enabled": bool_from_env(os.getenv("FEDERATION_ENABLED"), False),
             "autoDiscover": bool_from_env(os.getenv("FEDERATION_AUTO_DISCOVER"), True)
             # localServerName removed - now uses deviceName
+        },
+        "audio": {
+            "output": {
+                # Migrate SNAPCLIENT_SOUNDCARD to audio.output.device
+                "device": os.getenv("SNAPCLIENT_SOUNDCARD", "hw:Headphones"),
+                "device_type": "BUILTIN_HEADPHONES",  # Will be updated when device is selected via GUI
+                "fallback_device": "hw:Headphones"
+            },
+            "input": {
+                "devices": []  # Future: user-enabled input devices
+            }
         }
     }
 
@@ -121,7 +132,7 @@ def main():
         print("\nNote: You can now remove integration-related environment")
         print("      variables from your .env file. Keep only:")
         print("      - PLEXAMP_* (Plexamp config stays in env)")
-        print("      - SNAPCLIENT_* (client config stays in env)")
+        print("      - SNAPCLIENT_ENABLED (audio device now configured via GUI)")
         print("      - Network/infrastructure settings")
         print()
 

@@ -56,6 +56,16 @@ DEFAULT_SETTINGS = {
         "enabled": False,
         "autoDiscover": True
         # localServerName removed - now uses deviceName
+    },
+    "audio": {
+        "output": {
+            "device": "hw:Headphones",
+            "device_type": "BUILTIN_HEADPHONES",
+            "fallback_device": "hw:Headphones"
+        },
+        "input": {
+            "devices": []  # Future: user-enabled input devices
+        }
     }
 }
 
