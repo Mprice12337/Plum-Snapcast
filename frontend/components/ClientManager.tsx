@@ -48,13 +48,18 @@ const ClientDevice: React.FC<{
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
+    // Filter out "none" streams from dropdown options (they're just fallback streams)
+    const selectableStreams = React.useMemo(() => {
+        return streams.filter(s => !s.id.startsWith('none-'));
+    }, [streams]);
+
     const groupedStreams = React.useMemo(() => {
         if (!federationEnabled) {
-            return { ungrouped: streams };
+            return { ungrouped: selectableStreams };
         }
 
         const groups: { [serverName: string]: Stream[] } = {};
-        streams.forEach(stream => {
+        selectableStreams.forEach(stream => {
             const serverName = stream.serverName || 'Unknown Server';
             if (!groups[serverName]) {
                 groups[serverName] = [];
@@ -62,7 +67,7 @@ const ClientDevice: React.FC<{
             groups[serverName].push(stream);
         });
         return groups;
-    }, [streams, federationEnabled]);
+    }, [selectableStreams, federationEnabled]);
 
     return (
         <div className="flex items-center gap-3">
@@ -96,7 +101,7 @@ const ClientDevice: React.FC<{
                                     onClick={() => handleSelectStream(null)}
                                     className="block w-full text-left px-3 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-secondary-hover)]"
                                 >
-                                    None
+                                    Disconnect
                                 </button>
                             </li>
                             {federationEnabled ? (
@@ -118,7 +123,7 @@ const ClientDevice: React.FC<{
                                     </React.Fragment>
                                 ))
                             ) : (
-                                streams.map(s => (
+                                selectableStreams.map(s => (
                                     <li key={s.id} role="option" aria-selected={client.currentStreamId === s.id}>
                                         <button
                                             onClick={() => handleSelectStream(s.id)}

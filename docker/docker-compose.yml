@@ -42,6 +42,7 @@ services:
       - snapcast-fifos:/tmp/snapcast-fifos
       - plexamp-data:/tmp/plexamp-state:ro
       - coverart-cache:/usr/share/snapserver/snapweb/coverart
+      - bluetooth-pairings:/var/lib/bluetooth
     restart: unless-stopped
     healthcheck:
       # Check if snapserver HTTP is responding (use the web UI root instead of JSON-RPC)
@@ -85,19 +86,17 @@ services:
     environment:
       - TZ=${TZ:-America/Los_Angeles}
       - PLEXAMP_CLAIM_TOKEN=${PLEXAMP_CLAIM_TOKEN:-}
-      - PLEXAMP_PLAYER_NAME=${PLEXAMP_SERVER_NAME:-Plum Audio}
+      - PLEXAMP_PLAYER_NAME=${PLEXAMP_SERVER_NAME:-Office Plexamp}
     volumes:
       - plexamp-data:/app/plexamp
       - snapcast-fifos:/tmp/snapcast-fifos
     restart: unless-stopped
     profiles:
       - plexamp
+    # Healthcheck disabled: Plexamp's connection testing conflicts with healthcheck curl requests
+    # causing HTTP server deadlock. Plexamp logs "Plexamp is now signed in and ready!" when healthy.
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f http://localhost:32500/ >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 45s
+      disable: true
 
 volumes:
   snapcast-config:
@@ -111,4 +110,6 @@ volumes:
   plexamp-data:
     driver: local
   coverart-cache:
+    driver: local
+  bluetooth-pairings:
     driver: local

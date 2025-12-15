@@ -413,3 +413,74 @@ export const dlnaService = {
     }
   },
 };
+
+/**
+ * Plexamp Control
+ */
+export const plexampService = {
+  /**
+   * Enable Plexamp service
+   */
+  async enable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/plexamp/enable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to enable Plexamp' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to enable Plexamp:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Disable Plexamp service
+   */
+  async disable(): Promise<{ success: boolean; message: string; details?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/plexamp/disable`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to disable Plexamp' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to disable Plexamp:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get Plexamp service status
+   */
+  async getStatus(): Promise<{ running: boolean; status: string; error?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/plexamp/status`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get Plexamp status:', error);
+      throw error;
+    }
+  },
+};

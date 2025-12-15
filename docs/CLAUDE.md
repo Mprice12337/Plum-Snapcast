@@ -116,12 +116,20 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - Client-side audio progress prediction (useAudioSync)
 - Server-side settings persistence (settings.json)
 - Dynamic service control via supervisorctl
+- Dynamic stream lifecycle management (AirPlay)
 
 **Metadata Flow**: Source → Service → JSON files/D-Bus → Control script → Snapcast properties → WebSocket → Frontend
 
 **Settings Flow**: Frontend → settingsService.ts → settings_api.py → /app/data/settings.json
 
 **Integration Control**: Frontend → integrationsService.ts → integrations_api.py → supervisorctl → Service restart
+
+**Dynamic Stream Lifecycle Management** (All Integrations):
+- **Framework**: All audio integrations use dynamic stream lifecycle management
+- **Always Discoverable**: Services run continuously → Integrations visible on network (AirPlay discoverable, Bluetooth pairable, Spotify Connect available, etc.)
+- **Stream Lifecycle**: Lifecycle managers monitor activity → Create Snapcast stream when active → Remove after idle timeout when inactive
+- **FIFO Management**: FIFO keepers prevent audio service blocking when no Snapcast stream exists
+- **Benefits**: Reduces clutter (no empty streams), maintains discoverability, smart idle timeouts, automatic cleanup of control scripts
 
 ---
 
@@ -168,7 +176,7 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - **Bluetooth**: No album art (needs BlueZ 5.81+, Alpine has 5.70). SSP only (no PIN codes). Metadata via AVRCP.
 - **Spotify**: Uses spotifyd (not librespot) for D-Bus MPRIS. Patched with-avahi to avoid port conflicts. Album art cached to `/usr/share/snapserver/snapweb/coverart/`
 - **DLNA/UPnP**: gmrender-resurrect, GStreamer pipeline to 44.1kHz/16-bit stereo. Metadata from UPnP AVTransport.
-- **Plexamp**: Separate Debian container (glibc). Monitors PlayQueue.json for metadata. HTTP API for controls at localhost:32500. S16_LE/44.1kHz/stereo conversion via ALSA. Start with `docker compose --profile plexamp up -d`
+- **Plexamp**: Separate Debian container (glibc). Monitors PlayQueue.json for metadata. HTTP API for controls at localhost:32500. S16_LE/44.1kHz/stereo conversion via ALSA. Pinned to version 4.11.3 (4.12.x has HTTP server deadlock bug). Start with `docker compose --profile plexamp up -d`
 
 ### Network Architecture
 
@@ -331,6 +339,7 @@ git pull && docker compose pull && docker compose up -d
 12. **Settings Persistence**: Integration and federation settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Managed exclusively via web UI. No environment variables needed for integrations.
 13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
 14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
+15. **Dynamic Stream Lifecycle**: All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use lifecycle managers to dynamically create/remove Snapcast streams based on activity. Lifecycle managers monitor metadata/events, create streams on activity, and remove after idle timeout. FIFO keepers prevent audio service blocking when no stream exists. See `_resources/DYNAMIC-STREAM-LIFECYCLE-FRAMEWORK.md` for implementation details.
 
 ---
 

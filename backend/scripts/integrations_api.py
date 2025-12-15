@@ -220,8 +220,16 @@ class BluetoothController:
 
     def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
         self.controller = integration_controller
-        # Bluetooth requires multiple services
-        self.services = ["bluetoothd", "bluetooth-init", "bluealsa", "bluealsa-aplay", "bluetooth-monitor"]
+        # Bluetooth requires multiple services including dynamic lifecycle management
+        self.services = [
+            "bluetoothd",
+            "bluetooth-init",
+            "bluealsa",
+            "bluealsa-aplay",
+            "bluetooth-monitor",
+            "bluetooth-fifo-keeper",
+            "bluetooth-stream-lifecycle-manager"
+        ]
         self.adapter = "hci0"
         self.settings_manager = settings_manager or SettingsManager()
 
@@ -592,7 +600,14 @@ class SpotifyController:
 
     def enable(self) -> Dict[str, Any]:
         """Enable Spotify service"""
+        # Start spotifyd first
         success, output = self.controller.start_service(self.service_name)
+
+        # Also start the lifecycle manager (it monitors spotifyd and creates/removes streams)
+        lifecycle_success, lifecycle_output = self.controller.start_service("spotify-stream-lifecycle-manager")
+
+        # Also start the fifo keeper
+        fifo_success, fifo_output = self.controller.start_service("spotify-fifo-keeper")
 
         # Update settings to persist state
         if success:
@@ -608,13 +623,20 @@ class SpotifyController:
                 logger.error(f"Failed to persist Spotify enabled state: {e}")
 
         return {
-            "success": success,
-            "message": "Spotify enabled" if success else "Failed to enable Spotify",
-            "details": output.strip()
+            "success": success and lifecycle_success,
+            "message": "Spotify enabled" if (success and lifecycle_success) else "Failed to enable Spotify",
+            "details": f"spotifyd: {output.strip()}\nlifecycle-manager: {lifecycle_output.strip()}\nfifo-keeper: {fifo_output.strip()}"
         }
 
     def disable(self) -> Dict[str, Any]:
         """Disable Spotify service"""
+        # Stop the lifecycle manager first
+        lifecycle_success, lifecycle_output = self.controller.stop_service("spotify-stream-lifecycle-manager")
+
+        # Stop the fifo keeper
+        fifo_success, fifo_output = self.controller.stop_service("spotify-fifo-keeper")
+
+        # Stop spotifyd last
         success, output = self.controller.stop_service(self.service_name)
 
         # Update settings to persist state
@@ -633,7 +655,7 @@ class SpotifyController:
         return {
             "success": success,
             "message": "Spotify disabled" if success else "Failed to disable Spotify",
-            "details": output.strip()
+            "details": f"spotifyd: {output.strip()}\nlifecycle-manager: {lifecycle_output.strip()}\nfifo-keeper: {fifo_output.strip()}"
         }
 
     def get_status(self) -> Dict[str, Any]:
@@ -704,6 +726,100 @@ class SpotifyController:
                 "success": False,
                 "message": f"Error updating device name: {str(e)}"
             }
+
+
+class PlexampController:
+    """Controls Plexamp stream lifecycle manager"""
+
+    def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
+        self.controller = integration_controller
+        # Note: Plexamp itself runs in separate Debian container
+        # This controller only manages the lifecycle manager service
+        self.lifecycle_service = "plexamp-stream-lifecycle-manager"
+        self.settings_manager = settings_manager or SettingsManager()
+
+    def _is_available(self) -> bool:
+        """Check if Plexamp is available (configured in docker-compose)"""
+        # Availability is determined by PLEXAMP_ENABLED env var
+        # Check environment variable directly to handle changes between container restarts
+        plexamp_enabled = os.getenv("PLEXAMP_ENABLED", "0").strip() in ("1", "true", "True", "TRUE", "yes", "Yes", "YES")
+
+        # Update settings to keep them in sync (for frontend access)
+        try:
+            settings = self.settings_manager.get_settings()
+            current_available = settings.get("integrations", {}).get("plexamp", {}).get("available", False)
+            if current_available != plexamp_enabled:
+                logger.info(f"Updating Plexamp availability from {current_available} to {plexamp_enabled}")
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "plexamp": {
+                            "available": plexamp_enabled
+                        }
+                    }
+                })
+        except Exception as e:
+            logger.error(f"Failed to update Plexamp availability in settings: {e}")
+
+        return plexamp_enabled
+
+    def enable(self) -> Dict[str, Any]:
+        """Enable Plexamp stream lifecycle manager"""
+        if not self._is_available():
+            return {
+                "success": False,
+                "message": "Plexamp is not available. Please configure PLEXAMP_ENABLED in docker-compose."
+            }
+
+        success, output = self.controller.start_service(self.lifecycle_service)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "plexamp": {
+                            "enabled": True
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Plexamp enabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "Plexamp enabled" if success else "Failed to enable Plexamp",
+            "details": output.strip()
+        }
+
+    def disable(self) -> Dict[str, Any]:
+        """Disable Plexamp stream lifecycle manager"""
+        success, output = self.controller.stop_service(self.lifecycle_service)
+
+        # Update settings to persist state
+        if success:
+            try:
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "plexamp": {
+                            "enabled": False
+                        }
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Failed to persist Plexamp disabled state: {e}")
+
+        return {
+            "success": success,
+            "message": "Plexamp disabled" if success else "Failed to disable Plexamp",
+            "details": output.strip()
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get Plexamp lifecycle manager status"""
+        status = self.controller.get_service_status(self.lifecycle_service)
+        # Add availability info to status
+        status["available"] = self._is_available()
+        return status
 
 
 class DLNAController:
@@ -826,6 +942,7 @@ def create_integrations_blueprint(
     bluetooth_controller = BluetoothController(integration_controller)
     spotify_controller = SpotifyController(integration_controller)
     dlna_controller = DLNAController(integration_controller)
+    plexamp_controller = PlexampController(integration_controller)
 
     bp = Blueprint('integrations', __name__)
 
@@ -1053,6 +1170,39 @@ def create_integrations_blueprint(
         except Exception as e:
             logger.error(f"DLNA device name update failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
+
+    # Plexamp endpoints
+    @bp.route("/api/integrations/plexamp/enable", methods=["POST"])
+    def plexamp_enable():
+        """Enable Plexamp stream lifecycle manager"""
+        try:
+            result = plexamp_controller.enable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Plexamp enable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/plexamp/disable", methods=["POST"])
+    def plexamp_disable():
+        """Disable Plexamp stream lifecycle manager"""
+        try:
+            result = plexamp_controller.disable()
+            status_code = 200 if result["success"] else 500
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Plexamp disable failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/plexamp/status", methods=["GET"])
+    def plexamp_status():
+        """Get Plexamp lifecycle manager status"""
+        try:
+            result = plexamp_controller.get_status()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Plexamp status check failed: {e}")
+            return jsonify({"running": False, "status": "error", "available": False, "error": str(e)}), 500
 
     return bp
 

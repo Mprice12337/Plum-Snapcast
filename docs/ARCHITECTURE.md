@@ -22,6 +22,15 @@ Plum-Snapcast/
 │   │   └── shairport-sync.conf      # AirPlay receiver config
 │   └── scripts/               # Container initialization scripts
 │       ├── setup.sh           # Container startup script
+│       ├── stream-lifecycle-manager.py         # AirPlay lifecycle manager
+│       ├── bluetooth-stream-lifecycle-manager.py  # Bluetooth lifecycle manager
+│       ├── spotify-stream-lifecycle-manager.py    # Spotify lifecycle manager
+│       ├── dlna-stream-lifecycle-manager.py       # DLNA lifecycle manager
+│       ├── plexamp-stream-lifecycle-manager.py    # Plexamp lifecycle manager
+│       ├── fifo-keeper.sh                      # AirPlay FIFO keeper
+│       ├── bluetooth-fifo-keeper.sh            # Bluetooth FIFO keeper
+│       ├── spotify-fifo-keeper.sh              # Spotify FIFO keeper
+│       ├── dlna-fifo-keeper.sh                 # DLNA FIFO keeper
 │       ├── airplay-control-script.py  # AirPlay metadata & control handler
 │       └── plexamp-control-script.py  # Plexamp metadata & control handler
 ├── frontend/                  # React/TypeScript web interface
@@ -462,7 +471,7 @@ iOS/macOS       Plex App                   http://localhost:3000
 - Snapcast: https://github.com/badaix/snapcast by Johannes Pohl
 - Shairport-Sync: https://github.com/mikebrady/shairport-sync by Mike Brady
 
-**Date of Last Update**: 2025-11-04
+**Date of Last Update**: 2025-12-15
 
 ## 11. Glossary / Acronyms
 
@@ -587,9 +596,271 @@ AirPlay Device (iOS/macOS)
 5. AirPlay sends artwork → `pcst`...`pcen` bundle → Artwork loaded (1-10s delay)
 6. Frontend retry mechanism finds artwork → Display updates
 
-## 13. Critical Architectural Decisions
+## 13. Dynamic Stream Lifecycle Management
 
-### Decision 1: Integrated Snapclient
+**Purpose**: Dynamically create and remove Snapcast streams based on integration activity, reducing resource usage and UI clutter while maintaining service discoverability.
+
+### 13.1. Overview
+
+All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use a dynamic stream lifecycle framework that creates Snapcast streams only when the integration is actively playing audio.
+
+**Key Principles**:
+- **Always Discoverable**: Audio services run continuously (AirPlay visible, Bluetooth pairable, etc.)
+- **Dynamic Streams**: Snapcast streams created only when active, removed after idle timeout
+- **FIFO Management**: FIFO keepers prevent audio service blocking when no stream exists
+- **Resource Efficiency**: Control scripts spawn only when streams exist, automatic cleanup
+
+### 13.2. Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Audio Source (iOS/Android/Desktop)                         │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Audio Service (shairport-sync/bluealsa/spotifyd/etc.)      │
+│  - Runs continuously (always discoverable)                  │
+│  - Outputs to FIFO pipe                                     │
+│  - Sends metadata to metadata pipe/D-Bus                    │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+         ┌───────────┴───────────┐
+         │                       │
+         ▼                       ▼
+┌────────────────┐      ┌────────────────────┐
+│  FIFO Keeper   │      │  Stream Lifecycle  │
+│  (idle state)  │      │  Manager           │
+│                │◄─────┤                    │
+│  Reads FIFO to │      │  Monitors:         │
+│  prevent block │      │  - Metadata        │
+└────────────────┘      │  - Events/D-Bus    │
+                        │  - Activity        │
+                        └────────┬───────────┘
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+        ▼                        ▼                        ▼
+  CREATE STREAM            MONITOR STATE            DELETE STREAM
+  - Stream.AddStream       - Activity events        - Stream.RemoveStream
+  - Launch control         - Client count           - Kill control
+    script                 - Idle timeout             script
+        │                        │                        │
+        └────────────────────────┼────────────────────────┘
+                                 ▼
+                        ┌─────────────────┐
+                        │  Snapcast       │
+                        │  Server         │
+                        │  (distributes)  │
+                        └─────────────────┘
+```
+
+### 13.3. State Machine
+
+Each integration transitions through three states:
+
+```
+┌──────────┐
+│   IDLE   │ (No stream, FIFO keeper active, service discoverable)
+└─────┬────┘
+      │
+      │ Activity detected (metadata, connection, playback start)
+      ▼
+┌──────────┐
+│  ACTIVE  │ (Stream exists, control script running, audio flowing)
+└─────┬────┘
+      │
+      │ Idle detected (timeout after disconnect/pause/stop)
+      ▼
+┌──────────┐
+│ REMOVING │ (Cleanup in progress, kill control script)
+└─────┬────┘
+      │
+      │ Cleanup complete
+      ▼
+┌──────────┐
+│   IDLE   │
+└──────────┘
+```
+
+### 13.4. Components
+
+#### Lifecycle Managers
+Each integration has a dedicated lifecycle manager script:
+
+- **`stream-lifecycle-manager.py`** (AirPlay): Monitors shairport-sync metadata pipe for `pbeg`/`pend` events
+- **`bluetooth-stream-lifecycle-manager.py`** (Bluetooth): Monitors BlueZ D-Bus for A2DP device connections
+- **`spotify-stream-lifecycle-manager.py`** (Spotify): Monitors spotifyd D-Bus MPRIS for playback state changes
+- **`dlna-stream-lifecycle-manager.py`** (DLNA): Monitors gmrender-resurrect playback state
+- **`plexamp-stream-lifecycle-manager.py`** (Plexamp): Monitors PlayQueue.json file modifications
+
+**Responsibilities**:
+- Monitor integration-specific activity indicators
+- Create Snapcast stream when activity detected (via `Stream.AddStream` JSON-RPC)
+- Monitor stream state and client connections
+- Remove stream after idle timeout (via `Stream.RemoveStream`)
+- Clean up orphaned control script processes
+- Coordinate with FIFO keeper
+
+#### FIFO Keepers
+Each integration has a FIFO keeper that prevents audio service blocking:
+
+- **`fifo-keeper.sh`** (AirPlay `/tmp/snapfifo`)
+- **`bluetooth-fifo-keeper.sh`** (Bluetooth `/tmp/bluetooth-fifo`)
+- **`spotify-fifo-keeper.sh`** (Spotify `/tmp/spotify-fifo`)
+- **`dlna-fifo-keeper.sh`** (DLNA `/tmp/dlna-fifo`)
+
+**Operation**:
+1. Check if Snapcast stream exists (query server status)
+2. If stream doesn't exist: Read and discard FIFO data to prevent blocking
+3. If stream exists: Sleep (Snapcast is reading FIFO)
+4. Repeat every 1 second
+
+**Why This Works**:
+- Audio services write to FIFO continuously
+- Without a reader, the service blocks on `write()`
+- FIFO keeper provides a "dummy reader" when no stream exists
+- When stream is created, Snapcast becomes the primary reader
+
+### 13.5. Integration-Specific Implementations
+
+#### AirPlay (Shairport-Sync)
+- **Activity Trigger**: `pbeg` (play begin) metadata event
+- **Idle Trigger**: `pend` (play end) + 10s timeout
+- **Metadata Source**: XML metadata pipe (`/tmp/shairport-sync-metadata`)
+- **Disconnect**: `disc` event → immediate removal
+
+#### Bluetooth (BlueZ + bluez-alsa)
+- **Activity Trigger**: BlueZ Device1 `Connected=true` + A2DP profile
+- **Idle Trigger**: Device disconnect + 10s timeout
+- **Metadata Source**: BlueZ AVRCP via D-Bus
+- **Disconnect**: D-Bus property change → immediate removal
+
+#### Spotify (Spotifyd)
+- **Activity Trigger**: MPRIS `PlaybackStatus=Playing`
+- **Idle Trigger**: `PlaybackStatus=Stopped` + 10s timeout
+- **Metadata Source**: D-Bus MPRIS interface
+- **Disconnect**: Spotifyd disconnect → immediate removal
+
+#### DLNA/UPnP (gmrender-resurrect)
+- **Activity Trigger**: GStreamer playback state change to PLAYING
+- **Idle Trigger**: State STOPPED + 10s timeout
+- **Metadata Source**: UPnP AVTransport service
+- **Disconnect**: Renderer stop → removal after timeout
+
+#### Plexamp
+- **Activity Trigger**: PlayQueue.json modification with playback state
+- **Idle Trigger**: Empty queue or stopped + 30s timeout
+- **Metadata Source**: PlayQueue.json file monitoring
+- **Disconnect**: Queue empty → removal after timeout
+
+### 13.6. Benefits
+
+1. **Reduced Clutter**: Streams only appear in UI when actively playing
+2. **Resource Efficiency**: Control scripts only run when needed (~50MB memory saved per idle integration)
+3. **Always Discoverable**: Services remain visible on network even when stream doesn't exist
+4. **Smart Cleanup**: Orphaned processes automatically cleaned up
+5. **Graceful Handling**: Idle timeouts prevent premature removal during pauses
+6. **No User Impact**: Stream creation/removal is seamless, no user intervention required
+
+### 13.7. Configuration
+
+**Idle Timeouts** (hardcoded in lifecycle managers):
+- AirPlay: 10 seconds
+- Bluetooth: 10 seconds
+- Spotify: 10 seconds
+- DLNA: 10 seconds
+- Plexamp: 30 seconds (longer timeout for queue navigation)
+
+**Supervisord Priority** (start order):
+- Priority 20: FIFO keepers (start before lifecycle managers)
+- Priority 25: Lifecycle managers (start after FIFO keepers, before other services)
+
+### 13.8. Edge Cases Handled
+
+1. **Control Script Missing Initial Metadata**: Control script may miss first metadata bundle if spawned after activity start. Solution: Cached metadata reload on `mden` events (AirPlay).
+
+2. **Orphaned Control Scripts**: If stream removal fails, control script process remains. Solution: Lifecycle manager performs cleanup on startup and before removal.
+
+3. **Race Condition (Creation During Removal)**: Activity detected while stream is being removed. Solution: State machine prevents creation when state is `REMOVING`.
+
+4. **FIFO Keeper vs Snapcast Race**: Both try to read FIFO simultaneously. Solution: FIFO keeper checks for stream existence before reading.
+
+5. **Same-Album Artwork Not Updating**: Shairport-sync doesn't resend artwork for tracks from same album. Solution: Control script checks cache on every `mden` event (AirPlay).
+
+### 13.9. Troubleshooting
+
+**Stream Not Creating**:
+```bash
+# Check lifecycle manager status
+docker exec plum-snapcast-server supervisorctl status | grep lifecycle
+
+# View lifecycle manager logs
+docker exec plum-snapcast-server tail -f /var/log/supervisord/stream-lifecycle-manager_err.log
+
+# Test metadata flow (AirPlay example)
+docker exec plum-snapcast-server cat /tmp/shairport-sync-metadata | head -20
+```
+
+**Stream Not Deleting**:
+```bash
+# Check for orphaned control scripts
+docker exec plum-snapcast-server ps aux | grep control-script
+
+# Manually remove stream
+docker exec plum-snapcast-server python3 -c "
+import socket, json
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('localhost', 1704))
+req = json.dumps({'jsonrpc':'2.0','method':'Stream.RemoveStream','params':{'id':'AirPlay'},'id':1})
+sock.sendall((req + '\r\n').encode())
+print(sock.recv(4096).decode())
+"
+```
+
+**FIFO Blocking Issues**:
+```bash
+# Check FIFO keeper status
+docker exec plum-snapcast-server supervisorctl status | grep fifo-keeper
+
+# Manually drain FIFO
+docker exec plum-snapcast-server timeout 1 cat /tmp/snapfifo > /dev/null || true
+```
+
+### 13.10. Future Enhancements
+
+- **Gradual Idle Timeout**: Longer timeout if clients are connected to stream
+- **Pre-warming**: Create stream on service startup to reduce first-connection latency
+- **Multi-FIFO Support**: Single keeper script managing multiple FIFOs
+- **HTTP API**: REST endpoints to manually force stream creation/deletion for testing
+
+## 14. Critical Architectural Decisions
+
+### Decision 1: Dynamic Stream Lifecycle Management
+
+**Context**: Traditional deployments create static Snapcast streams at container startup that exist whether or not the source is active.
+
+**Decision**: Implement dynamic stream lifecycle management for all audio integrations.
+
+**Rationale**:
+- Reduces UI clutter - streams only visible when actively playing
+- Saves resources - control scripts only run when needed
+- Maintains discoverability - services remain visible on network
+- Improves user experience - cleaner interface, automatic cleanup
+
+**Consequences**:
+- ✅ Cleaner UI (no empty streams)
+- ✅ Reduced resource usage (~50MB per idle integration)
+- ✅ Services always discoverable (AirPlay visible, Bluetooth pairable)
+- ✅ Automatic cleanup of orphaned processes
+- ❌ Added complexity (lifecycle managers + FIFO keepers)
+- ❌ Potential edge cases with rapid connect/disconnect
+- ❌ Slight delay on first connection (stream creation time)
+
+**Implementation**: Each integration has a lifecycle manager monitoring activity and a FIFO keeper preventing blocking. See Section 13 for details.
+
+### Decision 2: Integrated Snapclient
 
 **Context**: Traditional Snapcast deployments separate server and clients across different devices.
 
@@ -609,7 +880,7 @@ AirPlay Device (iOS/macOS)
 
 **Future Consideration**: Make snapclient optional for pure server-only deployments.
 
-### Decision 2: Host Network Mode
+### Decision 3: Host Network Mode
 
 **Context**: AirPlay discovery requires mDNS (multicast DNS) for device visibility.
 
@@ -630,7 +901,7 @@ AirPlay Device (iOS/macOS)
 
 **Mitigation**: Firewall rules on host to limit exposure.
 
-### Decision 3: Host D-Bus + Container Avahi
+### Decision 4: Host D-Bus + Container Avahi
 
 **Context**: Both D-Bus and Avahi are required for AirPlay, and running both in the container caused conflicts.
 
@@ -652,7 +923,7 @@ AirPlay Device (iOS/macOS)
 
 **Setup Requirement**: One-time host configuration (disable Avahi, ensure D-Bus is running).
 
-### Decision 4: React with Custom CSS vs UI Framework
+### Decision 5: React with Custom CSS vs UI Framework
 
 **Context**: Frontend needed to be lightweight, fast, and customizable.
 
@@ -672,7 +943,7 @@ AirPlay Device (iOS/macOS)
 - ❌ More CSS to write manually
 - ❌ No pre-built components
 
-### Decision 5: Album Artwork via Stream Properties
+### Decision 6: Album Artwork via Stream Properties
 
 **Context**: Snapcast's control script can set custom stream properties, which are transmitted to clients via WebSocket.
 
@@ -702,7 +973,7 @@ AirPlay Device (iOS/macOS)
 1. **Missing cache directory**: Setup script didn't create artwork directory, causing all artwork to fail silently
 2. **Race condition**: Artwork loaded then immediately cleared by track change event - fixed with 2-second grace period
 
-## 14. Performance Characteristics
+## 15. Performance Characteristics
 
 **Audio Latency**:
 - AirPlay to Snapcast: ~50-100ms
@@ -724,7 +995,7 @@ AirPlay Device (iOS/macOS)
 - Streams per server: Up to 5 simultaneous streams
 - Bottleneck: Network bandwidth for large deployments
 
-## 15. Troubleshooting Architecture
+## 16. Troubleshooting Architecture
 
 **Log Locations**:
 - Supervisord main log: `/app/config/supervisord.log` (in container)
@@ -765,4 +1036,4 @@ docker logs plum-snapcast-server 2>&1 | grep -i "artwork\|track"
 - Performance characteristics change
 - Security considerations evolve
 
-**Last Reviewed**: 2025-11-17
+**Last Reviewed**: 2025-12-15

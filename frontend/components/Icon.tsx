@@ -37,6 +37,7 @@ import wifiIcon from '../src/assets/icons/wifi.svg?raw';
 import waveformIcon from '../src/assets/icons/waveform.svg?raw';
 import snapcastIcon from '../src/assets/icons/snapcast.svg?raw';
 import snapcastColorIcon from '../src/assets/icons/snapcast-color.svg?raw';
+import plexampIcon from '../src/assets/icons/plexamp.svg?raw';
 
 export type IconName =
   | 'play'
@@ -74,7 +75,8 @@ export type IconName =
   | 'wifi'
   | 'waveform'
   | 'snapcast'
-  | 'snapcast-color';
+  | 'snapcast-color'
+  | 'plexamp';
 
 const iconMap: Record<IconName, string> = {
   'play': playIcon,
@@ -113,6 +115,7 @@ const iconMap: Record<IconName, string> = {
   'waveform': waveformIcon,
   'snapcast': snapcastIcon,
   'snapcast-color': snapcastColorIcon,
+  'plexamp': plexampIcon,
 };
 
 interface IconProps {

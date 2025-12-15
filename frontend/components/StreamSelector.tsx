@@ -9,6 +9,18 @@ interface StreamSelectorProps {
     federationEnabled?: boolean;
 }
 
+/**
+ * Helper function to get display name for a stream
+ * Converts none-* streams to "None" for cleaner UI
+ */
+const getStreamDisplayName = (stream: Stream, isMainTitle: boolean = false): string => {
+    if (stream.id.startsWith('none-')) {
+        // In main title, show "Select a Source", in dropdown show "None"
+        return isMainTitle ? 'Select a Source' : 'None';
+    }
+    return stream.name;
+};
+
 export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false}) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
@@ -57,7 +69,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                 aria-label="Select audio stream source"
             >
         <span className="text-3xl font-bold text-[var(--accent-color)] truncate pr-4">
-          {currentStream ? currentStream.name : 'Select a Source'}
+          {currentStream ? getStreamDisplayName(currentStream, true) : 'Select a Source'}
         </span>
                 <Icon name="chevron-down" className={`text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} style={{ color: 'inherit' }} aria-hidden />
             </button>
@@ -68,14 +80,6 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                     role="listbox"
                 >
                     <ul className="py-2 text-base text-[var(--text-primary)] max-h-60 overflow-auto">
-                        <li role="option" aria-selected={!currentStreamId}>
-                            <button
-                                onClick={() => handleSelect(null)}
-                                className="block w-full text-left px-4 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-secondary-hover)]"
-                            >
-                                None
-                            </button>
-                        </li>
                         {federationEnabled ? (
                             Object.entries(groupedStreams).map(([serverName, serverStreams]) => (
                                 <React.Fragment key={serverName}>
@@ -88,7 +92,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                                                 onClick={() => handleSelect(s.id)}
                                                 className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
                                             >
-                                                {s.name}
+                                                {getStreamDisplayName(s)}
                                             </button>
                                         </li>
                                     ))}
@@ -101,7 +105,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                                         onClick={() => handleSelect(s.id)}
                                         className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
                                     >
-                                        {s.name}
+                                        {getStreamDisplayName(s)}
                                     </button>
                                 </li>
                             ))

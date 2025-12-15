@@ -37,12 +37,21 @@ const App: React.FC = () => {
     const [recentUserChanges, setRecentUserChanges] = useState<{type: string, timestamp: number, data: any} | null>(null);
     // Use ref to avoid stale closure in polling callback
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
+    // Use ref to access current streams without circular dependency
+    const streamsRef = useRef<Stream[]>(streams);
+    // Use ref to prevent concurrent fetchData calls
+    const isFetchingRef = useRef(false);
 
     // Settings loaded from settingsService (server + local storage)
     const [settings, setSettings] = useState<Settings>(settingsService.getMergedSettings());
 
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
+
+    // Update streamsRef when streams changes
+    useEffect(() => {
+        streamsRef.current = streams;
+    }, [streams]);
 
     // Browser audio client for "Listen in Browser" functionality
     const browserAudio = useBrowserAudioClient(window.location.hostname);
@@ -153,6 +162,9 @@ const App: React.FC = () => {
         /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
     ) || clients.find(c => c.id !== browserClientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
+    // Treat none-* streams the same as no stream selected (hide controls)
+    const isNoneStream = currentStream?.id?.startsWith('none-') ?? false;
+    const shouldShowControls = currentStream && !isNoneStream;
 
     // Auto-assign browser audio client to user's current stream when it connects
     useEffect(() => {
@@ -427,28 +439,48 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
             // Handle refresh signal - fetch latest state for all streams
             if (playbackStatus === 'REFRESH') {
+                console.log('[PlaybackState] REFRESH signal - refetching full server status');
                 // Fetch latest state for all streams
                 const serverStatus = await snapcastService.getServerStatus();
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
-                    setStreams(prevStreams =>
-                        prevStreams.map(stream => {
-                            // Strip federation prefix for server stream lookup
-                            const localStreamId = getLocalStreamId(stream.id);
+                    // Get all current stream IDs (without federation prefix)
+                    const currentStreamIds = new Set(streamsRef.current.map(s => getLocalStreamId(s.id)));
+                    const newStreamIds = new Set(serverStatus.server.streams.map((s: any) => s.id));
 
-                            const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
-                            if (serverStream) {
-                                const isPlaying = snapcastService.isStreamPlaying(serverStream);
-                                if (stream.isPlaying !== isPlaying) {
-                                    console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                    // Check if streams have been added or removed
+                    const streamsAdded = [...newStreamIds].some(id => !currentStreamIds.has(id));
+                    const streamsRemoved = [...currentStreamIds].some(id => !newStreamIds.has(id));
+
+                    if (streamsAdded || streamsRemoved) {
+                        console.log('[PlaybackState] Stream list changed - refetching all data');
+                        // If streams were added/removed, refetch everything (only if not already fetching)
+                        if (!isFetchingRef.current) {
+                            await fetchData();
+                        } else {
+                            console.log('[PlaybackState] Stream list changed but already fetching, skipping');
+                        }
+                    } else {
+                        // Just update playback state for existing streams
+                        setStreams(prevStreams =>
+                            prevStreams.map(stream => {
+                                // Strip federation prefix for server stream lookup
+                                const localStreamId = getLocalStreamId(stream.id);
+
+                                const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
+                                if (serverStream) {
+                                    const isPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (stream.isPlaying !== isPlaying) {
+                                        console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                    }
+                                    return {
+                                        ...stream,
+                                        isPlaying: isPlaying
+                                    };
                                 }
-                                return {
-                                    ...stream,
-                                    isPlaying: isPlaying
-                                };
-                            }
-                            return stream;
-                        })
-                    );
+                                return stream;
+                            })
+                        );
+                    }
                 }
                 return;
             }
@@ -456,11 +488,24 @@ const App: React.FC = () => {
             // Handle direct playback status update
             const isPlaying = playbackStatus.toLowerCase() === 'playing';
 
+            // Check if this is a new stream that doesn't exist yet
+            const federatedStreamId = getFederatedStreamId(streamId);
+            const streamExists = streamsRef.current.some(stream => stream.id === federatedStreamId);
+
+            if (!streamExists) {
+                // This is a NEW stream - fetch all data to include it (only if not already fetching)
+                if (!isFetchingRef.current) {
+                    console.log(`[PlaybackState] New stream detected: ${streamId} - refetching all data`);
+                    await fetchData();
+                } else {
+                    console.log(`[PlaybackState] New stream detected: ${streamId} - but already fetching, skipping`);
+                }
+                return;
+            }
+
             // Update the stream's playing state
             setStreams(prevStreams =>
                 prevStreams.map(stream => {
-                    // Map local WebSocket stream ID to federated stream ID
-                    const federatedStreamId = getFederatedStreamId(streamId);
                     const isMatch = stream.id === federatedStreamId;
 
                     if (isMatch) {
@@ -478,6 +523,7 @@ const App: React.FC = () => {
         });
 
         return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [settings.federation.enabled, servers]);
 
     // Listen for real-time position updates from Snapcast (for sources that support it)
@@ -747,76 +793,111 @@ const App: React.FC = () => {
         return () => clearInterval(interval);
     }, [currentStream?.id, settings.federation.enabled]);
 
-    useEffect(() => {
-        let isCancelled = false;
+    // Shared function to fetch/refetch all data from Snapcast
+    const fetchData = useCallback(async () => {
+        // Prevent concurrent fetches - use ref to avoid race conditions
+        if (isFetchingRef.current) {
+            console.log('[FetchData] Already fetching, skipping duplicate call');
+            return;
+        }
 
-        const fetchData = async () => {
-            if (!isLoading) return; // Prevent multiple calls
+        isFetchingRef.current = true;
+        setConnectionError(null);
 
-            setConnectionError(null);
+        try {
+            const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
 
+            setStreams(initialStreams);
+            setClients(initialClients);
+            setServerName(snapServerName || 'Snapcast Server');
+
+            // Build client to group mapping
             try {
-                const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
+                const serverStatus = await snapcastService.getServerStatus();
+                const groupMap: Record<string, string> = {};
 
-                if (isCancelled) return; // Don't update state if component unmounted
-
-                setStreams(initialStreams);
-                setClients(initialClients);
-                setServerName(snapServerName || 'Snapcast Server');
-
-                // Build client to group mapping
-                try {
-                    const serverStatus = await snapcastService.getServerStatus();
-                    const groupMap: Record<string, string> = {};
-
-                    if (serverStatus.server && serverStatus.server.groups) {
-                        serverStatus.server.groups.forEach((group: any) => {
-                            if (group.clients) {
-                                group.clients.forEach((client: any) => {
-                                    groupMap[client.id] = group.id;
-                                });
-                            }
-                        });
-                    }
-
-                    console.log('[Init] Built client group mapping:', groupMap);
-                    setClientGroupMap(groupMap);
-                } catch (error) {
-                    console.error('[Init] Could not build client group mapping:', error);
+                if (serverStatus.server && serverStatus.server.groups) {
+                    serverStatus.server.groups.forEach((group: any) => {
+                        if (group.clients) {
+                            group.clients.forEach((client: any) => {
+                                groupMap[client.id] = group.id;
+                            });
+                        }
+                    });
                 }
 
-                // Check if we got error data (connection failed)
-                if (initialStreams.length === 1 && initialStreams[0].id === 'error-stream') {
-                    setConnectionError('Unable to connect to Snapcast server. Please check your configuration.');
+                console.log('[Init] Built client group mapping:', groupMap);
+                setClientGroupMap(groupMap);
+            } catch (error) {
+                console.error('[Init] Could not build client group mapping:', error);
+            }
+
+            // Check if we got error data (connection failed)
+            if (initialStreams.length === 1 && initialStreams[0].id === 'error-stream') {
+                setConnectionError('Unable to connect to Snapcast server. Please check your configuration.');
+            }
+        } catch (error) {
+            console.error('Error loading Snapcast data:', error);
+            setConnectionError('Failed to load Snapcast data');
+
+            // Set minimal fallback data
+            setStreams([]);
+            setClients([{
+                id: 'client-1',
+                name: 'My Device (You)',
+                currentStreamId: null,
+                volume: 75,
+                connected: true,
+            }]);
+        } finally {
+            // Always reset the flag, even if there was an error
+            isFetchingRef.current = false;
+        }
+    }, []);
+
+    // Initial data fetch on mount
+    useEffect(() => {
+        if (!isLoading) return; // Prevent multiple calls
+
+        fetchData().finally(() => {
+            setIsLoading(false);
+        });
+    }, []); // Empty dependency array - only run once
+
+    // Poll for stream additions/removals (fallback for when Server.OnUpdate isn't sent)
+    // This ensures dynamic streams appear/disappear even if WebSocket notifications fail
+    useEffect(() => {
+        if (!snapcastService) return;
+        if (settings.federation.enabled) return; // Federation polling handles this
+
+        const checkStreamList = async () => {
+            try {
+                const serverStatus = await snapcastService.getServerStatus();
+                if (serverStatus && serverStatus.server && serverStatus.server.streams) {
+                    const currentStreamIds = new Set(streamsRef.current.map(s => s.id));
+                    const serverStreamIds = new Set(serverStatus.server.streams.map((s: any) => s.id));
+
+                    // Check if streams were added or removed
+                    const streamsAdded = [...serverStreamIds].some(id => !currentStreamIds.has(id));
+                    const streamsRemoved = [...currentStreamIds].some(id => !serverStreamIds.has(id));
+
+                    if (streamsAdded || streamsRemoved) {
+                        console.log('[StreamPoll] Stream list changed - refetching all data');
+                        if (!isFetchingRef.current) {
+                            await fetchData();
+                        }
+                    }
                 }
             } catch (error) {
-                if (isCancelled) return;
-
-                console.error('Error loading Snapcast data:', error);
-                setConnectionError('Failed to load Snapcast data');
-
-                // Set minimal fallback data
-                setStreams([]);
-                setClients([{
-                    id: 'client-1',
-                    name: 'My Device (You)',
-                    currentStreamId: null,
-                    volume: 75,
-                    connected: true,
-                }]);
-            } finally {
-                if (!isCancelled) {
-                    setIsLoading(false);
-                }
+                console.error('[StreamPoll] Error checking stream list:', error);
             }
         };
 
-        fetchData();
+        // Poll every 10 seconds for stream list changes
+        const interval = setInterval(checkStreamList, 10000);
 
-        return () => {
-            isCancelled = true;
-        };
-    }, []); // Empty dependency array - only run once
+        return () => clearInterval(interval);
+    }, [settings.federation.enabled, fetchData]);
 
     // Federation polling - fetch data from federation API when enabled
     useEffect(() => {
@@ -1549,7 +1630,7 @@ const App: React.FC = () => {
                             federationEnabled={settings.federation.enabled}
                         />
                     </div>
-                    {currentStream ? (
+                    {shouldShowControls ? (
                         <div className="flex-grow flex flex-col">
                             <div className="space-y-6">
                                 <NowPlaying

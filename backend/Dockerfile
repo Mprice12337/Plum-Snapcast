@@ -48,8 +48,8 @@ RUN apk add --no-cache \
     gst-libav \
     libupnp
 
-# Install Python packages for federation service (websockets not in Alpine repos)
-RUN pip3 install --no-cache-dir --break-system-packages websockets
+# Install Python packages for federation service and lifecycle manager
+RUN pip3 install --no-cache-dir --break-system-packages websockets websocket-client
 
 # Add edge repository and install snapcast (latest: 0.34.0 in community repo)
 RUN echo "@edge http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
@@ -181,6 +181,10 @@ RUN mkdir -p /etc/dbus-1/system.d
 COPY config/shairport-sync-dbus.conf /etc/dbus-1/system.d/
 COPY config/spotifyd-dbus.conf /etc/dbus-1/system.d/
 
+# Copy BlueZ configuration for "Just Works" pairing support (iOS devices)
+RUN mkdir -p /etc/bluetooth
+COPY config/main.conf /etc/bluetooth/main.conf
+
 # Configure Avahi
 RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
     chmod 755 /run/avahi-daemon /var/run/dbus
@@ -209,13 +213,15 @@ RUN mkdir -p \
     /var/run/avahi-daemon \
     /var/log/supervisord \
     /usr/share/snapserver/snapweb/coverart \
+    /var/lib/bluetooth \
     && chown -R snapcast:snapcast /app \
     && chown -R snapcast:snapcast /tmp/snapcast-fifos \
     && chmod 755 /var/run/dbus \
     && chmod 755 /var/run/avahi-daemon \
     && chmod 755 /var/log/supervisord \
     && chown -R snapcast:snapcast /usr/share/snapserver/snapweb \
-    && chmod 755 /usr/share/snapserver/snapweb
+    && chmod 755 /usr/share/snapserver/snapweb \
+    && chmod 700 /var/lib/bluetooth
 
 # Copy configuration and scripts (copy all scripts at once)
 COPY config/supervisord/ /app/supervisord/
@@ -223,6 +229,18 @@ COPY config/shairport-sync.conf /app/config/
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true && \
     chown -R snapcast:snapcast /app
+
+# Copy control scripts to Snapserver plug-ins directory (required for dynamic stream management)
+RUN cp /app/scripts/airplay-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/bluetooth-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/spotify-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/dlna-control-script.py /usr/share/snapserver/plug-ins/ && \
+    cp /app/scripts/plexamp-control-script.py /usr/share/snapserver/plug-ins/ && \
+    chmod +x /usr/share/snapserver/plug-ins/airplay-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/bluetooth-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/spotify-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/dlna-control-script.py && \
+    chmod +x /usr/share/snapserver/plug-ins/plexamp-control-script.py
 
 # Replace snapweb index.html with redirect to port 3000
 # This preserves API/WebSocket functionality on /jsonrpc while redirecting browsers to our React GUI

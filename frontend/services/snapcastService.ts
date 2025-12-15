@@ -213,6 +213,7 @@ export class SnapcastService {
         }
 
         // Handle Stream.OnUpdate notification - Snapcast broadcasts this when stream changes
+        // This is also sent when a NEW stream is added dynamically
         if (message.method === 'Stream.OnUpdate') {
             const params = message.params;
 
@@ -221,10 +222,12 @@ export class SnapcastService {
             const stream = params.stream;
 
             if (stream && streamId) {
-                // Check stream status and properties for playback state
-                // Stream status can be: "playing", "idle", "unknown"
-                // Properties.playbackStatus can be: "Playing", "Paused", "Stopped"
+                // IMPORTANT: This notification is sent when:
+                // 1. An existing stream's properties change (metadata, playback state, etc.)
+                // 2. A NEW stream is added to Snapserver
+                // We need to handle both cases
 
+                // First, notify playback state listeners which will trigger App.tsx to check for new streams
                 let playbackStatus = null;
 
                 // Prefer properties.playbackStatus if available (from control script)
@@ -239,12 +242,14 @@ export class SnapcastService {
                                     stream.status === 'idle' ? 'Paused' : 'Stopped';
                 }
 
-                // Notify playback state listeners if we have a status
-                if (playbackStatus) {
-                    this.playbackStateListeners.forEach(listener => {
-                        listener(streamId, playbackStatus, stream.properties || {});
-                    });
-                }
+                // Always notify playback state listeners when Stream.OnUpdate is received
+                // The listener in App.tsx will check if this is a new stream and refetch if needed
+                // Use 'Unknown' if no status is available yet (happens when stream is first created)
+                const statusToSend = playbackStatus || 'Unknown';
+                console.log(`[SnapcastService] Stream.OnUpdate: ${streamId} status=${statusToSend}`);
+                this.playbackStateListeners.forEach(listener => {
+                    listener(streamId, statusToSend, stream.properties || {});
+                });
 
                 // Also check for metadata updates
                 if (stream.properties && stream.properties.metadata) {

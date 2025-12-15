@@ -233,6 +233,15 @@ class MetadataParser:
                         log(f"[State] Playback state → Playing (metadata received)")
                         updated = True
 
+                    # Check for cached artwork (in case track changed but artwork is from same album)
+                    # This ensures artwork displays even when shairport-sync doesn't send new artwork events
+                    artwork_url = self._load_artwork_from_cache()
+                    if artwork_url:
+                        self.last_artwork_load_time = time.time()
+                        self.store.update(artwork_url=artwork_url)
+                        log(f"[Artwork] Loaded from cache at metadata bundle end")
+                        updated = True
+
                     # Signal update if we changed anything
                     return updated
 
@@ -923,8 +932,7 @@ class SnapcastControlScript:
                     # Reset position to 0 for new track
                     self.store.update(position=0)
                     self.send_playback_state_update()
-                    # Trigger metadata update (new metadata will arrive from pipe shortly)
-                    self.send_metadata_update()
+                    # Note: Don't send metadata update here - wait for new metadata from pipe
                 elif command == "previous" or command == "prev":
                     self.dbus_monitor.previous_track()
                     # State remains Playing after skip
@@ -932,8 +940,7 @@ class SnapcastControlScript:
                     # Reset position to 0 for new track
                     self.store.update(position=0)
                     self.send_playback_state_update()
-                    # Trigger metadata update (new metadata will arrive from pipe shortly)
-                    self.send_metadata_update()
+                    # Note: Don't send metadata update here - wait for new metadata from pipe
                 elif command == "seek":
                     # Seek to specific position (in milliseconds)
                     position = params.get("position", 0)

@@ -73,6 +73,13 @@ def main():
                 "sourceName": os.getenv("DLNA_SOURCE_NAME", "DLNA"),
                 "deviceName": os.getenv("DLNA_DEVICE_NAME", "Plum Audio")
             },
+            "plexamp": {
+                # Check if Plexamp is available (configured in docker-compose)
+                "available": bool_from_env(os.getenv("PLEXAMP_ENABLED"), False),
+                # If available, default to enabled; otherwise disabled
+                "enabled": bool_from_env(os.getenv("PLEXAMP_ENABLED"), False),
+                "sourceName": os.getenv("PLEXAMP_SOURCE_NAME", "Plexamp")
+            },
             "snapcast": existing_settings.get("integrations", {}).get("snapcast", True),
             "visualizer": existing_settings.get("integrations", {}).get("visualizer", False)
         },

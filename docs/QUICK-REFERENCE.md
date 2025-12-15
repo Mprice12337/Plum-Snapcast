@@ -135,11 +135,18 @@ docker exec plum-snapcast-server speaker-test -D hw:Headphones -c 2 -t wav -l 1
 ```bash
 docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf status
 
-# Expected output:
-# avahi              RUNNING
-# shairport-sync     RUNNING
-# snapserver         RUNNING
-# snapclient         RUNNING
+# Expected output (varies by enabled integrations):
+# avahi                                  RUNNING
+# dbus                                   RUNNING
+# shairport-sync                         RUNNING    (if AirPlay enabled)
+# stream-lifecycle-manager               RUNNING    (AirPlay lifecycle)
+# fifo-keeper                            RUNNING    (AirPlay FIFO keeper)
+# bluetooth-stream-lifecycle-manager     RUNNING    (if Bluetooth enabled)
+# bluetooth-fifo-keeper                  RUNNING    (Bluetooth FIFO keeper)
+# spotify-stream-lifecycle-manager       RUNNING    (if Spotify enabled)
+# spotify-fifo-keeper                    RUNNING    (Spotify FIFO keeper)
+# snapserver                             RUNNING
+# snapclient                             RUNNING    (if hardware output enabled)
 ```
 
 ---
@@ -376,6 +383,42 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 
 # Restart backend
 docker compose restart
+```
+
+### Stream Not Appearing (Dynamic Lifecycle)
+
+```bash
+# Check lifecycle manager status (example: AirPlay)
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf status | grep lifecycle
+# Should show: RUNNING
+
+# View lifecycle manager logs
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf tail -f stream-lifecycle-manager stderr
+
+# Check if FIFO keeper is running
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf status | grep fifo-keeper
+# Should show: RUNNING
+
+# Test metadata flow (AirPlay example)
+docker exec plum-snapcast-server timeout 10 cat /tmp/shairport-sync-metadata | head -20
+# Should show XML metadata when AirPlay is connected
+
+# Manually check for streams in Snapcast
+curl -s http://localhost:1780/jsonrpc -d '{"jsonrpc":"2.0","method":"Server.GetStatus","id":1}' | grep -o '"name":"[^"]*"'
+```
+
+### Orphaned Control Scripts
+
+```bash
+# Check for orphaned control script processes
+docker exec plum-snapcast-server ps aux | grep control-script
+# Should only see running scripts when streams exist
+
+# Kill orphaned processes
+docker exec plum-snapcast-server pkill -f airplay-control-script.py
+
+# Restart lifecycle manager to trigger cleanup
+docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf restart stream-lifecycle-manager
 ```
 
 ### Docker Build Fails

@@ -27,6 +27,12 @@ if [ ! -p /tmp/snapfifo ]; then
     chmod 666 /tmp/snapfifo
 fi
 
+if [ ! -p /tmp/none-fifo ]; then
+    echo "Creating None stream FIFO pipe..."
+    mkfifo /tmp/none-fifo
+    chmod 666 /tmp/none-fifo
+fi
+
 if [ ! -p /tmp/shairport-sync-metadata ]; then
     echo "Creating AirPlay metadata pipe..."
     mkfifo /tmp/shairport-sync-metadata
@@ -66,9 +72,21 @@ echo "Artwork cache directory ready at /tmp/shairport-sync/.cache/coverart"
 # Generate snapserver configuration if it doesn't exist
 if [ ! -f /app/config/snapserver.conf ]; then
     echo "Generating snapserver.conf..."
+
+    # Get unique name for none stream (from setting or hostname)
+    NONE_STREAM_NAME="${NONE_STREAM_NAME:-$(hostname)}"
+    NONE_STREAM_ID="none-${NONE_STREAM_NAME}"
+
+    echo "Creating none stream: ${NONE_STREAM_ID}"
+
     cat > /app/config/snapserver.conf << SNAPCONF
 [stream]
 port = 1705
+# None stream - placeholder for local announcements (e.g., Home Assistant)
+# Uses unique name to avoid conflicts in federated setups
+# Uses dedicated FIFO to avoid conflicts with dynamic streams (AirPlay, Spotify, etc.)
+# Frontend filters out all "none-*" streams except the local one
+source = pipe:///tmp/none-fifo?name=${NONE_STREAM_ID}&sampleformat=48000:16:2&codec=pcm
 
 [http]
 enabled = true
@@ -90,42 +108,42 @@ port = 1704
 datadir = /app/data
 SNAPCONF
 
-    # Add AirPlay source to [stream] section
+    # AirPlay source is now managed dynamically by stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on client activity
+    # This keeps AirPlay discoverable but only creates Snapcast stream when active
     if [ "${AIRPLAY_CONFIG_ENABLED}" = "1" ]; then
-        echo "Adding AirPlay source..."
-        # Insert source after [stream] line with control script for metadata
-        sed -i '/^\[stream\]/a source = pipe:///tmp/snapfifo?name='"${AIRPLAY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/airplay-control-script.py'"${AIRPLAY_EXTRA_ARGS}" /app/config/snapserver.conf
+        echo "AirPlay stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Spotify source to [stream] section
+    # Spotify source is now managed dynamically by spotify-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on playback state
+    # This keeps Spotify Connect discoverable but only creates Snapcast stream when playing
     if [ "${SPOTIFY_CONFIG_ENABLED}" = "1" ]; then
-        echo "Adding Spotify source..."
-        # Insert source after [stream] line with control script for metadata
-        sed -i '/^\[stream\]/a source = pipe:///tmp/spotifyfifo?name='"${SPOTIFY_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/spotify-control-script.py' /app/config/snapserver.conf
+        echo "Spotify stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Bluetooth source to [stream] section
-    # Always add the source - it will only be available when services are running
-    echo "Adding Bluetooth source..."
-    # Insert source after [stream] line with control script for metadata
-    # Bluetooth audio is typically 44.1kHz/16-bit stereo
-    sed -i '/^\[stream\]/a source = pipe:///tmp/bluetooth-fifo?name='"${BLUETOOTH_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/bluetooth-control-script.py' /app/config/snapserver.conf
+    # Bluetooth source is now managed dynamically by bluetooth-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on device connections
+    # This keeps Bluetooth discoverable but only creates Snapcast stream when devices connect
+    if [ "${BLUETOOTH_CONFIG_ENABLED}" = "1" ]; then
+        echo "Bluetooth stream managed dynamically by lifecycle manager"
+    fi
 
-    # Add DLNA source to [stream] section
+    # DLNA source is now managed dynamically by dlna-stream-lifecycle-manager
     if [ "${DLNA_ENABLED}" = "1" ]; then
-        echo "Adding DLNA/UPnP source..."
-        # Insert source after [stream] line with control script for metadata
-        # DLNA audio is typically 44.1kHz/16-bit stereo (can vary based on source)
-        sed -i '/^\[stream\]/a source = pipe:///tmp/dlna-fifo?name='"${DLNA_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/dlna-control-script.py' /app/config/snapserver.conf
+        echo "DLNA stream managed dynamically by lifecycle manager"
     fi
 
-    # Add Plexamp source to [stream] section
-    # Note: Plexamp runs in separate Debian container, outputs to shared FIFO volume
+    # Plexamp source is now managed dynamically by plexamp-stream-lifecycle-manager
+    # The lifecycle manager will add/remove the stream based on playback state
+    # This keeps Plexamp available but only creates Snapcast stream when playing
     if [ "${PLEXAMP_ENABLED}" = "1" ]; then
-        echo "Adding Plexamp source (sidecar container)..."
-        # Insert source after [stream] line with control script for metadata
-        # Plexamp outputs 44.1kHz/16-bit stereo (CD quality)
-        sed -i '/^\[stream\]/a source = pipe:///tmp/snapcast-fifos/plexamp-fifo?name='"${PLEXAMP_SOURCE_NAME}"'&sampleformat=44100:16:2&codec=pcm&controlscript=/app/scripts/plexamp-control-script.py' /app/config/snapserver.conf
+        echo "Plexamp stream managed dynamically by lifecycle manager"
+        # Enable autostart for the lifecycle manager
+        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
+    else
+        # Ensure autostart is disabled when Plexamp is not enabled
+        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
     fi
 fi
 
@@ -143,10 +161,12 @@ if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then
     fi
 fi
 
-# Update shairport-sync device name
+# Update shairport-sync device name and copy config to /etc
 if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
     sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
 fi
+# Copy shairport-sync config to /etc (even if name wasn't updated)
+cp /app/config/shairport-sync.conf /etc/shairport-sync.conf
 
 # Note: Federation API server always runs to provide Settings API
 # Federation features (multi-server control) are enabled/disabled via settings
