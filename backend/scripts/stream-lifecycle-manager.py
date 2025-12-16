@@ -49,6 +49,7 @@ IDLE_TIMEOUT = 300  # 5 minutes - time to wait after stream ends before removing
 AIRPLAY_STREAM_ID = "AirPlay"
 AIRPLAY_FIFO_PATH = "/tmp/snapfifo"
 AIRPLAY_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/airplay-control-script.py"
+STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
 
 
 class StreamState(Enum):
@@ -312,6 +313,9 @@ class StreamLifecycleManager:
         self.consecutive_idle_count = 0
         self.idle_threshold = 60  # 60 consecutive idle status updates (~5 minutes at 5s intervals)
 
+        # Signal file monitoring
+        self.last_signal_time = 0
+
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
     def on_stream_begin(self):
@@ -555,6 +559,25 @@ class StreamLifecycleManager:
         except Exception as e:
             log(f"Failed to cleanup control scripts: {e}")
 
+    def _check_signal_file(self):
+        """Check if control script has signaled stream end via signal file
+
+        The control script has exclusive access to the metadata pipe and writes
+        to this signal file when it detects a 'pend' event. This allows the
+        lifecycle manager to know when to start the stream removal timeout.
+        """
+        try:
+            if Path(STREAM_END_SIGNAL_FILE).exists():
+                mtime = Path(STREAM_END_SIGNAL_FILE).stat().st_mtime
+                if mtime > self.last_signal_time:
+                    log(f"Signal: Control script signaled stream end (mtime: {mtime})")
+                    self.last_signal_time = mtime
+                    self.on_stream_end()
+        except Exception as e:
+            # Only log real errors, not missing file (expected when no signal yet)
+            if Path(STREAM_END_SIGNAL_FILE).exists():
+                log(f"Signal: Error checking signal file: {e}")
+
 
 class MetadataMonitor:
     """Monitor shairport-sync metadata pipe for session events
@@ -721,11 +744,15 @@ def main():
 
         # After pbeg detected and stream created, keep main thread alive
         # WebSocket monitor handles stream status, metadata monitor will restart on stream removal
+        # Main loop monitors signal file for stream end events from control script
         log("Metadata monitor handed off to control script")
         log("WebSocket monitor active - waiting for stream lifecycle events")
+        log("Signal file monitor active - checking for control script signals")
 
         while True:
-            time.sleep(60)
+            # Check signal file for stream end events (control script has metadata pipe access)
+            lifecycle._check_signal_file()
+            time.sleep(1)  # Check every second for responsive timeout triggers
 
     except KeyboardInterrupt:
         log("Shutting down...")
