@@ -60,3 +60,129 @@ export function getContrastRatio(color1: string, color2: string): number {
 
   return (lighter + 0.05) / (darker + 0.05);
 }
+
+/**
+ * HSL Color Manipulation Utilities
+ * For programmatic color adjustment (darken/lighten)
+ */
+
+interface HSL {
+  h: number; // Hue: 0-360
+  s: number; // Saturation: 0-100
+  l: number; // Lightness: 0-100
+}
+
+/**
+ * Convert hex color to HSL
+ * @param hex - Hex color string (e.g., "#ff5733")
+ * @returns HSL object {h, s, l}
+ */
+export function hexToHSL(hex: string): HSL {
+  // Remove # if present
+  const color = hex.replace('#', '');
+
+  // Parse RGB values (0-1 range)
+  const r = parseInt(color.substring(0, 2), 16) / 255;
+  const g = parseInt(color.substring(2, 4), 16) / 255;
+  const b = parseInt(color.substring(4, 6), 16) / 255;
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const diff = max - min;
+
+  // Calculate lightness
+  const l = (max + min) / 2;
+
+  // Calculate saturation
+  let s = 0;
+  if (diff !== 0) {
+    s = l > 0.5 ? diff / (2 - max - min) : diff / (max + min);
+  }
+
+  // Calculate hue
+  let h = 0;
+  if (diff !== 0) {
+    switch (max) {
+      case r:
+        h = ((g - b) / diff + (g < b ? 6 : 0)) / 6;
+        break;
+      case g:
+        h = ((b - r) / diff + 2) / 6;
+        break;
+      case b:
+        h = ((r - g) / diff + 4) / 6;
+        break;
+    }
+  }
+
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
+
+/**
+ * Convert HSL to hex color
+ * @param hsl - HSL object {h, s, l}
+ * @returns Hex color string (e.g., "#ff5733")
+ */
+export function hslToHex(hsl: HSL): string {
+  const h = hsl.h / 360;
+  const s = hsl.s / 100;
+  const l = hsl.l / 100;
+
+  let r, g, b;
+
+  if (s === 0) {
+    // Achromatic (gray)
+    r = g = b = l;
+  } else {
+    const hue2rgb = (p: number, q: number, t: number): number => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+
+  const toHex = (x: number): string => {
+    const hex = Math.round(x * 255).toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  };
+
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+/**
+ * Darken a color by reducing its lightness
+ * @param hex - Hex color string
+ * @param amount - Amount to darken (0-100, default 10)
+ * @returns Darkened hex color string
+ */
+export function darkenColor(hex: string, amount: number = 10): string {
+  const hsl = hexToHSL(hex);
+  hsl.l = Math.max(0, hsl.l - amount);
+  return hslToHex(hsl);
+}
+
+/**
+ * Lighten a color by increasing its lightness
+ * @param hex - Hex color string
+ * @param amount - Amount to lighten (0-100, default 10)
+ * @returns Lightened hex color string
+ */
+export function lightenColor(hex: string, amount: number = 10): string {
+  const hsl = hexToHSL(hex);
+  hsl.l = Math.min(100, hsl.l + amount);
+  return hslToHex(hsl);
+}

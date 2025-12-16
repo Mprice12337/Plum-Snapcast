@@ -184,6 +184,46 @@ export const ThemeTab: React.FC<ThemeTabProps> = ({
           </p>
         </div>
 
+        {/* Album Art Colors Toggle */}
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-[var(--text-primary)]">
+                Album Art Colors
+              </h4>
+              <p className="text-xs text-[var(--text-muted)] mt-1">
+                Extract background and accent colors from album artwork with guaranteed contrast
+              </p>
+            </div>
+            <Switch
+              checked={settings.theme.useAlbumArtColors || false}
+              onChange={(checked) => {
+                onSettingsChange({
+                  ...settings,
+                  theme: {
+                    ...settings.theme,
+                    useAlbumArtColors: checked,
+                  },
+                });
+              }}
+              label="Album Art Colors"
+              disabled={isMonochromeMode}
+            />
+          </div>
+          {settings.theme.useAlbumArtColors && !isMonochromeMode && (
+            <p className="text-xs text-[var(--text-muted)] mt-2 italic">
+              When enabled, UI colors will dynamically match your currently playing artwork.
+              Colors are automatically adjusted to meet WCAG accessibility standards.
+              Falls back to selected theme when no artwork is available.
+            </p>
+          )}
+          {isMonochromeMode && (
+            <p className="text-xs text-[var(--text-muted)] mt-2 italic opacity-70">
+              Not available in monochrome mode.
+            </p>
+          )}
+        </div>
+
       </div>
 
       <div className="pt-4 mt-6 border-t border-[var(--border-color)]">

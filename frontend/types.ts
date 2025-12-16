@@ -79,6 +79,7 @@ export interface Settings {
         mode: ThemeMode;
         accent: AccentColor;
         customColor?: string; // Hex string (e.g., "#ff5733")
+        useAlbumArtColors?: boolean; // Extract accent color from album artwork
     };
     display: {
         showOfflineDevices: boolean;

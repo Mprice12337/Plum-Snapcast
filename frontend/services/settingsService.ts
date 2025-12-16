@@ -15,6 +15,7 @@ const DEFAULT_LOCAL_SETTINGS = {
   theme: {
     mode: 'system' as ThemeMode,
     accent: 'purple' as AccentColor,
+    useAlbumArtColors: false,
   },
   display: {
     showOfflineDevices: false,
@@ -186,8 +187,14 @@ class SettingsService {
       if (stored) {
         const parsed = JSON.parse(stored);
         this.localSettings = {
-          theme: parsed.theme || DEFAULT_LOCAL_SETTINGS.theme,
-          display: parsed.display || DEFAULT_LOCAL_SETTINGS.display,
+          theme: {
+            ...DEFAULT_LOCAL_SETTINGS.theme,
+            ...parsed.theme,
+          },
+          display: {
+            ...DEFAULT_LOCAL_SETTINGS.display,
+            ...parsed.display,
+          },
         };
       }
     } catch (error) {

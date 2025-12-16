@@ -98,6 +98,23 @@
             --accent-text-color: #ffffff; /* White text on black accent */
         }
 
+        /* Smooth color transitions for album art theming */
+        * {
+            transition-property: background-color, border-color, color, fill, stroke;
+            transition-duration: 500ms;
+            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Preserve existing transition overrides */
+        .transition-all {
+            transition-property: all;
+        }
+
+        /* Don't transition transforms and other properties that should be instant */
+        .transition-none {
+            transition: none !important;
+        }
+
         .volume-slider {
             -webkit-appearance: none;
             appearance: none;

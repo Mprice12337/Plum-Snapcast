@@ -14,7 +14,8 @@ import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
 import {updateFavicon} from './utils/favicon';
-import {getTextColorForBackground} from './utils/colorContrast';
+import {getTextColorForBackground, lightenColor, darkenColor} from './utils/colorContrast';
+import {extractDualColorsFromAlbumArt, type DualColorExtractionResult} from './utils/albumArtColorExtraction';
 import musicNotePlaceholderRaw from './src/assets/icons/music-note-placeholder.svg?raw';
 
 // Convert raw SVG to data URI for use in img src
@@ -32,6 +33,10 @@ const App: React.FC = () => {
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Album art dual-color extraction state (background + accent)
+    const [extractedAlbumArtColors, setExtractedAlbumArtColors] = useState<DualColorExtractionResult | null>(null);
+    const [isExtractingColor, setIsExtractingColor] = useState(false);
 
     // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
@@ -120,56 +125,133 @@ const App: React.FC = () => {
         // Check if we're in a monochrome mode
         const isMonochromeMode = effectiveMode === 'black' || effectiveMode === 'white';
 
-        // Only set --accent-text-color if NOT in monochrome mode
-        // Monochrome modes define their own accent-text-color in CSS
+        // Only set colors if NOT in monochrome mode
+        // Monochrome modes define their own colors in CSS
         if (isMonochromeMode) {
-            // Clear any previously set inline style so CSS takes over
+            // Clear any previously set inline styles so CSS takes over
             root.style.removeProperty('--accent-text-color');
+            root.style.removeProperty('--bg-primary');
+            root.style.removeProperty('--bg-secondary');
+            root.style.removeProperty('--bg-tertiary');
+            root.style.removeProperty('--bg-secondary-hover');
+            root.style.removeProperty('--bg-tertiary-hover');
+            root.style.removeProperty('--border-color');
+            root.style.removeProperty('--text-primary');
+            root.style.removeProperty('--text-secondary');
+            root.style.removeProperty('--text-muted');
+            root.style.removeProperty('--icon-muted');
+            root.style.removeProperty('--accent-color');
+            root.style.removeProperty('--accent-color-hover');
+            root.style.removeProperty('--custom-accent-color');
+            root.style.removeProperty('--custom-accent-color-hover');
         } else {
-            // Apply custom color if set
-            if (settings.theme.accent === 'custom' && settings.theme.customColor) {
-                const customColor = settings.theme.customColor;
-                // Calculate hover color (lighten by ~15%)
-                const r = parseInt(customColor.slice(1, 3), 16);
-                const g = parseInt(customColor.slice(3, 5), 16);
-                const b = parseInt(customColor.slice(5, 7), 16);
-                const hoverR = Math.min(255, Math.floor(r + (255 - r) * 0.15));
-                const hoverG = Math.min(255, Math.floor(g + (255 - g) * 0.15));
-                const hoverB = Math.min(255, Math.floor(b + (255 - b) * 0.15));
-                const hoverColor = `#${hoverR.toString(16).padStart(2, '0')}${hoverG.toString(16).padStart(2, '0')}${hoverB.toString(16).padStart(2, '0')}`;
+            // Priority: Extracted album art colors (if enabled) > User-selected colors
+            if (settings.theme.useAlbumArtColors && extractedAlbumArtColors) {
+                // Apply extracted dual colors (background + accent)
+                const bgColor = extractedAlbumArtColors.backgroundColor;
+                const accentColor = extractedAlbumArtColors.accentColor;
+                const isDark = extractedAlbumArtColors.isDarkTheme;
 
-                // Calculate optimal text color for custom accent
-                const textColor = getTextColorForBackground(customColor);
+                // Apply background colors
+                // --bg-primary: Main background
+                root.style.setProperty('--bg-primary', bgColor);
 
-                root.style.setProperty('--custom-accent-color', customColor);
-                root.style.setProperty('--custom-accent-color-hover', hoverColor);
-                root.style.setProperty('--accent-text-color', textColor);
-            } else {
-                // For built-in colors, calculate text color based on background
-                const accentColors: Record<string, string> = {
-                    purple: '#aa5cc3',
-                    blue: '#3b82f6',
-                    green: '#22c55e',
-                    orange: '#f97316',
-                    red: '#ef4444',
-                    yellow: '#eab308',
-                };
+                // Calculate secondary background (slightly lighter for dark, slightly lighter for light)
+                const bgSecondary = isDark ? lightenColor(bgColor, 5) : lightenColor(bgColor, 3);
+                root.style.setProperty('--bg-secondary', bgSecondary);
 
-                const currentAccentColor = accentColors[settings.theme.accent];
-                if (currentAccentColor) {
-                    const textColor = getTextColorForBackground(currentAccentColor);
-                    root.style.setProperty('--accent-text-color', textColor);
+                // Calculate tertiary background (slightly lighter than secondary)
+                const bgTertiary = isDark ? lightenColor(bgColor, 8) : lightenColor(bgColor, 5);
+                root.style.setProperty('--bg-tertiary', bgTertiary);
+
+                // Calculate hover states (slightly lighter than their base)
+                const bgSecondaryHover = isDark ? lightenColor(bgSecondary, 5) : lightenColor(bgSecondary, 3);
+                root.style.setProperty('--bg-secondary-hover', bgSecondaryHover);
+
+                const bgTertiaryHover = isDark ? lightenColor(bgTertiary, 5) : lightenColor(bgTertiary, 3);
+                root.style.setProperty('--bg-tertiary-hover', bgTertiaryHover);
+
+                // Calculate border color (lighter than background)
+                const borderColor = isDark ? lightenColor(bgColor, 15) : darkenColor(bgColor, 10);
+                root.style.setProperty('--border-color', borderColor);
+
+                // Calculate text colors based on theme
+                if (isDark) {
+                    // Dark theme: light text on dark background
+                    root.style.setProperty('--text-primary', '#f0f0f0');
+                    root.style.setProperty('--text-secondary', '#b0b0c0');
+                    root.style.setProperty('--text-muted', '#808090');
+                    root.style.setProperty('--icon-muted', '#707080');
                 } else {
-                    // Fallback to white for unknown colors
-                    root.style.setProperty('--accent-text-color', '#ffffff');
+                    // Light theme: dark text on light background
+                    root.style.setProperty('--text-primary', '#181c32');
+                    root.style.setProperty('--text-secondary', '#5e6278');
+                    root.style.setProperty('--text-muted', '#7e8299');
+                    root.style.setProperty('--icon-muted', '#a1a5b7');
                 }
+
+                // Apply accent colors
+                const accentHover = lightenColor(accentColor, 15);
+                root.style.setProperty('--accent-color', accentColor);
+                root.style.setProperty('--accent-color-hover', accentHover);
+                root.style.setProperty('--custom-accent-color', accentColor);
+                root.style.setProperty('--custom-accent-color-hover', accentHover);
+
+                // Calculate optimal text color for accent
+                const textColor = getTextColorForBackground(accentColor);
+                root.style.setProperty('--accent-text-color', textColor);
+
+                console.log(`[Theme] Applied album art colors (contrast: ${extractedAlbumArtColors.contrastRatio.toFixed(2)}:1)`);
+            } else {
+                // Clear background and text overrides when not using album art colors
+                root.style.removeProperty('--bg-primary');
+                root.style.removeProperty('--bg-secondary');
+                root.style.removeProperty('--bg-tertiary');
+                root.style.removeProperty('--bg-secondary-hover');
+                root.style.removeProperty('--bg-tertiary-hover');
+                root.style.removeProperty('--border-color');
+                root.style.removeProperty('--text-primary');
+                root.style.removeProperty('--text-secondary');
+                root.style.removeProperty('--text-muted');
+                root.style.removeProperty('--icon-muted');
+
+                // Determine the effective accent color
+                // Priority: Custom color > Built-in color
+                let effectiveAccentColor: string;
+
+                if (settings.theme.accent === 'custom' && settings.theme.customColor) {
+                    effectiveAccentColor = settings.theme.customColor;
+                } else {
+                    // Use built-in accent color
+                    const accentColors: Record<string, string> = {
+                        purple: '#aa5cc3',
+                        blue: '#3b82f6',
+                        green: '#22c55e',
+                        orange: '#f97316',
+                        red: '#ef4444',
+                        yellow: '#eab308',
+                    };
+                    effectiveAccentColor = accentColors[settings.theme.accent] || accentColors.purple;
+                }
+
+                // Apply the effective accent color
+                const accentHover = lightenColor(effectiveAccentColor, 15);
+                const textColor = getTextColorForBackground(effectiveAccentColor);
+
+                // Set both --accent-color and --custom-accent-color to ensure it applies
+                // regardless of the data-accent attribute
+                root.style.setProperty('--accent-color', effectiveAccentColor);
+                root.style.setProperty('--accent-color-hover', accentHover);
+                root.style.setProperty('--custom-accent-color', effectiveAccentColor);
+                root.style.setProperty('--custom-accent-color-hover', accentHover);
+                root.style.setProperty('--accent-text-color', textColor);
             }
         }
 
         return () => {
             mediaQuery.removeEventListener('change', handleSystemThemeChange);
         };
-    }, [settings.theme]);
+    }, [settings.theme, extractedAlbumArtColors]);
 
     // Helper to get the local server
     const getLocalServer = () => servers.find(s => s.isLocal);
@@ -256,6 +338,78 @@ const App: React.FC = () => {
             setBrowserClientAutoAssigned(true);
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, servers, settings.federation.enabled]);
+
+    // Extract dual colors (background + accent) from album art when artwork changes (if enabled)
+    useEffect(() => {
+        // Reset colors when feature disabled or no stream/artwork
+        if (!settings.theme.useAlbumArtColors || !currentStream?.currentTrack.albumArtUrl) {
+            setExtractedAlbumArtColors(null);
+            return;
+        }
+
+        const artworkUrl = currentStream.currentTrack.albumArtUrl;
+
+        // Skip extraction for placeholder artwork
+        if (artworkUrl === musicNotePlaceholder || artworkUrl.startsWith('data:image/svg+xml')) {
+            setExtractedAlbumArtColors(null);
+            return;
+        }
+
+        // Debounce: Don't extract if already extracting
+        if (isExtractingColor) return;
+
+        // Determine if current theme is dark
+        const effectiveMode = settings.theme.mode === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : settings.theme.mode;
+        const isDarkTheme = effectiveMode === 'dark' || effectiveMode === 'black';
+
+        // Get fallback accent color
+        const accentColors: Record<string, string> = {
+            purple: '#aa5cc3',
+            blue: '#3b82f6',
+            green: '#22c55e',
+            orange: '#f97316',
+            red: '#ef4444',
+            yellow: '#eab308',
+        };
+        const fallbackAccent = settings.theme.accent === 'custom' && settings.theme.customColor
+            ? settings.theme.customColor
+            : accentColors[settings.theme.accent] || accentColors.purple;
+
+        setIsExtractingColor(true);
+
+        extractDualColorsFromAlbumArt(artworkUrl, isDarkTheme, fallbackAccent)
+            .then((result) => {
+                if (result) {
+                    console.log(
+                        `[AlbumArtColor] Extracted dual colors:`,
+                        `\n  Background: ${result.backgroundColor}`,
+                        `\n  Accent: ${result.accentColor}`,
+                        `\n  Contrast: ${result.contrastRatio.toFixed(2)}:1`,
+                        `\n  Source: ${result.source}`
+                    );
+                    setExtractedAlbumArtColors(result);
+                } else {
+                    console.warn('[AlbumArtColor] Extraction returned null, using fallback');
+                    setExtractedAlbumArtColors(null);
+                }
+                setIsExtractingColor(false);
+            })
+            .catch((error) => {
+                console.warn('[AlbumArtColor] Extraction failed:', error);
+                setExtractedAlbumArtColors(null);
+                setIsExtractingColor(false);
+            });
+    }, [
+        currentStream?.currentTrack.albumArtUrl,
+        currentStream?.id,
+        settings.theme.useAlbumArtColors,
+        settings.theme.mode,
+        settings.theme.accent,
+        settings.theme.customColor,
+        isExtractingColor
+    ]);
 
     // Update browser client name, volume, and connection status if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
