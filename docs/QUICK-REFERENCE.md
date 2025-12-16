@@ -164,6 +164,17 @@ curl -X POST http://localhost:3000/api/audio/input/device/hw%3A0%2C0/toggle
 curl -X DELETE http://localhost:3000/api/audio/input/device/hw%3A0%2C0
 ```
 
+**⚠️ BETA Feature - Testing Required**:
+- Audio input device configuration is a beta feature
+- Has NOT been tested with physical audio input devices
+- Requires USB microphone or audio interface to validate
+- Expected behavior:
+  1. Input devices should be detected via `arecord -l`
+  2. Enabling a device should create an ALSA input stream in Snapcast
+  3. Stream should appear in Snapcast server status
+  4. Audio from input device should be captured and streamed
+- Please report any issues or successful tests
+
 ### Check Audio Pipeline
 
 ```bash

@@ -341,10 +341,26 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       </div>
 
       <div className="pt-4 border-t border-[var(--border-color)]">
-        <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Audio Input</h3>
+        <div className="flex items-center gap-2 mb-2">
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Audio Input</h3>
+          <span className="px-2 py-0.5 text-xs font-semibold bg-yellow-500/20 text-yellow-400 rounded border border-yellow-500/30">
+            BETA
+          </span>
+        </div>
         <p className="text-sm text-[var(--text-secondary)] mb-4">
           Enable input devices to create Snapcast streams for audio capture. Each enabled device will be available as a stream source.
         </p>
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+          <div className="flex items-start gap-2">
+            <Icon name="circle-info" className="text-yellow-400 mt-0.5 flex-shrink-0" />
+            <div className="text-sm text-yellow-300">
+              <p className="font-medium">Beta Feature - Testing Required</p>
+              <p className="text-xs text-yellow-300/80 mt-1">
+                This feature has not been fully tested with physical audio input devices. Please report any issues you encounter.
+              </p>
+            </div>
+          </div>
+        </div>
 
         {inputLoadingState === 'loading' && (
           <div className="flex items-center justify-center py-8">
