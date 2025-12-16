@@ -1,6 +1,6 @@
 import React, {useState, useEffect} from 'react';
 import type {Settings as SettingsType} from '../../types';
-import {audioService, type AudioDevice, DeviceType} from '../../services/audioService';
+import {audioService, type AudioDevice, type ConfiguredInputDevice, DeviceType} from '../../services/audioService';
 import {Icon} from '../Icon';
 
 interface AudioTabProps {
@@ -19,9 +19,17 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [successMessage, setSuccessMessage] = useState<string>('');
 
+  // Input devices state
+  const [availableInputDevices, setAvailableInputDevices] = useState<AudioDevice[]>([]);
+  const [configuredInputDevices, setConfiguredInputDevices] = useState<ConfiguredInputDevice[]>([]);
+  const [inputLoadingState, setInputLoadingState] = useState<LoadingState>('idle');
+  const [expandedInputDevice, setExpandedInputDevice] = useState<string | null>(null);
+  const [editingNames, setEditingNames] = useState<Record<string, string>>({});
+
   // Load output devices on mount
   useEffect(() => {
     loadDevices();
+    loadInputDevices();
   }, []);
 
   const loadDevices = async () => {
@@ -31,13 +39,10 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
     try {
       // Load available devices
       const devices = await audioService.getOutputDevices();
-      console.log('[AudioTab] Loaded devices:', devices);
       setOutputDevices(devices);
 
       // Load current device
       const current = await audioService.getCurrentOutputDevice();
-      console.log('[AudioTab] Current device:', current);
-      console.log('[AudioTab] Setting currentDevice to:', current.hw_id);
       setCurrentDevice(current.hw_id);
       setSelectedDevice(current.hw_id);
 
@@ -86,6 +91,92 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
     setSelectedDevice(currentDevice);
     setErrorMessage('');
     setSuccessMessage('');
+  };
+
+  const loadInputDevices = async () => {
+    setInputLoadingState('loading');
+
+    try {
+      // Load available input devices
+      const available = await audioService.getInputDevices();
+      setAvailableInputDevices(available);
+
+      // Load configured input devices
+      const configured = await audioService.getConfiguredInputDevices();
+      setConfiguredInputDevices(configured);
+
+      // Initialize editing names
+      const names: Record<string, string> = {};
+      configured.forEach(device => {
+        names[device.hw_id] = device.custom_name;
+      });
+      setEditingNames(names);
+
+      setInputLoadingState('success');
+    } catch (error) {
+      console.error('Failed to load input devices:', error);
+      setInputLoadingState('error');
+    }
+  };
+
+  const isInputDeviceEnabled = (hwId: string): boolean => {
+    const configured = configuredInputDevices.find(d => d.hw_id === hwId);
+    return configured?.enabled || false;
+  };
+
+  const getInputDeviceCustomName = (hwId: string): string => {
+    const configured = configuredInputDevices.find(d => d.hw_id === hwId);
+    return configured?.custom_name || '';
+  };
+
+  const handleInputDeviceToggle = async (device: AudioDevice, enabled: boolean) => {
+    try {
+      if (enabled) {
+        // Enable device - add with default name
+        await audioService.addOrUpdateInputDevice(
+          device.hw_id,
+          device.friendly_name,
+          true
+        );
+      } else {
+        // Disable device - just toggle off
+        await audioService.addOrUpdateInputDevice(
+          device.hw_id,
+          undefined,
+          false
+        );
+      }
+
+      // Reload devices
+      await loadInputDevices();
+    } catch (error) {
+      console.error('Failed to toggle input device:', error);
+      alert('Failed to toggle input device');
+    }
+  };
+
+  const handleInputDeviceNameChange = (hwId: string, name: string) => {
+    setEditingNames(prev => ({
+      ...prev,
+      [hwId]: name
+    }));
+  };
+
+  const handleApplyInputDeviceName = async (hwId: string) => {
+    const newName = editingNames[hwId];
+    if (!newName) return;
+
+    try {
+      await audioService.addOrUpdateInputDevice(hwId, newName, undefined);
+      await loadInputDevices();
+    } catch (error) {
+      console.error('Failed to update input device name:', error);
+      alert('Failed to update device name');
+    }
+  };
+
+  const toggleInputDeviceExpanded = (hwId: string) => {
+    setExpandedInputDevice(expandedInputDevice === hwId ? null : hwId);
   };
 
   const hasChanges = selectedDevice !== currentDevice;
@@ -158,9 +249,8 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
         {loadingState === 'success' && outputDevices.length > 0 && (
           <div className="space-y-4">
             <div className="space-y-2">
-              {outputDevices.map((device) => {
-                console.log(`[AudioTab] Rendering device ${device.hw_id}: currentDevice=${currentDevice}, match=${currentDevice === device.hw_id}, isAvailable=${device.is_available}, isLoading=${loadingState === 'loading'}`);
-                return (<label
+              {outputDevices.map((device) => (
+                <label
                   key={device.hw_id}
                   className={`
                     flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all
@@ -200,8 +290,7 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                     )}
                   </div>
                 </label>
-              );
-              })}
+              ))}
             </div>
 
             {hasChanges && (
@@ -254,16 +343,156 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       <div className="pt-4 border-t border-[var(--border-color)]">
         <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Audio Input</h3>
         <p className="text-sm text-[var(--text-secondary)] mb-4">
-          Input device configuration will be available in a future update.
+          Enable input devices to create Snapcast streams for audio capture. Each enabled device will be available as a stream source.
         </p>
-        <div className="p-4 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg">
-          <div className="flex items-center gap-2">
-            <Icon name="circle-info" className="text-[var(--text-secondary)]" />
-            <span className="text-sm text-[var(--text-secondary)]">
-              Coming soon: Configure input devices for announcements and audio streaming
-            </span>
+
+        {inputLoadingState === 'loading' && (
+          <div className="flex items-center justify-center py-8">
+            <div className="text-[var(--text-secondary)]">Loading input devices...</div>
           </div>
-        </div>
+        )}
+
+        {inputLoadingState === 'error' && (
+          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Icon name="circle-exclamation" className="text-red-400 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-400">Error Loading Input Devices</p>
+                <button
+                  onClick={loadInputDevices}
+                  className="mt-2 text-sm text-red-300 hover:text-red-200 underline"
+                >
+                  Try Again
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {inputLoadingState === 'success' && availableInputDevices.length === 0 && (
+          <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Icon name="circle-exclamation" className="text-yellow-400 mt-0.5" />
+              <div>
+                <p className="text-sm text-yellow-300">No input devices found</p>
+                <p className="text-xs text-yellow-300/80 mt-1">
+                  Make sure your microphone or audio input device is connected
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {inputLoadingState === 'success' && availableInputDevices.length > 0 && (
+          <div className="space-y-2">
+            {availableInputDevices.map((device) => {
+              const isEnabled = isInputDeviceEnabled(device.hw_id);
+              const customName = getInputDeviceCustomName(device.hw_id);
+              const isExpanded = expandedInputDevice === device.hw_id;
+              const editingName = editingNames[device.hw_id] || customName || device.friendly_name;
+              const nameChanged = editingName !== customName;
+
+              return (
+                <div
+                  key={device.hw_id}
+                  className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg overflow-hidden"
+                >
+                  {/* Header */}
+                  <div className="flex items-center gap-3 p-3">
+                    {/* Left: Icon + Name */}
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <Icon
+                        name="microphone"
+                        className="text-[var(--text-secondary)] flex-shrink-0 text-xl"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-[var(--text-primary)] truncate">
+                            {device.friendly_name}
+                          </span>
+                          {getDeviceTypeBadge(device.type)}
+                        </div>
+                        <span className="text-xs text-[var(--text-secondary)] font-mono">
+                          {device.hw_id}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right: Toggle + Chevron */}
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <div className="relative">
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={isEnabled}
+                          onChange={(e) => handleInputDeviceToggle(device, e.target.checked)}
+                          id={`input-toggle-${device.hw_id}`}
+                        />
+                        <label
+                          htmlFor={`input-toggle-${device.hw_id}`}
+                          className={`block w-12 h-6 rounded-full transition cursor-pointer ${
+                            isEnabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'
+                          }`}
+                        >
+                          <div
+                            className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${
+                              isEnabled ? 'translate-x-6' : ''
+                            }`}
+                          ></div>
+                        </label>
+                      </div>
+                      {isEnabled && (
+                        <button
+                          onClick={() => toggleInputDeviceExpanded(device.hw_id)}
+                          className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                        >
+                          <Icon
+                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                            className="text-lg"
+                          />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Expanded Configuration */}
+                  {isEnabled && isExpanded && (
+                    <div className="mt-2 ml-14 mr-3 mb-3 space-y-3">
+                      <div>
+                        <label className="block text-sm text-[var(--text-secondary)] mb-1">
+                          Stream Name
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={editingName}
+                            onChange={(e) => handleInputDeviceNameChange(device.hw_id, e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleApplyInputDeviceName(device.hw_id)}
+                            className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                            placeholder={device.friendly_name}
+                          />
+                          {nameChanged && (
+                            <button
+                              onClick={() => handleApplyInputDeviceName(device.hw_id)}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80"
+                            >
+                              Apply
+                            </button>
+                          )}
+                        </div>
+                        {nameChanged && (
+                          <p className="text-xs text-amber-500 mt-1">
+                            Pending changes - press Enter or click Apply
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

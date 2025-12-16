@@ -54,6 +54,32 @@ export interface TestDeviceResult {
   };
 }
 
+export interface ConfiguredInputDevice {
+  hw_id: string;
+  custom_name: string;
+  enabled: boolean;
+  is_available: boolean;
+  device_info: AudioDevice | null;
+}
+
+export interface InputDeviceConfigResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  device?: {
+    hw_id: string;
+    custom_name: string;
+    enabled: boolean;
+  };
+}
+
+export interface ToggleInputDeviceResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  enabled?: boolean;
+}
+
 /**
  * Audio Configuration Service
  */
@@ -200,6 +226,104 @@ export const audioService = {
       case DeviceType.OTHER:
       default:
         return 'speaker';
+    }
+  },
+
+  /**
+   * Get configured input devices
+   */
+  async getConfiguredInputDevices(): Promise<ConfiguredInputDevice[]> {
+    try {
+      const response = await fetch(`${API_BASE}/input/devices`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get configured input devices:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add or update input device configuration
+   */
+  async addOrUpdateInputDevice(
+    hwId: string,
+    customName?: string,
+    enabled?: boolean
+  ): Promise<InputDeviceConfigResult> {
+    try {
+      const body: any = { hw_id: hwId };
+      if (customName !== undefined) body.custom_name = customName;
+      if (enabled !== undefined) body.enabled = enabled;
+
+      const response = await fetch(`${API_BASE}/input/device`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Failed to add/update input device:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove input device configuration
+   */
+  async removeInputDevice(hwId: string): Promise<InputDeviceConfigResult> {
+    try {
+      const encodedHwId = encodeURIComponent(hwId);
+      const response = await fetch(`${API_BASE}/input/device/${encodedHwId}`, {
+        method: 'DELETE',
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Failed to remove input device:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Toggle input device enabled state
+   */
+  async toggleInputDevice(hwId: string): Promise<ToggleInputDeviceResult> {
+    try {
+      const encodedHwId = encodeURIComponent(hwId);
+      const response = await fetch(`${API_BASE}/input/device/${encodedHwId}/toggle`, {
+        method: 'POST',
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Failed to toggle input device:', error);
+      throw error;
     }
   }
 };
