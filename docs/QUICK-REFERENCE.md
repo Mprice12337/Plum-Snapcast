@@ -97,6 +97,9 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 
 # View all supervisord logs
 docker exec plum-snapcast-server cat /var/log/supervisor/supervisord.log
+
+# View lifecycle manager logs
+docker logs plum-snapcast-server 2>&1 | grep -E '\[Lifecycle\]|\[Signal\]'
 ```
 
 ---
