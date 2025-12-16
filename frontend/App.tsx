@@ -14,6 +14,7 @@ import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
 import {updateFavicon} from './utils/favicon';
+import {getTextColorForBackground} from './utils/colorContrast';
 import musicNotePlaceholderRaw from './src/assets/icons/music-note-placeholder.svg?raw';
 
 // Convert raw SVG to data URI for use in img src
@@ -86,10 +87,10 @@ const App: React.FC = () => {
         }
     }, [settings.deviceName]);
 
-    // Update favicon when accent color changes
+    // Update favicon when theme changes
     useEffect(() => {
-        updateFavicon(settings.theme.accent);
-    }, [settings.theme.accent]);
+        updateFavicon(settings.theme.accent, settings.theme.customColor, settings.theme.mode);
+    }, [settings.theme.accent, settings.theme.customColor, settings.theme.mode]);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -110,6 +111,60 @@ const App: React.FC = () => {
         }
 
         root.setAttribute('data-accent', settings.theme.accent);
+
+        // Determine the effective theme mode (resolve 'system' to actual mode)
+        const effectiveMode = settings.theme.mode === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : settings.theme.mode;
+
+        // Check if we're in a monochrome mode
+        const isMonochromeMode = effectiveMode === 'black' || effectiveMode === 'white';
+
+        // Only set --accent-text-color if NOT in monochrome mode
+        // Monochrome modes define their own accent-text-color in CSS
+        if (isMonochromeMode) {
+            // Clear any previously set inline style so CSS takes over
+            root.style.removeProperty('--accent-text-color');
+        } else {
+            // Apply custom color if set
+            if (settings.theme.accent === 'custom' && settings.theme.customColor) {
+                const customColor = settings.theme.customColor;
+                // Calculate hover color (lighten by ~15%)
+                const r = parseInt(customColor.slice(1, 3), 16);
+                const g = parseInt(customColor.slice(3, 5), 16);
+                const b = parseInt(customColor.slice(5, 7), 16);
+                const hoverR = Math.min(255, Math.floor(r + (255 - r) * 0.15));
+                const hoverG = Math.min(255, Math.floor(g + (255 - g) * 0.15));
+                const hoverB = Math.min(255, Math.floor(b + (255 - b) * 0.15));
+                const hoverColor = `#${hoverR.toString(16).padStart(2, '0')}${hoverG.toString(16).padStart(2, '0')}${hoverB.toString(16).padStart(2, '0')}`;
+
+                // Calculate optimal text color for custom accent
+                const textColor = getTextColorForBackground(customColor);
+
+                root.style.setProperty('--custom-accent-color', customColor);
+                root.style.setProperty('--custom-accent-color-hover', hoverColor);
+                root.style.setProperty('--accent-text-color', textColor);
+            } else {
+                // For built-in colors, calculate text color based on background
+                const accentColors: Record<string, string> = {
+                    purple: '#aa5cc3',
+                    blue: '#3b82f6',
+                    green: '#22c55e',
+                    orange: '#f97316',
+                    red: '#ef4444',
+                    yellow: '#eab308',
+                };
+
+                const currentAccentColor = accentColors[settings.theme.accent];
+                if (currentAccentColor) {
+                    const textColor = getTextColorForBackground(currentAccentColor);
+                    root.style.setProperty('--accent-text-color', textColor);
+                } else {
+                    // Fallback to white for unknown colors
+                    root.style.setProperty('--accent-text-color', '#ffffff');
+                }
+            }
+        }
 
         return () => {
             mediaQuery.removeEventListener('change', handleSystemThemeChange);

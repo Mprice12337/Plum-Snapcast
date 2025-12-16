@@ -38,8 +38,8 @@ export interface Client {
     connected: boolean;
 }
 
-export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red';
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red' | 'yellow' | 'custom';
+export type ThemeMode = 'light' | 'dark' | 'system' | 'black' | 'white';
 
 export interface Settings {
     deviceName: string;
@@ -78,6 +78,7 @@ export interface Settings {
     theme: {
         mode: ThemeMode;
         accent: AccentColor;
+        customColor?: string; // Hex string (e.g., "#ff5733")
     };
     display: {
         showOfflineDevices: boolean;

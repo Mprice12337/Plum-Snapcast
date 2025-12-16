@@ -178,7 +178,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                     <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
                         <button
                             onClick={onStartBrowserAudio}
-                            className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                            className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                         >
                             <Icon name="headphones" style={{ color: 'inherit' }} />
                             Listen in Browser
@@ -236,7 +236,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                 <button
                                     onClick={() => onStreamChange(client.id, myClientStreamId)}
                                     disabled={!myClientStreamId}
-                                    className="text-sm bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+                                    className="text-sm bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
                                     title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
                                 >
                                     <Icon name="plus" className="mr-1" />
@@ -252,7 +252,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                 <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
                     <button
                         onClick={onStartBrowserAudio}
-                        className="w-full bg-[var(--accent-color)] text-white font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                        className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
                     >
                         <Icon name="headphones" style={{ color: 'inherit' }} />
                         Listen in Browser

@@ -21,7 +21,7 @@ export const GroupVolumeControl: React.FC<GroupVolumeControlProps> = ({onAdjust,
                 <button
                     onClick={onMute}
                     aria-label="Mute group"
-                    className="w-12 h-12 flex items-center justify-center rounded-full text-white bg-[var(--accent-color)] hover:bg-[var(--accent-color-hover)] transition-colors duration-200"
+                    className="w-12 h-12 flex items-center justify-center rounded-full accent-button-text bg-[var(--accent-color)] hover:bg-[var(--accent-color-hover)] transition-colors duration-200"
                 >
                     <Icon name="volume-xmark" style={{ color: 'inherit' }} />
                 </button>
