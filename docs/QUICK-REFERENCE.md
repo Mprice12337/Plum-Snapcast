@@ -106,13 +106,74 @@ docker exec plum-snapcast-server cat /var/log/supervisor/supervisord.log
 ### Verify Audio Device
 
 ```bash
-# List audio devices
+# List playback devices (what you can output to)
 docker exec plum-snapcast-server aplay -l
-# Should show: card 0: Headphones [bcm2835 Headphones]
 
-# Test speaker output
+# List capture devices (what you can record from)
+docker exec plum-snapcast-server arecord -l
+
+# Test specific output device
+docker exec plum-snapcast-server speaker-test -D hw:0,0 -c 2 -t wav -l 1
 docker exec plum-snapcast-server speaker-test -D hw:Headphones -c 2 -t wav -l 1
+docker exec plum-snapcast-server speaker-test -D hw:1,0 -c 2 -t wav -l 1  # HAT or USB device
 ```
+
+### Audio Device Configuration (API)
+
+```bash
+# List all available output devices
+curl http://localhost:3000/api/audio/devices/output | python3 -m json.tool
+
+# Get current output device
+curl http://localhost:3000/api/audio/output/current
+
+# Change output device to HAT (hw:1,0)
+curl -X POST http://localhost:3000/api/audio/output/device \
+  -H "Content-Type: application/json" \
+  -d '{"hw_id":"hw:1,0"}'
+
+# Test a device
+curl -X POST http://localhost:3000/api/audio/output/test \
+  -H "Content-Type: application/json" \
+  -d '{"hw_id":"hw:Headphones"}'
+```
+
+**Note**: Audio devices are configured via GUI (Settings → Audio). The SNAPCLIENT_SOUNDCARD env var is deprecated.
+
+```bash
+# List all available input devices
+curl http://localhost:3000/api/audio/devices/input | python3 -m json.tool
+
+# Get configured input devices
+curl http://localhost:3000/api/audio/input/devices | python3 -m json.tool
+
+# Enable an input device (creates Snapcast stream)
+curl -X POST http://localhost:3000/api/audio/input/device \
+  -H "Content-Type: application/json" \
+  -d '{"hw_id":"hw:0,0","custom_name":"Microphone","enabled":true}'
+
+# Update stream name
+curl -X POST http://localhost:3000/api/audio/input/device \
+  -H "Content-Type: application/json" \
+  -d '{"hw_id":"hw:0,0","custom_name":"Office Mic"}'
+
+# Toggle input device on/off
+curl -X POST http://localhost:3000/api/audio/input/device/hw%3A0%2C0/toggle
+
+# Remove input device configuration
+curl -X DELETE http://localhost:3000/api/audio/input/device/hw%3A0%2C0
+```
+
+**⚠️ BETA Feature - Testing Required**:
+- Audio input device configuration is a beta feature
+- Has NOT been tested with physical audio input devices
+- Requires USB microphone or audio interface to validate
+- Expected behavior:
+  1. Input devices should be detected via `arecord -l`
+  2. Enabling a device should create an ALSA input stream in Snapcast
+  3. Stream should appear in Snapcast server status
+  4. Audio from input device should be captured and streamed
+- Please report any issues or successful tests
 
 ### Check Audio Pipeline
 

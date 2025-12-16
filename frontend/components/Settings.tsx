@@ -2,6 +2,7 @@ import React, {useState} from 'react';
 import type {Settings as SettingsType} from '../types';
 import {TabBar, type Tab} from './TabBar';
 import {IntegrationsTab} from './settings/IntegrationsTab';
+import {AudioTab} from './settings/AudioTab';
 import {SnapcastTab} from './settings/SnapcastTab';
 import {ThemeTab} from './settings/ThemeTab';
 import {VisualizerTab} from './settings/VisualizerTab';
@@ -16,6 +17,7 @@ interface SettingsProps {
 
 const tabs: Tab[] = [
     {id: 'integrations', label: 'Integrations', icon: 'puzzle-piece'},
+    {id: 'audio', label: 'Audio', icon: 'volume-high'},
     {id: 'snapcast', label: 'Snapcast', icon: 'snapcast'},
     {id: 'theme', label: 'Theme', icon: 'palette'},
     {id: 'visualizer', label: 'Visualizer', icon: 'waveform'},
@@ -29,6 +31,8 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
         switch (activeTab) {
             case 'integrations':
                 return <IntegrationsTab settings={settings} onSettingsChange={onSettingsChange} />;
+            case 'audio':
+                return <AudioTab settings={settings} onSettingsChange={onSettingsChange} />;
             case 'snapcast':
                 return <SnapcastTab settings={settings} onSettingsChange={onSettingsChange} />;
             case 'theme':
@@ -51,7 +55,7 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
             aria-labelledby="settings-title"
         >
             <div
-                className="relative w-full max-w-2xl m-4 bg-[var(--bg-secondary)] rounded-2xl shadow-2xl border border-[var(--border-color)] flex flex-col max-h-[85vh]"
+                className="relative w-[80vw] h-[80vh] m-4 bg-[var(--bg-secondary)] rounded-2xl shadow-2xl border border-[var(--border-color)] flex flex-col"
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-color)]">

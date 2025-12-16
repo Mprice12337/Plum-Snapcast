@@ -167,7 +167,8 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - `PLEXAMP_ENABLED`, `PLEXAMP_CLAIM_TOKEN` (from https://plex.tv/claim), `PLEXAMP_SERVER_NAME`
 
 **Snapclient** (hardware-specific):
-- `SNAPCLIENT_ENABLED`, `SNAPCLIENT_SOUNDCARD` (default: hw:Headphones), `SNAPCLIENT_LATENCY`
+- `SNAPCLIENT_ENABLED`, `SNAPCLIENT_LATENCY`
+- ~~`SNAPCLIENT_SOUNDCARD`~~ (deprecated - now configured via GUI Settings → Audio)
 
 **Network/Infrastructure**:
 - `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000), `FEDERATION_API_PORT` (default: 5001)
@@ -243,6 +244,42 @@ POST /api/integrations/dlna/enable
 POST /api/integrations/dlna/disable
 POST /api/integrations/dlna/device-name
 GET  /api/integrations/dlna/status
+```
+
+### Audio Configuration REST API
+- **Protocol**: HTTP REST (Flask)
+- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/audio`
+- **Implementation**: `backend/scripts/audio_api.py`
+
+**Endpoints**:
+```typescript
+// Output Devices
+GET  /api/audio/devices/output → List all ALSA playback devices
+GET  /api/audio/output/current → Get currently configured output device
+POST /api/audio/output/device → Set output device (body: {hw_id: string})
+POST /api/audio/output/test → Test output device (body: {hw_id: string})
+
+// Input Devices
+GET  /api/audio/devices/input → List all ALSA capture devices
+GET  /api/audio/input/devices → Get configured input devices from settings
+POST /api/audio/input/device → Add/update input device (body: {hw_id: string, custom_name?: string, enabled?: boolean})
+DELETE /api/audio/input/device/<hw_id> → Remove input device configuration
+POST /api/audio/input/device/<hw_id>/toggle → Toggle input device enabled state
+```
+
+**Device Object**:
+```typescript
+{
+  card: number,
+  device: number,
+  hw_id: string,              // e.g., "hw:0,0"
+  hw_name: string | null,     // e.g., "hw:Headphones"
+  card_name: string,
+  device_name: string,
+  type: "BUILTIN_HEADPHONES" | "BUILTIN_HDMI" | "USB" | "HAT" | "OTHER",
+  friendly_name: string,      // e.g., "Built-in Headphones (3.5mm Jack)"
+  is_available: boolean
+}
 ```
 
 ---
@@ -340,6 +377,7 @@ git pull && docker compose pull && docker compose up -d
 13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
 14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
 15. **Dynamic Stream Lifecycle**: All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use lifecycle managers to dynamically create/remove Snapcast streams based on activity. Lifecycle managers monitor metadata/events, create streams on activity, and remove after idle timeout. FIFO keepers prevent audio service blocking when no stream exists. See `_resources/DYNAMIC-STREAM-LIFECYCLE-FRAMEWORK.md` for implementation details.
+16. **Audio I/O Configuration**: Audio devices configured via GUI (Settings → Audio). **Output**: Device selection persists in `settings.json`, snapclient reloads on restart. SNAPCLIENT_SOUNDCARD env var deprecated (auto-migrated). **Tested on RPi with multiple devices (headphones, HDMI, HAT)**. **Input (BETA)**: Enable devices to create Snapcast streams. Each enabled device creates an ALSA input stream via `manage_input_streams.py` (uses JSON-RPC API). Custom stream names configurable. Default: all inputs disabled. **NOT YET TESTED with physical audio input devices** - requires USB microphone or audio interface for validation. UI includes beta warning. Supports all ALSA devices: built-in (headphones/HDMI), USB, HATs, microphones.
 
 ---
 

@@ -410,6 +410,7 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from settings_api import create_settings_blueprint, SettingsManager
         from integrations_api import create_integrations_blueprint, IntegrationController
+        from audio_api import create_audio_blueprint, AudioConfigController
 
         # Create minimal Flask app with just settings and integrations APIs
         app = Flask(__name__)
@@ -432,6 +433,12 @@ def main():
         integrations_bp = create_integrations_blueprint(integration_controller)
         app.register_blueprint(integrations_bp)
         logger.info("Integrations API registered")
+
+        # Register audio API
+        audio_controller = AudioConfigController(settings_manager)
+        audio_bp = create_audio_blueprint(audio_controller)
+        app.register_blueprint(audio_bp)
+        logger.info("Audio API registered")
 
         # Start settings monitor to watch for federation being enabled
         settings_file = "/app/data/settings.json"
