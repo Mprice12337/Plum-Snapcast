@@ -7,13 +7,20 @@ Keeps audio services (AirPlay, Spotify, etc.) always discoverable but only
 creates Snapcast streams when clients are actively connected/playing.
 
 Features:
-- Hybrid detection approach for reliability:
-  * Monitors shairport-sync metadata pipe for instant session detection (pbeg, pend, disc, mden)
-  * Monitors Snapcast WebSocket for stream status changes (playing/idle)
-- Adds AirPlay stream to Snapserver when client connects
-- Removes stream after idle timeout when client disconnects
+- Metadata pipe monitoring for stream creation (pbeg detection only)
+- Automatic handoff to control script after stream creation
+- WebSocket monitoring for stream status and removal
 - Event-driven timeout management (no polling)
 - Communicates with Snapserver via JSON-RPC 2.0 (HTTP + WebSocket)
+
+Architecture:
+1. Lifecycle manager monitors metadata pipe waiting for 'pbeg' (play begin)
+2. On pbeg: Creates stream, then STOPS monitoring metadata pipe
+3. Control script (started by Snapserver) takes over metadata pipe for updates
+4. WebSocket monitor tracks stream status (playing/idle)
+5. On idle timeout: Removes stream, restarts metadata monitoring for next session
+
+This eliminates metadata pipe conflicts between lifecycle manager and control script.
 """
 
 import argparse
@@ -293,12 +300,13 @@ class SnapcastWebSocketMonitor:
 class StreamLifecycleManager:
     """Manages AirPlay stream lifecycle based on client activity"""
 
-    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, on_stream_removed_callback=None):
         self.client = snapserver_client
         self.idle_timeout = idle_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
+        self.on_stream_removed = on_stream_removed_callback  # Called after stream is removed
 
         # Fallback idle detection (for when pend event isn't generated)
         self.consecutive_idle_count = 0
@@ -425,6 +433,10 @@ class StreamLifecycleManager:
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
 
+        # Notify metadata monitor to resume monitoring (if callback set)
+        if self.on_stream_removed:
+            self.on_stream_removed()
+
     def _start_timeout(self):
         """Start timeout timer before removing stream"""
         # Cancel any existing timer
@@ -545,10 +557,24 @@ class StreamLifecycleManager:
 
 
 class MetadataMonitor:
-    """Monitor shairport-sync metadata pipe for session events"""
+    """Monitor shairport-sync metadata pipe for session events
+
+    Monitors ONLY for pbeg (play begin) to detect stream start.
+    After detecting pbeg and creating stream, STOPS monitoring to give
+    exclusive pipe access to the control script for metadata updates.
+    Resumes monitoring after stream is removed.
+    """
 
     def __init__(self, lifecycle_manager: StreamLifecycleManager):
         self.manager = lifecycle_manager
+        self.should_stop = False
+        self.pipe_handle = None
+
+    def reset(self):
+        """Reset monitor state to resume monitoring after stream removal"""
+        self.should_stop = False
+        self.pipe_handle = None
+        log("Metadata: Monitor reset - ready to detect next pbeg")
 
     def parse_item(self, item_xml: str):
         """Parse XML item and detect session events"""
@@ -565,26 +591,23 @@ class MetadataMonitor:
             code = bytes.fromhex(code_elem.text).decode('ascii', errors='ignore')
 
             # Check for session control events (ssnc type)
+            # We ONLY monitor for pbeg to detect stream start
+            # After stream created, control script takes over metadata pipe
             if item_type == "ssnc":
                 if code == "pbeg":
                     # Play stream begin - client connected
                     log("Metadata: pbeg (play stream begin)")
                     self.manager.on_stream_begin()
 
-                elif code == "pend":
-                    # Play stream end - client disconnected
-                    log("Metadata: pend (play stream end)")
-                    self.manager.on_stream_end()
+                    # CRITICAL: Stop monitoring metadata pipe immediately after pbeg
+                    # This gives exclusive access to the control script for metadata updates
+                    log("Metadata: Stopping pipe monitoring - handing off to control script")
+                    self.should_stop = True
+                    return  # Exit parse_item immediately
 
-                elif code == "disc":
-                    # Client disconnected (alternative to pend for abrupt disconnects)
-                    log("Metadata: disc (client disconnected)")
-                    self.manager.on_stream_end()
-
-                elif code == "mden":
-                    # Metadata end - session ending
-                    log("Metadata: mden (metadata stream end)")
-                    self.manager.on_stream_end()
+                # Note: We do NOT monitor pend, disc, or mden here
+                # Control script and WebSocket monitoring handle stream end detection
+                # This prevents metadata pipe conflicts
 
         except ET.ParseError:
             # Expected when buffer cuts mid-XML
@@ -593,7 +616,7 @@ class MetadataMonitor:
             log(f"Parse error: {e}")
 
     def run(self):
-        """Monitor metadata pipe"""
+        """Monitor metadata pipe until pbeg detected, then hand off to control script"""
         log(f"Starting metadata monitor: {METADATA_PIPE}")
 
         # Wait for pipe
@@ -603,12 +626,19 @@ class MetadataMonitor:
 
         log(f"Metadata pipe found: {METADATA_PIPE}")
 
-        # Read pipe line-by-line
+        # Read pipe line-by-line until we detect pbeg
         tmp = ""
         try:
-            while True:
+            while not self.should_stop:
                 with open(METADATA_PIPE, 'r') as pipe:
+                    self.pipe_handle = pipe
                     for line in pipe:
+                        # Check if we should stop (pbeg detected)
+                        if self.should_stop:
+                            log("Metadata: Exiting pipe monitor (pbeg detected)")
+                            self.pipe_handle = None
+                            return
+
                         strip_line = line.strip()
 
                         if strip_line.endswith("</item>"):
@@ -616,6 +646,12 @@ class MetadataMonitor:
                             item_xml = tmp + strip_line
                             self.parse_item(item_xml)
                             tmp = ""
+
+                            # Check again after parsing (parse_item may set should_stop)
+                            if self.should_stop:
+                                log("Metadata: Exiting pipe monitor (pbeg detected)")
+                                self.pipe_handle = None
+                                return
 
                         elif strip_line.startswith("<item>"):
                             # New item starting
@@ -651,24 +687,46 @@ def main():
     log("=== Stream Lifecycle Manager Starting ===")
     log(f"Snapserver: {snapserver_host}:{snapserver_port}")
     log(f"Idle timeout: {idle_timeout}s")
-    log(f"Monitoring: {METADATA_PIPE}")
+    log(f"Strategy: Metadata pipe monitoring for pbeg detection")
+    log(f"          Control script handles metadata updates")
+    log(f"          WebSocket monitoring for stream removal")
 
     # Create Snapserver client
     snapserver = SnapserverClient(snapserver_host, snapserver_port)
 
-    # Create lifecycle manager
-    lifecycle = StreamLifecycleManager(snapserver, idle_timeout)
+    # Create metadata monitor
+    monitor = MetadataMonitor(None)  # Will set lifecycle manager below
+
+    # Create lifecycle manager with callback to restart metadata monitoring
+    def on_stream_removed():
+        """Called when stream is removed - restart metadata monitoring"""
+        log("Stream removed - restarting metadata monitor for next session")
+        monitor.reset()
+        # Run monitor in background thread (non-blocking)
+        import threading
+        monitor_thread = threading.Thread(target=monitor.run, daemon=True)
+        monitor_thread.start()
+
+    lifecycle = StreamLifecycleManager(snapserver, idle_timeout, on_stream_removed_callback=on_stream_removed)
+    monitor.manager = lifecycle  # Set the lifecycle manager reference
 
     # Create and start WebSocket monitor (runs in background thread)
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
     ws_monitor.start()
 
-    # Create metadata monitor
-    monitor = MetadataMonitor(lifecycle)
-
-    # Run monitor (blocks)
+    # Run initial metadata monitor (blocks until pbeg detected)
     try:
+        log("Starting initial metadata monitor (waiting for pbeg)...")
         monitor.run()
+
+        # After pbeg detected and stream created, keep main thread alive
+        # WebSocket monitor handles stream status, metadata monitor will restart on stream removal
+        log("Metadata monitor handed off to control script")
+        log("WebSocket monitor active - waiting for stream lifecycle events")
+
+        while True:
+            time.sleep(60)
+
     except KeyboardInterrupt:
         log("Shutting down...")
         ws_monitor.stop()
