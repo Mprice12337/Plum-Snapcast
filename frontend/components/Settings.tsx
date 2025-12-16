@@ -55,7 +55,7 @@ export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, o
             aria-labelledby="settings-title"
         >
             <div
-                className="relative w-full max-w-2xl m-4 bg-[var(--bg-secondary)] rounded-2xl shadow-2xl border border-[var(--border-color)] flex flex-col max-h-[85vh]"
+                className="relative w-[80vw] h-[80vh] m-4 bg-[var(--bg-secondary)] rounded-2xl shadow-2xl border border-[var(--border-color)] flex flex-col"
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-color)]">
