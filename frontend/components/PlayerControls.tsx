@@ -23,7 +23,7 @@ const ControlButton: React.FC<{ onClick?: () => void; icon: IconName; size?: 'sm
     return (
         <button
             onClick={onClick}
-            className={`flex items-center justify-center rounded-full text-[var(--text-secondary)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200 ${sizeClasses[size]}`}
+            className={`flex items-center justify-center rounded-full text-[var(--control-icon-color)] bg-[var(--border-color)] hover:bg-[var(--bg-secondary-hover)] transition-colors duration-200 ${sizeClasses[size]}`}
             aria-label={icon.includes('play') ? 'Play' : icon.includes('pause') ? 'Pause' : icon.includes('backward') ? 'Previous track' : 'Next track'}
         >
             <Icon name={icon} style={{ color: 'inherit' }} />

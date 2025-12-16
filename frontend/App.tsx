@@ -144,6 +144,7 @@ const App: React.FC = () => {
             root.style.removeProperty('--accent-color-hover');
             root.style.removeProperty('--custom-accent-color');
             root.style.removeProperty('--custom-accent-color-hover');
+            root.style.removeProperty('--control-icon-color');
         } else {
             // Priority: Extracted album art colors (if enabled) > User-selected colors
             if (settings.theme.useAlbumArtColors && extractedAlbumArtColors) {
@@ -201,6 +202,9 @@ const App: React.FC = () => {
                 const textColor = getTextColorForBackground(accentColor);
                 root.style.setProperty('--accent-text-color', textColor);
 
+                // Set control icon color to accent (for media control buttons)
+                root.style.setProperty('--control-icon-color', accentColor);
+
                 console.log(`[Theme] Applied album art colors (contrast: ${extractedAlbumArtColors.contrastRatio.toFixed(2)}:1)`);
             } else {
                 // Clear background and text overrides when not using album art colors
@@ -214,6 +218,7 @@ const App: React.FC = () => {
                 root.style.removeProperty('--text-secondary');
                 root.style.removeProperty('--text-muted');
                 root.style.removeProperty('--icon-muted');
+                root.style.removeProperty('--control-icon-color');
 
                 // Determine the effective accent color
                 // Priority: Custom color > Built-in color
