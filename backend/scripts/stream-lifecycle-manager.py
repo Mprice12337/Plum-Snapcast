@@ -26,6 +26,7 @@ This eliminates metadata pipe conflicts between lifecycle manager and control sc
 import argparse
 import base64
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -310,8 +311,9 @@ class StreamLifecycleManager:
         self.on_stream_removed = on_stream_removed_callback  # Called after stream is removed
 
         # Fallback idle detection (for when pend event isn't generated)
-        self.consecutive_idle_count = 0
-        self.idle_threshold = 60  # 60 consecutive idle status updates (~5 minutes at 5s intervals)
+        self.idle_start_time = None  # Timestamp when stream first went idle
+        self.idle_check_interval = 30  # Check every 30 seconds
+        self.idle_check_timer = None
 
         # Signal file monitoring
         self.last_signal_time = 0
@@ -360,29 +362,69 @@ class StreamLifecycleManager:
         """Handle Snapcast status change to 'idle'
 
         Implements fallback timeout for when pend event isn't generated (ungraceful disconnect).
-        If stream is ACTIVE and has been idle for sustained period, start timeout.
-        We ignore rapid idle/playing flips during playback (normal behavior).
+        Start tracking idle time when stream first goes idle.
         """
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
-                self.consecutive_idle_count += 1
-
-                # If idle for sustained period (no pend event received), trigger timeout
-                if self.consecutive_idle_count >= self.idle_threshold:
-                    log(f"Fallback: Stream idle for {self.consecutive_idle_count} updates → starting timeout")
-                    self._start_timeout()
-                    self.state = StreamState.TIMEOUT
-                    self.consecutive_idle_count = 0
+                if self.idle_start_time is None:
+                    # First idle event - start tracking
+                    self.idle_start_time = time.time()
+                    log(f"Fallback: Stream went idle, starting idle timer")
+                    # Start periodic check
+                    self._start_idle_check()
 
     def on_status_playing(self):
         """Handle Snapcast status change to 'playing'
 
-        Resets idle counter - indicates stream is actively playing.
+        Resets idle timer - indicates stream is actively playing.
+        If we're in TIMEOUT state, cancel the timeout and return to ACTIVE.
         """
         with self.state_lock:
-            # Reset idle counter when playing
-            if self.consecutive_idle_count > 0:
-                self.consecutive_idle_count = 0
+            # Reset idle tracking when playing
+            if self.idle_start_time is not None:
+                log("Fallback: Stream playing again, cancelling idle timer")
+                self.idle_start_time = None
+                self._cancel_idle_check()
+
+            # If we're in timeout but stream is playing, cancel timeout and return to ACTIVE
+            if self.state == StreamState.TIMEOUT:
+                log("Stream playing while in TIMEOUT - cancelling timeout, returning to ACTIVE")
+                self._cancel_timeout()
+                self.state = StreamState.ACTIVE
+
+    def _start_idle_check(self):
+        """Start periodic idle duration check"""
+        self._cancel_idle_check()
+        self.idle_check_timer = threading.Timer(self.idle_check_interval, self._check_idle_duration)
+        self.idle_check_timer.daemon = True
+        self.idle_check_timer.start()
+
+    def _cancel_idle_check(self):
+        """Cancel periodic idle check"""
+        if self.idle_check_timer and self.idle_check_timer.is_alive():
+            self.idle_check_timer.cancel()
+            self.idle_check_timer = None
+
+    def _check_idle_duration(self):
+        """Check how long stream has been idle and trigger removal if needed"""
+        with self.state_lock:
+            if self.state == StreamState.ACTIVE and self.idle_start_time is not None:
+                idle_duration = time.time() - self.idle_start_time
+
+                if idle_duration >= self.idle_timeout:
+                    # Stream has been idle for longer than timeout threshold
+                    # For ungraceful disconnect (no pend event), remove immediately
+                    log(f"Fallback: Stream idle for {idle_duration:.0f}s (threshold: {self.idle_timeout}s) → removing stream")
+                    self.state = StreamState.IDLE
+                    self.idle_start_time = None
+                    self._cancel_idle_check()
+                    # Remove stream directly (no additional timeout needed for ungraceful disconnect)
+                    self._remove_stream()
+                else:
+                    # Still idle but haven't reached threshold yet - check again later
+                    remaining = self.idle_timeout - idle_duration
+                    log(f"Fallback: Stream idle for {idle_duration:.0f}s, checking again in {self.idle_check_interval}s (timeout in {remaining:.0f}s)")
+                    self._start_idle_check()  # Schedule next check
 
     def _add_stream(self):
         """Add AirPlay stream to Snapserver"""
@@ -390,6 +432,18 @@ class StreamLifecycleManager:
         # Snapcast doesn't clean these up automatically, and multiple control scripts
         # competing for FIFO reads causes choppy/sped-up audio
         self._cleanup_control_scripts()
+
+        # CRITICAL: Remove any existing AirPlay stream BEFORE adding new one
+        # This prevents duplicate streams which cause multiple FIFO readers
+        status = self.client.get_status()
+        if status and 'server' in status and 'streams' in status['server']:
+            for stream in status['server']['streams']:
+                if stream['id'] == AIRPLAY_STREAM_ID:
+                    log(f"WARNING: AirPlay stream already exists - removing it first")
+                    self.client.remove_stream(AIRPLAY_STREAM_ID)
+                    # Give snapserver time to clean up
+                    time.sleep(0.5)
+                    break
 
         # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
         # If both cat and snapserver read simultaneously, audio data gets split between them
@@ -433,6 +487,45 @@ class StreamLifecycleManager:
 
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
+
+        # Restart shairport-sync to close orphaned FIFO file handles
+        # This prevents choppy audio on reconnection caused by multiple readers
+        log("Restarting shairport-sync to close orphaned FIFO handles...")
+        try:
+            # Use stop + start instead of restart for better control
+            # Stop shairport-sync first
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync stopped")
+
+            # Wait for clean shutdown
+            time.sleep(2)
+
+            # Start shairport-sync
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync started")
+
+            # Wait for full startup before continuing
+            time.sleep(3)
+            log("shairport-sync restart complete")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: shairport-sync restart timed out: {e}")
+            log("Waiting additional time for background restart to complete...")
+            # Even if we timeout, wait to ensure the operation completes
+            time.sleep(10)
+        except Exception as e:
+            log(f"WARNING: Failed to restart shairport-sync: {e}")
+            # Wait anyway to be safe
+            time.sleep(5)
 
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
@@ -529,32 +622,31 @@ class StreamLifecycleManager:
         """
         import subprocess
         try:
-            # Find all airplay-control-script.py processes
+            # Use pgrep to find airplay-control-script.py processes (more reliable than ps aux parsing)
             result = subprocess.run(
-                ['ps', 'aux'],
+                ['pgrep', '-f', 'airplay-control-script.py'],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
 
-            killed_count = 0
-            for line in result.stdout.splitlines():
-                if 'airplay-control-script.py' in line and 'grep' not in line:
-                    # Extract PID (second column in ps aux output)
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        try:
-                            pid = int(parts[1])
-                            subprocess.run(['kill', str(pid)], timeout=2)
-                            killed_count += 1
-                            log(f"Killed orphaned control script: PID {pid}")
-                        except (ValueError, subprocess.TimeoutExpired):
-                            pass
+            if result.returncode == 0 and result.stdout.strip():
+                # pgrep found processes - kill them all
+                pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                killed_count = 0
 
-            if killed_count == 0:
-                log("No orphaned control scripts found")
-            else:
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str)
+                        subprocess.run(['kill', str(pid)], timeout=2)
+                        killed_count += 1
+                        log(f"Killed orphaned control script: PID {pid}")
+                    except (ValueError, subprocess.TimeoutExpired) as e:
+                        log(f"Failed to kill PID {pid_str}: {e}")
+
                 log(f"Cleaned up {killed_count} orphaned control script(s)")
+            else:
+                log("No orphaned control scripts found")
 
         except Exception as e:
             log(f"Failed to cleanup control scripts: {e}")
@@ -653,9 +745,15 @@ class MetadataMonitor:
         tmp = ""
         try:
             while not self.should_stop:
+                log("Metadata: Opening pipe for reading...")
                 with open(METADATA_PIPE, 'r') as pipe:
                     self.pipe_handle = pipe
+                    log("Metadata: Pipe opened, reading lines...")
+                    line_count = 0
                     for line in pipe:
+                        line_count += 1
+                        if line_count % 100 == 0:
+                            log(f"Metadata: Read {line_count} lines so far...")
                         # Check if we should stop (pbeg detected)
                         if self.should_stop:
                             log("Metadata: Exiting pipe monitor (pbeg detected)")
@@ -727,8 +825,20 @@ def main():
         monitor.reset()
         # Run monitor in background thread (non-blocking)
         import threading
-        monitor_thread = threading.Thread(target=monitor.run, daemon=True)
+
+        def monitor_with_exception_handling():
+            try:
+                log("Metadata monitor thread starting...")
+                monitor.run()
+                log("Metadata monitor thread exited normally")
+            except Exception as e:
+                log(f"ERROR: Metadata monitor thread crashed: {e}")
+                import traceback
+                log(f"Traceback: {traceback.format_exc()}")
+
+        monitor_thread = threading.Thread(target=monitor_with_exception_handling, daemon=True)
         monitor_thread.start()
+        log("Metadata monitor thread started in background")
 
     lifecycle = StreamLifecycleManager(snapserver, idle_timeout, on_stream_removed_callback=on_stream_removed)
     monitor.manager = lifecycle  # Set the lifecycle manager reference
