@@ -492,20 +492,23 @@ class StreamLifecycleManager:
         # This prevents choppy audio on reconnection caused by multiple readers
         log("Restarting shairport-sync to close orphaned FIFO handles...")
         try:
-            # Use stop + start instead of restart for better control
-            # Stop shairport-sync first
+            # CRITICAL: Force kill shairport-sync process to ensure ALL file descriptors are closed
+            # Just stopping via supervisorctl doesn't close orphaned FIFO handles
+            # This solves the issue where shairport-sync has /tmp/snapfifo open multiple times
+            log("Force killing shairport-sync process to release all FIFO handles...")
             subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                ['pkill', '-9', '-f', 'shairport-sync'],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=5
             )
-            log("shairport-sync stopped")
+            log("shairport-sync process killed")
 
-            # Wait for clean shutdown
+            # Wait for process to fully die and release all file handles
             time.sleep(2)
 
-            # Start shairport-sync
+            # Now start shairport-sync cleanly via supervisorctl
+            # Supervisorctl will detect the process is dead and start a new one
             subprocess.run(
                 ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
                 capture_output=True,
