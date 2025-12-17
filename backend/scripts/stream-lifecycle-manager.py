@@ -445,6 +445,39 @@ class StreamLifecycleManager:
                     time.sleep(0.5)
                     break
 
+        # CRITICAL: Restart shairport-sync BEFORE adding stream to ensure clean FIFO handles
+        # Shairport-sync accumulates file handles to /tmp/snapfifo over time
+        # We must restart it with supervisorctl to get a clean process
+        log("Restarting shairport-sync before stream creation to ensure clean FIFO state...")
+        try:
+            # Stop shairport-sync via supervisorctl (prevents auto-restart)
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            log("shairport-sync stopped via supervisorctl")
+
+            # Wait for clean shutdown and any file handles to close
+            time.sleep(2)
+
+            # Start shairport-sync cleanly
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync started cleanly")
+
+            # Wait for full startup
+            time.sleep(3)
+            log("shairport-sync restart complete - ready for new stream")
+        except Exception as e:
+            log(f"WARNING: Failed to restart shairport-sync before stream creation: {e}")
+            time.sleep(2)
+
         # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
         # If both cat and snapserver read simultaneously, audio data gets split between them
         # causing choppy/corrupt audio. Brief gap with no reader is better than two readers.
@@ -488,47 +521,9 @@ class StreamLifecycleManager:
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
-        # Restart shairport-sync to close orphaned FIFO file handles
-        # This prevents choppy audio on reconnection caused by multiple readers
-        log("Restarting shairport-sync to close orphaned FIFO handles...")
-        try:
-            # CRITICAL: Force kill shairport-sync process to ensure ALL file descriptors are closed
-            # Just stopping via supervisorctl doesn't close orphaned FIFO handles
-            # This solves the issue where shairport-sync has /tmp/snapfifo open multiple times
-            log("Force killing shairport-sync process to release all FIFO handles...")
-            subprocess.run(
-                ['pkill', '-9', '-f', 'shairport-sync'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            log("shairport-sync process killed")
-
-            # Wait for process to fully die and release all file handles
-            time.sleep(2)
-
-            # Now start shairport-sync cleanly via supervisorctl
-            # Supervisorctl will detect the process is dead and start a new one
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            log("shairport-sync started")
-
-            # Wait for full startup before continuing
-            time.sleep(3)
-            log("shairport-sync restart complete")
-        except subprocess.TimeoutExpired as e:
-            log(f"WARNING: shairport-sync restart timed out: {e}")
-            log("Waiting additional time for background restart to complete...")
-            # Even if we timeout, wait to ensure the operation completes
-            time.sleep(10)
-        except Exception as e:
-            log(f"WARNING: Failed to restart shairport-sync: {e}")
-            # Wait anyway to be safe
-            time.sleep(5)
+        # NOTE: We do NOT restart shairport-sync here anymore
+        # Instead, we restart it BEFORE adding a new stream in _add_stream()
+        # This ensures a clean process with no accumulated FIFO handles
 
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
