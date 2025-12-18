@@ -435,48 +435,20 @@ class StreamLifecycleManager:
 
         # CRITICAL: Remove any existing AirPlay stream BEFORE adding new one
         # This prevents duplicate streams which cause multiple FIFO readers
+        # Snapserver has a bug where it doesn't close FIFO file handles immediately on stream removal
         status = self.client.get_status()
         if status and 'server' in status and 'streams' in status['server']:
             for stream in status['server']['streams']:
                 if stream['id'] == AIRPLAY_STREAM_ID:
-                    log(f"WARNING: AirPlay stream already exists - removing it first")
+                    log(f"WARNING: AirPlay stream already exists during add - this should NOT happen!")
+                    log(f"WARNING: Stream state before removal: {stream}")
                     self.client.remove_stream(AIRPLAY_STREAM_ID)
-                    # Give snapserver time to clean up
-                    time.sleep(0.5)
+                    # Give snapserver MUCH longer to close file handles - snapserver has a bug
+                    # where it doesn't immediately close FIFO handles on Stream.RemoveStream
+                    log("Waiting 3s for snapserver to close orphaned file handles...")
+                    time.sleep(3)
+                    log("Proceeding with stream creation")
                     break
-
-        # CRITICAL: Restart shairport-sync BEFORE adding stream to ensure clean FIFO handles
-        # Shairport-sync accumulates file handles to /tmp/snapfifo over time
-        # We must restart it with supervisorctl to get a clean process
-        log("Restarting shairport-sync before stream creation to ensure clean FIFO state...")
-        try:
-            # Stop shairport-sync via supervisorctl (prevents auto-restart)
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            log("shairport-sync stopped via supervisorctl")
-
-            # Wait for clean shutdown and any file handles to close
-            time.sleep(2)
-
-            # Start shairport-sync cleanly
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            log("shairport-sync started cleanly")
-
-            # Wait for full startup
-            time.sleep(3)
-            log("shairport-sync restart complete - ready for new stream")
-        except Exception as e:
-            log(f"WARNING: Failed to restart shairport-sync before stream creation: {e}")
-            time.sleep(2)
 
         # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
         # If both cat and snapserver read simultaneously, audio data gets split between them
@@ -521,12 +493,118 @@ class StreamLifecycleManager:
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
-        # NOTE: We do NOT restart shairport-sync here anymore
-        # Instead, we restart it BEFORE adding a new stream in _add_stream()
-        # This ensures a clean process with no accumulated FIFO handles
+        # CRITICAL: Stop Avahi BEFORE cleanup to prevent race conditions
+        # If Avahi keeps advertising during cleanup, clients can try to reconnect
+        # while shairport-sync is stopped/restarting, causing orphaned FIFO handles
+        log("Stopping Avahi to hide AirPlay endpoint during cleanup (prevent reconnection race)...")
+        try:
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'avahi'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                log("Avahi stopped - endpoint hidden from network")
+            else:
+                log(f"WARNING: Avahi stop returned code {result.returncode}: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            log("WARNING: Avahi stop timed out (may already be stopped)")
+        except Exception as e:
+            log(f"WARNING: Failed to stop Avahi: {e}")
 
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
+
+        # CRITICAL: Restart shairport-sync AFTER stream removal to close orphaned FIFO handles
+        # This prevents choppy audio on reconnection caused by shairport-sync accumulating
+        # multiple file descriptors to /tmp/snapfifo over time
+        # By restarting here (during IDLE state), we ensure clean state before next pbeg
+        log("Restarting shairport-sync after stream removal to ensure clean FIFO state for next connection...")
+        try:
+            # Use supervisorctl stop + start (NOT pkill) for controlled restart
+            # supervisorctl stop prevents autorestart even with autorestart=true
+            # This gives us full control over the restart timing
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync stopped")
+
+            # Wait for clean shutdown and file handles to close
+            time.sleep(2)
+
+            # Start shairport-sync cleanly
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync started")
+
+            # Wait for full startup before continuing
+            time.sleep(3)
+            log("shairport-sync restart complete")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: shairport-sync restart timed out: {e}")
+            log("Waiting additional time for background restart to complete...")
+            # Even if we timeout, wait to ensure the operation completes
+            time.sleep(10)
+        except Exception as e:
+            log(f"WARNING: Failed to restart shairport-sync: {e}")
+            # Wait anyway to be safe
+            time.sleep(5)
+
+        # CRITICAL: Restart snapserver to close orphaned FIFO file handles
+        # Snapserver has a bug where Stream.RemoveStream doesn't actually close
+        # the FIFO file handle. This causes snapserver to accumulate FDs over time.
+        # When a new stream is added, snapserver opens a NEW handle but keeps the old
+        # one, causing multiple readers on the FIFO → choppy audio
+        log("Restarting snapserver to close orphaned FIFO file handles (snapserver bug workaround)...")
+        try:
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("snapserver restarted")
+            # Wait for snapserver to fully restart and WebSocket to reconnect
+            time.sleep(5)
+            log("snapserver restart complete")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: snapserver restart timed out: {e}")
+            time.sleep(10)
+        except Exception as e:
+            log(f"WARNING: Failed to restart snapserver: {e}")
+            time.sleep(5)
+
+        # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again
+        # Now that cleanup is complete, it's safe for clients to reconnect
+        # Use restart instead of start in case supervisord already auto-restarted it
+        log("Restarting Avahi to make AirPlay endpoint discoverable again...")
+        try:
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'avahi'],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if result.returncode == 0:
+                log("Avahi restarted - endpoint visible on network again")
+            else:
+                log(f"WARNING: Avahi restart returned code {result.returncode}: {result.stderr.strip()}")
+            # Give Avahi time to register the service
+            time.sleep(2)
+        except subprocess.TimeoutExpired:
+            log("WARNING: Avahi restart timed out (may still be starting)")
+            time.sleep(2)
+        except Exception as e:
+            log(f"WARNING: Failed to restart Avahi: {e}")
+            time.sleep(2)
 
         # Notify metadata monitor to resume monitoring (if callback set)
         if self.on_stream_removed:

@@ -1,15 +1,18 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {Routes, Route, useNavigate} from 'react-router-dom';
 import {NowPlaying} from './components/NowPlaying';
 import {PlayerControls} from './components/PlayerControls';
 import {StreamSelector} from './components/StreamSelector';
 import {ClientManager} from './components/ClientManager';
 import {SyncedDevices} from './components/SyncedDevices';
 import {Settings as SettingsModal} from './components/Settings';
+import {Visualizer} from './components/Visualizer';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
 import type {Client, Server, Settings, Stream} from './types';
+import {DEFAULT_VISUALIZER_SETTINGS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
@@ -343,6 +346,41 @@ const App: React.FC = () => {
             setBrowserClientAutoAssigned(true);
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, servers, settings.federation.enabled]);
+
+    // Stop browser audio client if its assigned stream is removed or set to none-snapserver
+    useEffect(() => {
+        if (!browserAudio.state.isActive) {
+            return; // Browser audio not active, nothing to do
+        }
+
+        // Find the browser audio client in the client list
+        const browserClient = clients.find(c => c.id === browserClientId);
+        if (!browserClient) {
+            return; // Browser client not registered yet, wait for it to appear
+        }
+
+        // Stop if no stream is assigned
+        if (!browserClient.currentStreamId) {
+            console.log(`[BrowserAudio] Stopping - client no longer assigned to any stream`);
+            browserAudio.stop();
+            return;
+        }
+
+        // Stop if assigned to the none-snapserver stream (fallback when source stream is removed)
+        if (browserClient.currentStreamId === 'none-snapserver') {
+            console.log(`[BrowserAudio] Stopping - source stream was removed`);
+            browserAudio.stop();
+            return;
+        }
+
+        // Check if the assigned stream still exists
+        const assignedStream = streams.find(s => s.id === browserClient.currentStreamId);
+        if (!assignedStream) {
+            // Stream was removed - stop the browser audio client
+            console.log(`[BrowserAudio] Stopping - assigned stream '${browserClient.currentStreamId}' was removed`);
+            browserAudio.stop();
+        }
+    }, [browserAudio.state.isActive, streams, clients, browserClientId]);
 
     // Extract dual colors (background + accent) from album art when artwork changes (if enabled)
     useEffect(() => {
@@ -1815,16 +1853,20 @@ const App: React.FC = () => {
     }
 
     return (
-        <div
-            className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8 flex flex-col">
-            {connectionError && (
-                <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
-                    <div className="flex items-center">
-                        <Icon name="triangle-exclamation" className="text-red-400 mr-2" />
-                        <span className="text-red-400">{connectionError}</span>
-                    </div>
-                </div>
-            )}
+        <>
+            <Routes>
+                {/* Main UI Route */}
+                <Route path="/" element={
+                <div
+                    className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8 flex flex-col">
+                    {connectionError && (
+                        <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
+                            <div className="flex items-center">
+                                <Icon name="triangle-exclamation" className="text-red-400 mr-2" />
+                                <span className="text-red-400">{connectionError}</span>
+                            </div>
+                        </div>
+                    )}
 
             <div className="w-full max-w-7xl mx-auto flex-grow grid grid-cols-1 lg:grid-cols-3 gap-8">
 
@@ -1916,6 +1958,45 @@ const App: React.FC = () => {
                     </button>
                 </div>
             </footer>
+                    {isSettingsOpen && (
+                        <SettingsModal
+                            settings={settings}
+                            onSettingsChange={(newSettings) => {
+                                // Use settingsService to update settings (handles server + local storage)
+                                settingsService.updateSettings(newSettings).catch((error) => {
+                                    console.error('[Settings] Failed to update:', error);
+                                });
+                            }}
+                            onClose={() => setIsSettingsOpen(false)}
+                        />
+                    )}
+                </div>
+            } />
+
+            {/* Visualizer Route */}
+            <Route path="/visualizer" element={
+                <Visualizer
+                    stream={currentStream}
+                    streams={streams}
+                    settings={settings}
+                    browserAudioSnapStream={browserAudio.getSnapStream?.() || null}
+                    onPlayPause={handlePlayPause}
+                    onSkip={handleSkip}
+                    onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                    onStreamChange={(streamId) => handleStreamChange(myClient.id, streamId)}
+                    onOpenSettings={() => setIsSettingsOpen(true)}
+                    onOpenVisualizerSettings={() => setIsSettingsOpen(true)}
+                    onStartBrowserAudio={() => {
+                        const targetStream = myClient?.currentStreamId || null;
+                        setTargetStreamForBrowserAudio(targetStream);
+                        browserAudio.start();
+                    }}
+                    currentVolume={myClient.volume}
+                />
+            } />
+            </Routes>
+
+            {/* Global Settings Modal */}
             {isSettingsOpen && (
                 <SettingsModal
                     settings={settings}
@@ -1928,7 +2009,7 @@ const App: React.FC = () => {
                     onClose={() => setIsSettingsOpen(false)}
                 />
             )}
-        </div>
+        </>
     );
 };
 
