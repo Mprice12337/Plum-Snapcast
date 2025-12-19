@@ -6,6 +6,15 @@ set -e
 
 echo "Setting up AirPlay endpoints from settings..."
 
+# Generate supervisord config from settings.json
+# This dynamically creates program sections for all configured endpoints
+echo "Generating supervisord configuration..."
+python3 /app/scripts/generate-airplay-supervisord-config.py
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to generate supervisord configuration"
+    exit 1
+fi
+
 # Parse endpoints JSON from environment variable OR directly from settings.json
 # AIRPLAY_ENDPOINTS_JSON is set by get-settings.py during container startup
 # If not set (e.g., when called by API), read directly from settings.json
@@ -18,6 +27,22 @@ if [ -z "$AIRPLAY_ENDPOINTS_JSON" ]; then
         AIRPLAY_ENDPOINTS_JSON='[{"id":"1","enabled":true,"deviceName":"Plum Audio","port":5000,"udpPortBase":6001}]'
     fi
 fi
+
+# Get list of configured endpoint IDs for cleanup
+CONFIGURED_IDS=$(echo "$AIRPLAY_ENDPOINTS_JSON" | python3 -c "import sys, json; print(' '.join([ep['id'] for ep in json.load(sys.stdin)]))")
+echo "Configured endpoint IDs: $CONFIGURED_IDS"
+
+# Clean up old config files for removed endpoints (check 1-10)
+echo "Cleaning up old config files..."
+for check_id in 1 2 3 4 5 6 7 8 9 10; do
+    if ! echo "$CONFIGURED_IDS" | grep -q "\b${check_id}\b"; then
+        # Remove config file if it exists
+        if [ -f "/app/config/shairport-sync-${check_id}.conf" ]; then
+            echo "  Removing old config for endpoint ${check_id}"
+            rm -f "/app/config/shairport-sync-${check_id}.conf"
+        fi
+    fi
+done
 
 # Parse JSON array into bash arrays
 # Each endpoint has: id, enabled, deviceName, port, udpPortBase
@@ -101,37 +126,6 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     chmod 666 "${SIGNAL_FILE}" 2>/dev/null || true
     chown snapcast:snapcast "${SIGNAL_FILE}" 2>/dev/null || true
     echo "    ✓ Signal file: ${SIGNAL_FILE}"
-
-    # Enable/disable supervisord services based on endpoint enabled state
-    # Update airplay-multi-instance.ini to set autostart for this endpoint
-    SUPERVISOR_CONFIG="/app/supervisord/airplay-multi-instance.ini"
-
-    if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
-        # Disable all services for this endpoint
-        sed -i "/^\[program:shairport-sync-${INSTANCE_ID}\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${INSTANCE_ID}-fifo-keeper\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${INSTANCE_ID}-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-    else
-        # Enable all services for this endpoint
-        sed -i "/^\[program:shairport-sync-${INSTANCE_ID}\]/,/^$/s/^autostart=false/autostart=true/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${INSTANCE_ID}-fifo-keeper\]/,/^$/s/^autostart=false/autostart=true/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${INSTANCE_ID}-lifecycle-manager\]/,/^$/s/^autostart=false/autostart=true/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-    fi
-done
-
-# Disable any unconfigured instances (1, 2, 3)
-# Get list of configured instance IDs
-CONFIGURED_IDS=$(echo "$AIRPLAY_ENDPOINTS_JSON" | python3 -c "import sys, json; print(' '.join([ep['id'] for ep in json.load(sys.stdin)]))")
-
-# Check instances 1, 2, 3 and disable if not configured
-for check_id in 1 2 3; do
-    if ! echo "$CONFIGURED_IDS" | grep -q "\b${check_id}\b"; then
-        echo "Disabling unconfigured instance ${check_id}..."
-        SUPERVISOR_CONFIG="/app/supervisord/airplay-multi-instance.ini"
-        sed -i "/^\[program:shairport-sync-${check_id}\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${check_id}-fifo-keeper\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-        sed -i "/^\[program:airplay-${check_id}-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
-    fi
 done
 
 echo ""
