@@ -50,7 +50,31 @@ DEFAULT_SETTINGS = {
             "sourceName": "Plexamp"
         },
         "snapcast": True,
-        "visualizer": False
+        "visualizer": {
+            "enabled": True,
+            "theme": "user",
+            "type": "circular",
+            "barCount": 128,
+            "sensitivity": 50,
+            "smoothing": 70,
+            "smoothingType": "catmull-rom",
+            "frequencyScale": "logarithmic-smooth",
+            "idleState": "circle",
+            "symmetry": 1,
+            "mirror": False,
+            "invert": False,
+            "taper": True,
+            "mixedFlip": False,
+            "rotate": False,
+            "rotationSpeed": 30,
+            "rotationDirection": "clockwise",
+            "cycleEnabled": False,
+            "cyclePresetIds": [],
+            "advanced": {
+                "bassAnalysis": False,
+                "particles": False
+            }
+        }
     },
     "federation": {
         "enabled": False,

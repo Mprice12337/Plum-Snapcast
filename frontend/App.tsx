@@ -11,8 +11,8 @@ import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
-import type {Client, Server, Settings, Stream} from './types';
-import {DEFAULT_VISUALIZER_SETTINGS} from './types';
+import type {Client, Server, Settings, Stream, VisualizerPreset} from './types';
+import {DEFAULT_VISUALIZER_SETTINGS, BUILT_IN_PRESETS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
@@ -36,6 +36,8 @@ const App: React.FC = () => {
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState<string | undefined>(undefined);
+    const [isVisualizerOpen, setIsVisualizerOpen] = useState(false);
 
     // Album art dual-color extraction state (background + accent)
     const [extractedAlbumArtColors, setExtractedAlbumArtColors] = useState<DualColorExtractionResult | null>(null);
@@ -70,11 +72,14 @@ const App: React.FC = () => {
     // Capture the target stream when "Listen in Browser" is clicked
     const [targetStreamForBrowserAudio, setTargetStreamForBrowserAudio] = useState<string | null>(null);
 
+    // Visualizer preset cycling state
+    const [previousTrackId, setPreviousTrackId] = useState<string | null>(null);
+    const [currentCycleIndex, setCurrentCycleIndex] = useState(0);
+
     // Initialize settings from service (fetch from server + local storage)
     useEffect(() => {
         settingsService.init().then((initialSettings) => {
             setSettings(initialSettings);
-            console.log('[Settings] Initialized:', initialSettings);
         }).catch((error) => {
             console.error('[Settings] Failed to initialize:', error);
         });
@@ -82,7 +87,6 @@ const App: React.FC = () => {
         // Subscribe to settings changes
         const unsubscribe = settingsService.subscribe((updatedSettings) => {
             setSettings(updatedSettings);
-            console.log('[Settings] Updated:', updatedSettings);
         });
 
         return () => unsubscribe();
@@ -207,8 +211,6 @@ const App: React.FC = () => {
 
                 // Set control icon color to accent (for media control buttons)
                 root.style.setProperty('--control-icon-color', accentColor);
-
-                console.log(`[Theme] Applied album art colors (contrast: ${extractedAlbumArtColors.contrastRatio.toFixed(2)}:1)`);
             } else {
                 // Clear background and text overrides when not using album art colors
                 root.style.removeProperty('--bg-primary');
@@ -361,14 +363,12 @@ const App: React.FC = () => {
 
         // Stop if no stream is assigned
         if (!browserClient.currentStreamId) {
-            console.log(`[BrowserAudio] Stopping - client no longer assigned to any stream`);
             browserAudio.stop();
             return;
         }
 
         // Stop if assigned to the none-snapserver stream (fallback when source stream is removed)
         if (browserClient.currentStreamId === 'none-snapserver') {
-            console.log(`[BrowserAudio] Stopping - source stream was removed`);
             browserAudio.stop();
             return;
         }
@@ -377,10 +377,67 @@ const App: React.FC = () => {
         const assignedStream = streams.find(s => s.id === browserClient.currentStreamId);
         if (!assignedStream) {
             // Stream was removed - stop the browser audio client
-            console.log(`[BrowserAudio] Stopping - assigned stream '${browserClient.currentStreamId}' was removed`);
             browserAudio.stop();
         }
     }, [browserAudio.state.isActive, streams, clients, browserClientId]);
+
+    // Visualizer preset cycling on track change
+    useEffect(() => {
+        // Get visualizer settings
+        const viz = typeof settings.integrations.visualizer === 'object'
+            ? settings.integrations.visualizer
+            : DEFAULT_VISUALIZER_SETTINGS;
+
+        // Skip if cycling is disabled or no presets selected
+        if (!viz.cycleEnabled || !viz.cyclePresetIds || viz.cyclePresetIds.length === 0) {
+            return;
+        }
+
+        // Get current track ID
+        const currentTrackId = currentStream?.currentTrack?.id;
+
+        // Skip if no track or track hasn't changed
+        if (!currentTrackId || currentTrackId === previousTrackId) {
+            return;
+        }
+
+        // Track has changed - cycle to next preset
+        console.log('[Visualizer] Track changed, cycling to next preset');
+        setPreviousTrackId(currentTrackId);
+
+        // Get all presets (built-in + user)
+        const userPresets = settings.integrations.visualizerPresets || [];
+        const allPresets = [...BUILT_IN_PRESETS, ...userPresets];
+
+        // Filter to only selected presets
+        const cyclePresets = allPresets.filter(p => viz.cyclePresetIds.includes(p.id));
+
+        if (cyclePresets.length === 0) {
+            return;
+        }
+
+        // Get next preset
+        const nextIndex = (currentCycleIndex + 1) % cyclePresets.length;
+        const nextPreset = cyclePresets[nextIndex];
+        setCurrentCycleIndex(nextIndex);
+
+        console.log(`[Visualizer] Applying preset: ${nextPreset.name} (${nextIndex + 1}/${cyclePresets.length})`);
+
+        // Apply preset settings
+        const newVisualizerSettings = {
+            enabled: viz.enabled,
+            cycleEnabled: viz.cycleEnabled,
+            cyclePresetIds: viz.cyclePresetIds,
+            ...nextPreset.settings
+        };
+
+        settingsService.updateServerSettings({
+            integrations: {
+                ...settings.integrations,
+                visualizer: newVisualizerSettings
+            }
+        });
+    }, [currentStream, settings, previousTrackId, currentCycleIndex]);
 
     // Extract dual colors (background + accent) from album art when artwork changes (if enabled)
     useEffect(() => {
@@ -425,13 +482,6 @@ const App: React.FC = () => {
         extractDualColorsFromAlbumArt(artworkUrl, isDarkTheme, fallbackAccent)
             .then((result) => {
                 if (result) {
-                    console.log(
-                        `[AlbumArtColor] Extracted dual colors:`,
-                        `\n  Background: ${result.backgroundColor}`,
-                        `\n  Accent: ${result.accentColor}`,
-                        `\n  Contrast: ${result.contrastRatio.toFixed(2)}:1`,
-                        `\n  Source: ${result.source}`
-                    );
                     setExtractedAlbumArtColors(result);
                 } else {
                     console.warn('[AlbumArtColor] Extraction returned null, using fallback');
@@ -459,10 +509,14 @@ const App: React.FC = () => {
     const allClients = clients.map(c => {
         // If this is our browser audio client, ensure proper naming, local volume, and connection status
         if (browserAudio.state.isActive && c.id === browserClientId) {
+            // Determine client name based on endpoint name or device name
+            const endpointName = settings.deviceName || 'Device';
+            const visualizerClientName = `${endpointName}-Visualizer`;
+
             return {
                 ...c,
-                // Use a friendly name instead of "snapweb"
-                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name,
+                // Use visualizer-specific naming
+                name: visualizerClientName,
                 // Override volume with local state (browser audio volume is local only)
                 volume: browserAudio.state.volume,
                 // Override connection status - if browser audio is active, it's connected
@@ -478,9 +532,12 @@ const App: React.FC = () => {
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
+            const endpointName = settings.deviceName || 'Device';
+            const visualizerClientName = `${endpointName}-Visualizer`;
+
             const browserClient: Client = {
                 id: browserClientId,
-                name: 'Browser Audio (Connecting...)',
+                name: `${visualizerClientName} (Connecting...)`,
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
                 connected: false
@@ -490,14 +547,21 @@ const App: React.FC = () => {
     }
 
     // Helper function to detect if a client should be hidden
-    // Hide snapweb clients that aren't our active browser audio client
+    // Hide clients ending with "-Visualizer" only when browser audio is muted (visualizer mode)
+    // Show them when unmuted (listening mode)
     const shouldHideClient = (client: Client): boolean => {
-        // If this is our active browser audio client, NEVER hide it (check ID first!)
-        if (client.id === browserClientId && browserAudio.state.isActive) {
-            return false;
+        // Check if this is our browser audio visualizer client
+        if (client.name.endsWith('-Visualizer')) {
+            // If browser audio is active, check if it's muted
+            if (browserAudio.state.isActive && client.id === browserClientId) {
+                // Hide if muted (visualizer-only mode), show if unmuted (listening mode)
+                return browserAudio.state.muted;
+            }
+            // Hide other visualizer clients
+            return true;
         }
 
-        // Hide other snapweb/browser clients (auto-created by server)
+        // Also hide other snapweb/browser clients (auto-created by server)
         const browserIndicators = ['snapweb', 'browser'];
         const clientName = client.name.toLowerCase();
         const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
@@ -1852,6 +1916,11 @@ const App: React.FC = () => {
         );
     }
 
+    // Toggle visualizer
+    const toggleVisualizer = () => {
+        setIsVisualizerOpen(!isVisualizerOpen);
+    };
+
     return (
         <>
             <Routes>
@@ -1893,6 +1962,7 @@ const App: React.FC = () => {
                                     stream={currentStream}
                                     canSeek={streamCapabilities.canSeek}
                                     onSeek={handleSeek}
+                                    onAlbumArtClick={toggleVisualizer}
                                 />
                                 <PlayerControls
                                     stream={currentStream}
@@ -1915,8 +1985,8 @@ const App: React.FC = () => {
                         <div
                             className="flex-grow flex flex-col items-center justify-center bg-[var(--bg-secondary)] rounded-lg p-8 h-full min-h-[300px]">
                             <Icon name="music" className="text-6xl text-[var(--text-muted)] mb-4" />
-                            <h2 className="text-2xl font-semibold text-[var(--text-secondary)]">No Stream Selected</h2>
-                            <p className="text-[var(--text-muted)] mt-2">Choose a source to begin.</p>
+                            <h2 className="text-2xl font-semibold text-[var(--text-primary)]">No Stream Selected</h2>
+                            <p className="text-[var(--text-secondary)] mt-2">Choose a source to begin.</p>
                         </div>
                     )}
                 </div>
@@ -1948,10 +2018,13 @@ const App: React.FC = () => {
                 className="w-full max-w-7xl mx-auto grid grid-cols-3 items-center text-[var(--text-muted)] mt-12 text-sm">
                 <div>{/* Spacer */}</div>
                 <p className="text-center">Sync Audio Controller &copy; 2024</p>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
                     <button
-                        onClick={() => setIsSettingsOpen(true)}
-                        className="p-2 rounded-full hover:bg-[var(--bg-secondary)]"
+                        onClick={() => {
+                            setSettingsInitialTab(undefined);
+                            setIsSettingsOpen(true);
+                        }}
+                        className="p-2 rounded-full hover:bg-[var(--bg-secondary)] transition-colors"
                         aria-label="Open Settings"
                     >
                         <Icon name="gear" className="text-lg" />
@@ -1967,34 +2040,47 @@ const App: React.FC = () => {
                                     console.error('[Settings] Failed to update:', error);
                                 });
                             }}
-                            onClose={() => setIsSettingsOpen(false)}
+                            onClose={() => {
+                                setIsSettingsOpen(false);
+                                setSettingsInitialTab(undefined);
+                            }}
+                            initialTab={settingsInitialTab}
                         />
                     )}
                 </div>
             } />
-
-            {/* Visualizer Route */}
-            <Route path="/visualizer" element={
-                <Visualizer
-                    stream={currentStream}
-                    streams={streams}
-                    settings={settings}
-                    browserAudioSnapStream={browserAudio.getSnapStream?.() || null}
-                    onPlayPause={handlePlayPause}
-                    onSkip={handleSkip}
-                    onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
-                    onStreamChange={(streamId) => handleStreamChange(myClient.id, streamId)}
-                    onOpenSettings={() => setIsSettingsOpen(true)}
-                    onOpenVisualizerSettings={() => setIsSettingsOpen(true)}
-                    onStartBrowserAudio={() => {
-                        const targetStream = myClient?.currentStreamId || null;
-                        setTargetStreamForBrowserAudio(targetStream);
-                        browserAudio.start();
-                    }}
-                    currentVolume={myClient.volume}
-                />
-            } />
             </Routes>
+
+            {/* Visualizer Overlay */}
+            <Visualizer
+                stream={currentStream}
+                streams={streams}
+                settings={settings}
+                browserAudioSnapStream={browserAudio.getSnapStream?.() || null}
+                browserAudioMuted={browserAudio.state.muted}
+                extractedAlbumArtColors={extractedAlbumArtColors}
+                onPlayPause={handlePlayPause}
+                onSkip={handleSkip}
+                onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                onStreamChange={(streamId) => handleStreamChange(myClient.id, streamId)}
+                onOpenSettings={() => {
+                    setSettingsInitialTab(undefined);
+                    setIsSettingsOpen(true);
+                }}
+                onOpenVisualizerSettings={() => {
+                    setSettingsInitialTab('visualizer');
+                    setIsSettingsOpen(true);
+                }}
+                onStartBrowserAudio={() => {
+                    const targetStream = myClient?.currentStreamId || null;
+                    setTargetStreamForBrowserAudio(targetStream);
+                    browserAudio.start(true); // Start muted for visualizer mode
+                }}
+                onToggleBrowserAudioMute={() => browserAudio.toggleMute()}
+                onClose={() => setIsVisualizerOpen(false)}
+                currentVolume={myClient.volume}
+                isOpen={isVisualizerOpen}
+            />
 
             {/* Global Settings Modal */}
             {isSettingsOpen && (
@@ -2006,7 +2092,11 @@ const App: React.FC = () => {
                             console.error('[Settings] Failed to update:', error);
                         });
                     }}
-                    onClose={() => setIsSettingsOpen(false)}
+                    onClose={() => {
+                        setIsSettingsOpen(false);
+                        setSettingsInitialTab(undefined);
+                    }}
+                    initialTab={settingsInitialTab}
                 />
             )}
         </>

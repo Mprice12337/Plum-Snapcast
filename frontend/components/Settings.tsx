@@ -13,6 +13,7 @@ interface SettingsProps {
     settings: SettingsType;
     onSettingsChange: (newSettings: SettingsType) => void;
     onClose: () => void;
+    initialTab?: string; // Optional initial tab to open
 }
 
 const tabs: Tab[] = [
@@ -24,8 +25,8 @@ const tabs: Tab[] = [
     {id: 'about', label: 'About', icon: 'circle-info'},
 ];
 
-export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, onClose}) => {
-    const [activeTab, setActiveTab] = useState('integrations');
+export const Settings: React.FC<SettingsProps> = ({settings, onSettingsChange, onClose, initialTab}) => {
+    const [activeTab, setActiveTab] = useState(initialTab || 'integrations');
 
     const renderTabContent = () => {
         switch (activeTab) {

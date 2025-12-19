@@ -86,8 +86,6 @@ export async function extractDualColorsFromAlbumArt(
     let finalAccentColor = accentColor;
 
     if (contrastRatio < MIN_CONTRAST_RATIO) {
-      console.log(`[AlbumArtColor] Initial contrast ${contrastRatio.toFixed(2)}:1 below minimum, adjusting...`);
-
       const adjustedColors = adjustColorsForContrast(
         backgroundColor,
         accentColor,
@@ -99,7 +97,6 @@ export async function extractDualColorsFromAlbumArt(
         finalBgColor = adjustedColors.backgroundColor;
         finalAccentColor = adjustedColors.accentColor;
         contrastRatio = adjustedColors.contrastRatio;
-        console.log(`[AlbumArtColor] Adjusted contrast to ${contrastRatio.toFixed(2)}:1`);
       } else {
         // If adjustment fails, fall back to user's selected accent
         console.warn('[AlbumArtColor] Could not achieve sufficient contrast, using fallback');

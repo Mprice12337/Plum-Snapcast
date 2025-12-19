@@ -172,7 +172,7 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
             <div className="space-y-6">
                 <div className="text-center py-4">
                     <Icon name="desktop" className="text-4xl text-[var(--icon-muted)] mb-3" />
-                    <p className="text-[var(--text-muted)]">No other active devices.</p>
+                    <p className="text-[var(--text-secondary)]">No other active devices.</p>
                 </div>
                 {onStartBrowserAudio && !browserAudioActive && (
                     <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">

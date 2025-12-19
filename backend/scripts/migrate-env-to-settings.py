@@ -81,7 +81,31 @@ def main():
                 "sourceName": os.getenv("PLEXAMP_SOURCE_NAME", "Plexamp")
             },
             "snapcast": existing_settings.get("integrations", {}).get("snapcast", True),
-            "visualizer": existing_settings.get("integrations", {}).get("visualizer", False)
+            "visualizer": existing_settings.get("integrations", {}).get("visualizer", {
+                "enabled": True,
+                "theme": "user",
+                "type": "circular",
+                "barCount": 128,
+                "sensitivity": 50,
+                "smoothing": 70,
+                "smoothingType": "catmull-rom",
+                "frequencyScale": "logarithmic-smooth",
+                "idleState": "circle",
+                "symmetry": 1,
+                "mirror": False,
+                "invert": False,
+                "taper": True,
+                "mixedFlip": False,
+                "rotate": False,
+                "rotationSpeed": 30,
+                "rotationDirection": "clockwise",
+                "cycleEnabled": False,
+                "cyclePresetIds": [],
+                "advanced": {
+                    "bassAnalysis": False,
+                    "particles": False
+                }
+            })
         },
         "federation": {
             "enabled": bool_from_env(os.getenv("FEDERATION_ENABLED"), False),

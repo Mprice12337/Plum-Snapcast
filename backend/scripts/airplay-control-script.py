@@ -269,15 +269,16 @@ class MetadataParser:
                     return False
 
                 elif code == "pend":
-                    # Play stream end
-                    log(f"[Session] Play stream END")
+                    # Play stream end - NOTE: This happens frequently during normal playback
+                    # (between tracks, during buffering, etc.). DO NOT signal stream end here.
+                    # The lifecycle manager will detect actual stream end via idle timeout.
+                    log(f"[Session] Play stream END (pend) - NOT signaling removal")
                     current_state = self.store.get_all().get("playback_status", "Stopped")
                     if current_state != "Stopped":
-                        self.store.update(playback_status="Stopped")
-                        log(f"[State] Playback state → Stopped (stream end)")
-                        # Signal lifecycle manager to remove stream after timeout
-                        signal_stream_end()
-                        return True  # Signal update
+                        # Don't change playback status to Stopped - this is likely just a track change
+                        # The stream is still active even if we get pend events
+                        log(f"[State] Ignoring pend - stream still active")
+                        return False
                     return False
 
                 elif code == "prgr":

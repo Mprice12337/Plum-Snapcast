@@ -6,6 +6,7 @@
  */
 
 import type {Settings, ThemeMode, AccentColor} from '../types';
+import {DEFAULT_VISUALIZER_SETTINGS} from '../types';
 
 const SETTINGS_API_URL = '/api/settings';
 const LOCAL_STORAGE_KEY = 'plum-snapcast-local-settings';
@@ -50,8 +51,13 @@ const DEFAULT_SERVER_SETTINGS = {
       sourceName: 'DLNA',
       deviceName: 'Plum Audio',
     },
+    plexamp: {
+      available: false,
+      enabled: false,
+      sourceName: 'Plexamp',
+    },
     snapcast: true,
-    visualizer: false,
+    visualizer: DEFAULT_VISUALIZER_SETTINGS,
   },
   federation: {
     enabled: false,

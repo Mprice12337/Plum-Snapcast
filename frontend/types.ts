@@ -41,6 +41,325 @@ export interface Client {
 export type AccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'red' | 'yellow' | 'custom';
 export type ThemeMode = 'light' | 'dark' | 'system' | 'black' | 'white';
 
+// Visualizer types
+export type VisualizerType = 'bars' | 'circular' | 'circular-bars' | 'waveform' | 'mixed';
+export type VisualizerTheme = 'smart' | 'user' | 'random';
+export type VisualizerSmoothingType = 'catmull-rom' | 'bezier' | 'simple';
+export type VisualizerIdleState = 'circle' | 'pulse' | 'nothing';
+export type VisualizerFrequencyScale = 'linear' | 'logarithmic' | 'logarithmic-smooth';
+export type VisualizerRotationDirection = 'clockwise' | 'counterclockwise';
+
+export interface VisualizerSettings {
+    enabled: boolean;
+    theme: VisualizerTheme;           // Color theme (smart=album art, user=accent, random=cycling)
+    type: VisualizerType;              // Waveform type
+    barCount: 32 | 64 | 128 | 256;    // Number of frequency bars
+    sensitivity: number;               // 0-100, default 50
+    smoothing: number;                 // 0-100, default 70 (FFT smoothing)
+    smoothingType: VisualizerSmoothingType; // Spline interpolation method
+    frequencyScale: VisualizerFrequencyScale; // Frequency distribution calculation
+    idleState: VisualizerIdleState;   // What to show when no audio
+    symmetry: 1 | 2 | 3 | 4;          // Symmetry multiplier: repeat pattern N times around circle
+    mirror: boolean;                   // Mirror pattern (highs center, lows edges)
+    invert: boolean;                   // Invert mirror effect (lows center, highs edges)
+    taper: boolean;                    // Fade bars/spectrum at edges (bars/wave only)
+    mixedFlip: boolean;                // For 'mixed' type: false=bars top/wave bottom, true=wave top/bars bottom
+    rotate: boolean;                   // Enable rotation for circular visualizers
+    rotationSpeed: number;             // Rotation speed (0-100, default 30)
+    rotationDirection: VisualizerRotationDirection; // Rotation direction
+    cycleEnabled: boolean;             // Enable cycling through presets on track change
+    cyclePresetIds: string[];          // IDs of presets to cycle through
+    advanced: {
+        bassAnalysis: boolean;         // Enable bass/treble separation
+        bassColor?: string;
+        midsColor?: string;
+        trebleColor?: string;
+        particles: boolean;            // Enable particle effects
+        particleCount?: number;
+        particleLife?: number;
+    };
+}
+
+export interface VisualizerPreset {
+    id: string;
+    name: string;
+    isBuiltIn?: boolean;               // Built-in presets cannot be edited or deleted
+    settings: Omit<VisualizerSettings, 'enabled' | 'cycleEnabled' | 'cyclePresetIds'>; // All settings except enabled and cycle settings
+}
+
+export const DEFAULT_VISUALIZER_SETTINGS: VisualizerSettings = {
+    enabled: true,  // Always enabled
+    theme: 'user',  // Always follow GUI theme
+    type: 'circular',
+    barCount: 128,
+    sensitivity: 50,
+    smoothing: 70,
+    smoothingType: 'catmull-rom',
+    frequencyScale: 'logarithmic-smooth',
+    idleState: 'circle',
+    symmetry: 1,
+    mirror: false,
+    invert: false,
+    taper: true,
+    mixedFlip: false,
+    rotate: false,
+    rotationSpeed: 30,
+    rotationDirection: 'clockwise',
+    cycleEnabled: false,
+    cyclePresetIds: [],
+    advanced: {
+        bassAnalysis: false,
+        particles: false,
+    }
+};
+
+// Built-in visualizer presets (cannot be edited or deleted)
+export const BUILT_IN_PRESETS: VisualizerPreset[] = [
+    {
+        id: 'builtin-spectrum-bars',
+        name: 'Spectrum Bars',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'bars',
+            barCount: 64,
+            sensitivity: 15,
+            smoothing: 90,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 1,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: false,
+            rotationSpeed: 30,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-spectrum-wave',
+        name: 'Spectrum Wave',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'waveform',
+            barCount: 32,
+            sensitivity: 15,
+            smoothing: 80,
+            smoothingType: 'simple',
+            frequencyScale: 'logarithmic-smooth',
+            idleState: 'pulse',
+            symmetry: 1,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: false,
+            rotationSpeed: 30,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-tri-circular',
+        name: 'Tri Circular',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular',
+            barCount: 32,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 3,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-bi-circular',
+        name: 'Bi Circular',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular',
+            barCount: 32,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 2,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-tri-radial',
+        name: 'Tri Radial',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular-bars',
+            barCount: 128,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 3,
+            mirror: true,
+            invert: true,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-bi-radial',
+        name: 'Bi Radial',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular-bars',
+            barCount: 128,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 2,
+            mirror: true,
+            invert: true,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-radial',
+        name: 'Radial',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular-bars',
+            barCount: 128,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 1,
+            mirror: true,
+            invert: true,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-circular',
+        name: 'Circular',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'circular',
+            barCount: 32,
+            sensitivity: 15,
+            smoothing: 85,
+            smoothingType: 'catmull-rom',
+            frequencyScale: 'linear',
+            idleState: 'pulse',
+            symmetry: 1,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: true,
+            rotationSpeed: 1,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    },
+    {
+        id: 'builtin-spectrum-mixed',
+        name: 'Spectrum Mixed',
+        isBuiltIn: true,
+        settings: {
+            theme: 'user',
+            type: 'mixed',
+            barCount: 64,
+            sensitivity: 15,
+            smoothing: 80,
+            smoothingType: 'simple',
+            frequencyScale: 'logarithmic-smooth',
+            idleState: 'pulse',
+            symmetry: 1,
+            mirror: true,
+            invert: false,
+            taper: true,
+            mixedFlip: false,
+            rotate: false,
+            rotationSpeed: 30,
+            rotationDirection: 'clockwise',
+            advanced: {
+                bassAnalysis: false,
+                particles: false,
+            }
+        }
+    }
+];
+
 export interface Settings {
     deviceName: string;
     hostname: string;
@@ -73,7 +392,8 @@ export interface Settings {
             sourceName: string;
         };
         snapcast: boolean;
-        visualizer: boolean;
+        visualizer: boolean | VisualizerSettings; // Support legacy boolean
+        visualizerPresets?: VisualizerPreset[];   // Saved visualizer presets
     };
     theme: {
         mode: ThemeMode;
