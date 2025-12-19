@@ -175,10 +175,16 @@ echo "Setting up AirPlay endpoints..."
 bash /app/scripts/setup-airplay-multi-instance.sh
 
 # Disable old single-instance AirPlay components (if they exist)
+# Need to disable in BOTH snapcast.ini and snapclient.ini since both define the service
 if [ -f /app/supervisord/snapcast.ini ]; then
     sed -i '/^\[program:shairport-sync\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapcast.ini 2>/dev/null || true
     sed -i '/^\[program:stream-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapcast.ini 2>/dev/null || true
     echo "Disabled old single-instance AirPlay services in snapcast.ini"
+fi
+if [ -f /app/supervisord/snapclient.ini ]; then
+    sed -i '/^\[program:shairport-sync\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapclient.ini 2>/dev/null || true
+    sed -i '/^\[program:stream-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapclient.ini 2>/dev/null || true
+    echo "Disabled old single-instance AirPlay services in snapclient.ini"
 fi
 
 # Note: Federation API server always runs to provide Settings API
