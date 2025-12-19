@@ -302,13 +302,14 @@ class SnapcastWebSocketMonitor:
 class StreamLifecycleManager:
     """Manages AirPlay stream lifecycle based on client activity"""
 
-    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, on_stream_removed_callback=None):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, on_stream_removed_callback=None, instance_id: Optional[str] = None):
         self.client = snapserver_client
         self.idle_timeout = idle_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
         self.on_stream_removed = on_stream_removed_callback  # Called after stream is removed
+        self.instance_id = instance_id  # Instance ID for multi-instance mode
 
         # Fallback idle detection (for when pend event isn't generated)
         self.idle_start_time = None  # Timestamp when stream first went idle
@@ -462,12 +463,18 @@ class StreamLifecycleManager:
 
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
+        # For multi-instance mode, pass instance-id to control script
+        if self.instance_id:
+            control_script_cmd = f"{AIRPLAY_CONTROL_SCRIPT} --instance-id {self.instance_id}"
+        else:
+            control_script_cmd = AIRPLAY_CONTROL_SCRIPT
+
         stream_uri = (
             f"pipe://{AIRPLAY_FIFO_PATH}"
             f"?name={AIRPLAY_STREAM_ID}"
             f"&sampleformat=44100:16:2"
             f"&codec=pcm"
-            f"&controlscript={AIRPLAY_CONTROL_SCRIPT}"
+            f"&controlscript={control_script_cmd}"
         )
 
         # Now add stream - Snapserver will immediately start reading from FIFO
@@ -520,41 +527,47 @@ class StreamLifecycleManager:
         # This prevents choppy audio on reconnection caused by shairport-sync accumulating
         # multiple file descriptors to /tmp/snapfifo over time
         # By restarting here (during IDLE state), we ensure clean state before next pbeg
-        log("Restarting shairport-sync after stream removal to ensure clean FIFO state for next connection...")
+        # Use instance-specific service name if in multi-instance mode
+        if self.instance_id:
+            shairport_service = f"shairport-sync-{self.instance_id}"
+        else:
+            shairport_service = "shairport-sync"
+
+        log(f"Restarting {shairport_service} after stream removal to ensure clean FIFO state for next connection...")
         try:
             # Use supervisorctl stop + start (NOT pkill) for controlled restart
             # supervisorctl stop prevents autorestart even with autorestart=true
             # This gives us full control over the restart timing
             subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', shairport_service],
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            log("shairport-sync stopped")
+            log(f"{shairport_service} stopped")
 
             # Wait for clean shutdown and file handles to close
             time.sleep(2)
 
             # Start shairport-sync cleanly
             subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', shairport_service],
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            log("shairport-sync started")
+            log(f"{shairport_service} started")
 
             # Wait for full startup before continuing
             time.sleep(3)
-            log("shairport-sync restart complete")
+            log(f"{shairport_service} restart complete")
         except subprocess.TimeoutExpired as e:
-            log(f"WARNING: shairport-sync restart timed out: {e}")
+            log(f"WARNING: {shairport_service} restart timed out: {e}")
             log("Waiting additional time for background restart to complete...")
             # Even if we timeout, wait to ensure the operation completes
             time.sleep(10)
         except Exception as e:
-            log(f"WARNING: Failed to restart shairport-sync: {e}")
+            log(f"WARNING: Failed to restart {shairport_service}: {e}")
             # Wait anyway to be safe
             time.sleep(5)
 
@@ -642,12 +655,18 @@ class StreamLifecycleManager:
         """Stop FIFO keeper via supervisorctl"""
         import subprocess
         try:
+            # Use instance-specific name if in multi-instance mode
+            if self.instance_id:
+                keeper_name = f"airplay-{self.instance_id}-fifo-keeper"
+            else:
+                keeper_name = "airplay-fifo-keeper"
+
             subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'airplay-fifo-keeper'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', keeper_name],
                 capture_output=True,
                 timeout=5
             )
-            log("FIFO keeper stopped")
+            log(f"FIFO keeper stopped: {keeper_name}")
         except Exception as e:
             log(f"Failed to stop FIFO keeper: {e}")
 
@@ -655,12 +674,18 @@ class StreamLifecycleManager:
         """Start FIFO keeper via supervisorctl"""
         import subprocess
         try:
+            # Use instance-specific name if in multi-instance mode
+            if self.instance_id:
+                keeper_name = f"airplay-{self.instance_id}-fifo-keeper"
+            else:
+                keeper_name = "airplay-fifo-keeper"
+
             subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'airplay-fifo-keeper'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', keeper_name],
                 capture_output=True,
                 timeout=5
             )
-            log("FIFO keeper started")
+            log(f"FIFO keeper started: {keeper_name}")
         except Exception as e:
             log(f"Failed to start FIFO keeper: {e}")
 
@@ -698,9 +723,15 @@ class StreamLifecycleManager:
         """
         import subprocess
         try:
-            # Use pgrep to find airplay-control-script.py processes (more reliable than ps aux parsing)
+            # Use pgrep to find airplay-control-script.py processes
+            # In multi-instance mode, filter for instance-specific scripts
+            if self.instance_id:
+                search_pattern = f'airplay-control-script.py.*--instance-id {self.instance_id}'
+            else:
+                search_pattern = 'airplay-control-script.py'
+
             result = subprocess.run(
-                ['pgrep', '-f', 'airplay-control-script.py'],
+                ['pgrep', '-f', search_pattern],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -716,13 +747,22 @@ class StreamLifecycleManager:
                         pid = int(pid_str)
                         subprocess.run(['kill', str(pid)], timeout=2)
                         killed_count += 1
-                        log(f"Killed orphaned control script: PID {pid}")
+                        if self.instance_id:
+                            log(f"Killed orphaned control script for instance {self.instance_id}: PID {pid}")
+                        else:
+                            log(f"Killed orphaned control script: PID {pid}")
                     except (ValueError, subprocess.TimeoutExpired) as e:
                         log(f"Failed to kill PID {pid_str}: {e}")
 
-                log(f"Cleaned up {killed_count} orphaned control script(s)")
+                if self.instance_id:
+                    log(f"Cleaned up {killed_count} orphaned control script(s) for instance {self.instance_id}")
+                else:
+                    log(f"Cleaned up {killed_count} orphaned control script(s)")
             else:
-                log("No orphaned control scripts found")
+                if self.instance_id:
+                    log(f"No orphaned control scripts found for instance {self.instance_id}")
+                else:
+                    log("No orphaned control scripts found")
 
         except Exception as e:
             log(f"Failed to cleanup control scripts: {e}")
@@ -870,11 +910,29 @@ class MetadataMonitor:
 
 def main():
     parser = argparse.ArgumentParser(description='Stream lifecycle manager for Snapcast')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, or 3)')
     parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
     parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
     parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
 
     args = parser.parse_args()
+
+    # Multi-instance support: override paths based on instance-id
+    if args.instance_id:
+        instance_id = args.instance_id
+        # Override module-level constants GLOBALLY for this instance
+        globals()['AIRPLAY_STREAM_ID'] = f"AirPlay-{instance_id}"
+        globals()['AIRPLAY_FIFO_PATH'] = f"/tmp/airplay-{instance_id}-fifo"
+        globals()['METADATA_PIPE'] = f"/tmp/airplay-{instance_id}-metadata"
+        globals()['AIRPLAY_CONTROL_SCRIPT'] = "/usr/share/snapserver/plug-ins/airplay-control-script.py"
+        globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
+        globals()['LOG_FILE'] = f"/tmp/stream-lifecycle-manager-{instance_id}.log"
+
+        import sys
+        print(f"[Init] Multi-instance lifecycle manager: instance={instance_id}", file=sys.stderr)
+        print(f"[Init] Stream ID: {globals()['AIRPLAY_STREAM_ID']}", file=sys.stderr)
+        print(f"[Init] FIFO: {globals()['AIRPLAY_FIFO_PATH']}", file=sys.stderr)
+        print(f"[Init] Metadata pipe: {globals()['METADATA_PIPE']}", file=sys.stderr)
 
     # Use local variables instead of modifying globals
     snapserver_host = args.snapserver_host
@@ -916,7 +974,13 @@ def main():
         monitor_thread.start()
         log("Metadata monitor thread started in background")
 
-    lifecycle = StreamLifecycleManager(snapserver, idle_timeout, on_stream_removed_callback=on_stream_removed)
+    # Pass instance_id to lifecycle manager if in multi-instance mode
+    lifecycle = StreamLifecycleManager(
+        snapserver,
+        idle_timeout,
+        on_stream_removed_callback=on_stream_removed,
+        instance_id=args.instance_id
+    )
     monitor.manager = lifecycle  # Set the lifecycle manager reference
 
     # Create and start WebSocket monitor (runs in background thread)

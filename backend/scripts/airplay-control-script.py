@@ -1097,13 +1097,34 @@ class SnapcastControlScript:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='AirPlay metadata control script for Snapcast')
-    parser.add_argument('--stream', required=False, default='Airplay', help='Stream ID')
+    parser.add_argument('--stream', required=False, help='Stream ID (auto-generated from instance-id if not provided)')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, or 3)')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    log(f"[Init] Starting with args: stream={args.stream}")
+    # Multi-instance support: override paths based on instance-id
+    if args.instance_id:
+        instance_id = args.instance_id
+        # Override module-level constants GLOBALLY for this instance
+        # These assignments modify the global variables defined at module level
+        globals()['METADATA_PIPE'] = f"/tmp/airplay-{instance_id}-metadata"
+        globals()['COVER_ART_CACHE_DIR'] = f"/tmp/shairport-sync-{instance_id}/.cache/coverart"
+        globals()['LOG_FILE'] = f"/tmp/airplay-{instance_id}-control-script.log"
+        globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
 
-    script = SnapcastControlScript(stream_id=args.stream)
+        # Auto-generate stream ID if not provided
+        stream_id = args.stream if args.stream else f"AirPlay-{instance_id}"
+
+        # Log confirmation (using the new global values)
+        print(f"[Init] Multi-instance mode: instance={instance_id}, stream={stream_id}", file=sys.stderr)
+        print(f"[Init] Metadata pipe: {globals()['METADATA_PIPE']}", file=sys.stderr)
+        print(f"[Init] Artwork cache: {globals()['COVER_ART_CACHE_DIR']}", file=sys.stderr)
+    else:
+        # Single-instance mode (original behavior)
+        stream_id = args.stream if args.stream else 'Airplay'
+        print(f"[Init] Single-instance mode: stream={stream_id}", file=sys.stderr)
+
+    script = SnapcastControlScript(stream_id=stream_id)
     script.run()

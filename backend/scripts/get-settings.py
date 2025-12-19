@@ -47,11 +47,40 @@ def main():
     # Extract integration settings
     integrations = settings.get('integrations', {})
 
-    # AirPlay settings
+    # AirPlay settings (multi-endpoint support)
     airplay = integrations.get('airplay', {})
-    print(f"export AIRPLAY_CONFIG_ENABLED={bool_to_env(airplay.get('enabled', True))}")
+
+    # Handle both old (single endpoint) and new (multi-endpoint) formats
+    if 'endpoints' in airplay:
+        # New format: array of endpoints
+        endpoints = airplay['endpoints']
+    elif 'deviceName' in airplay or 'enabled' in airplay:
+        # Old format: single endpoint - convert to array
+        endpoints = [{
+            "id": "1",
+            "enabled": airplay.get('enabled', True),
+            "deviceName": airplay.get('deviceName', 'Plum Audio'),
+            "port": 5000,
+            "udpPortBase": 6001
+        }]
+    else:
+        # No AirPlay config - create default single endpoint
+        endpoints = [{
+            "id": "1",
+            "enabled": True,
+            "deviceName": "Plum Audio",
+            "port": 5000,
+            "udpPortBase": 6001
+        }]
+
+    # Export endpoints as JSON string (will be parsed by setup script)
+    print(f"export AIRPLAY_ENDPOINTS_JSON='{json.dumps(endpoints)}'")
+
+    # Legacy env vars for backward compatibility (uses first endpoint)
+    first_endpoint = endpoints[0] if endpoints else {"enabled": True, "deviceName": "Plum Audio"}
+    print(f"export AIRPLAY_CONFIG_ENABLED={bool_to_env(first_endpoint.get('enabled', True))}")
     print(f"export AIRPLAY_SOURCE_NAME=\"AirPlay\"")
-    print(f"export AIRPLAY_DEVICE_NAME=\"{airplay.get('deviceName', 'Plum Audio')}\"")
+    print(f"export AIRPLAY_DEVICE_NAME=\"{first_endpoint.get('deviceName', 'Plum Audio')}\"")
 
     # Bluetooth settings
     bluetooth = integrations.get('bluetooth', {})

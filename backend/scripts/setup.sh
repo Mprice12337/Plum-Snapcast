@@ -161,12 +161,16 @@ if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then
     fi
 fi
 
-# Update shairport-sync device name and copy config to /etc
-if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
-    sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
+# AirPlay Endpoint Configuration (always use multi-instance approach)
+# Endpoints are configured via settings.json and parsed by get-settings.py
+echo "Setting up AirPlay endpoints..."
+bash /app/scripts/setup-airplay-multi-instance.sh
+
+# Disable old single-instance AirPlay components (if they exist)
+if [ -f /app/config/supervisord/snapcast.ini ]; then
+    sed -i '/^\[program:shairport-sync\]/,/^$/s/^autostart=true/autostart=false/' /app/config/supervisord/snapcast.ini 2>/dev/null || true
+    sed -i '/^\[program:stream-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/' /app/config/supervisord/snapcast.ini 2>/dev/null || true
 fi
-# Copy shairport-sync config to /etc (even if name wasn't updated)
-cp /app/config/shairport-sync.conf /etc/shairport-sync.conf
 
 # Note: Federation API server always runs to provide Settings API
 # Federation features (multi-server control) are enabled/disabled via settings

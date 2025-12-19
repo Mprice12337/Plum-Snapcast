@@ -981,7 +981,7 @@ def create_integrations_blueprint(
 
     @bp.route("/api/integrations/airplay/device-name", methods=["POST"])
     def airplay_update_device_name():
-        """Update AirPlay device name"""
+        """Update AirPlay device name (DEPRECATED - use /endpoints/:id instead)"""
         try:
             data = request.get_json()
             if not data or "deviceName" not in data:
@@ -994,6 +994,67 @@ def create_integrations_blueprint(
             return jsonify(result), status_code
         except Exception as e:
             logger.error(f"AirPlay device name update failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # AirPlay Endpoints Management (multi-instance support)
+    from airplay_endpoints_api import AirPlayEndpointsManager
+    airplay_endpoints_manager = AirPlayEndpointsManager()
+
+    @bp.route("/api/integrations/airplay/endpoints", methods=["GET"])
+    def airplay_list_endpoints():
+        """List all AirPlay endpoints"""
+        try:
+            result = airplay_endpoints_manager.list_endpoints()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"AirPlay list endpoints failed: {e}")
+            return jsonify({"success": False, "message": str(e), "endpoints": []}), 500
+
+    @bp.route("/api/integrations/airplay/endpoints", methods=["POST"])
+    def airplay_add_endpoint():
+        """Add new AirPlay endpoint"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            enabled = data.get("enabled", True)
+
+            result = airplay_endpoints_manager.add_endpoint(device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"AirPlay add endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/airplay/endpoints/<endpoint_id>", methods=["PUT"])
+    def airplay_update_endpoint(endpoint_id):
+        """Update existing AirPlay endpoint"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "message": "Request body required"}), 400
+
+            device_name = data.get("deviceName")
+            enabled = data.get("enabled")
+
+            result = airplay_endpoints_manager.update_endpoint(endpoint_id, device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"AirPlay update endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/airplay/endpoints/<endpoint_id>", methods=["DELETE"])
+    def airplay_remove_endpoint(endpoint_id):
+        """Remove AirPlay endpoint"""
+        try:
+            result = airplay_endpoints_manager.remove_endpoint(endpoint_id)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"AirPlay remove endpoint failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
     # Bluetooth endpoints
