@@ -169,6 +169,11 @@ if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then
     fi
 fi
 
+# Ensure snapcast user owns config directory for dynamic endpoint management
+# (API needs to write configs when endpoints are added/updated)
+chown -R snapcast:snapcast /app/config
+chmod -R u+w /app/config
+
 # AirPlay Endpoint Configuration (always use multi-instance approach)
 # Endpoints are configured via settings.json and parsed by get-settings.py
 echo "Setting up AirPlay endpoints..."
