@@ -9,8 +9,9 @@ echo "Setting up AirPlay endpoints from settings..."
 # Parse endpoints JSON from environment variable
 # AIRPLAY_ENDPOINTS_JSON is set by get-settings.py based on settings.json
 if [ -z "$AIRPLAY_ENDPOINTS_JSON" ]; then
-    echo "ERROR: AIRPLAY_ENDPOINTS_JSON not set"
-    exit 1
+    echo "WARNING: AIRPLAY_ENDPOINTS_JSON not set, using default single endpoint"
+    # Create default single endpoint if not configured
+    AIRPLAY_ENDPOINTS_JSON='[{"id":"1","enabled":true,"deviceName":"Plum Audio","port":5000,"udpPortBase":6001}]'
 fi
 
 # Parse JSON array into bash arrays

@@ -3,6 +3,14 @@ set -e
 
 echo "Starting Plum Snapcast Server setup..."
 
+# Ensure settings file exists (run migration if needed)
+if [ ! -f /app/data/settings.json ]; then
+    echo "Settings file not found. Running migration to create default settings..."
+    if [ -f /app/scripts/migrate-env-to-settings.py ]; then
+        python3 /app/scripts/migrate-env-to-settings.py 2>&1 | grep -v "^=" || true
+    fi
+fi
+
 # Load settings from settings API/file
 # This will set environment variables based on stored settings
 # Falls back to existing env vars if settings file doesn't exist
