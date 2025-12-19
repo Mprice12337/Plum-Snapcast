@@ -34,7 +34,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [isAddingEndpoint, setIsAddingEndpoint] = useState(false);
   const [newEndpointName, setNewEndpointName] = useState('');
   const [showAddEndpoint, setShowAddEndpoint] = useState(false);
-  const [needsRestart, setNeedsRestart] = useState(false);
 
   // Bluetooth device name state
   const [bluetoothDeviceName, setBluetoothDeviceName] = useState(settings.integrations.bluetooth.deviceName);
@@ -110,9 +109,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         setAirplayEndpoints(airplayEndpoints.map(ep =>
           ep.id === endpointId ? {...ep, enabled} : ep
         ));
-        if (result.restart_required) {
-          setNeedsRestart(true);
-        }
       } else {
         alert(`Failed to ${enabled ? 'enable' : 'disable'} endpoint: ${result.message}`);
       }
@@ -144,10 +140,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           ep.id === endpointId ? {...ep, deviceName: newName} : ep
         ));
 
-        if (result.restart_required) {
-          setNeedsRestart(true);
-        }
-
         setTimeout(() => {
           setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'idle'});
           setEndpointNameMessages({...endpointNameMessages, [endpointId]: ''});
@@ -178,10 +170,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         setEndpointNames({...endpointNames, [result.endpoint.id]: result.endpoint.deviceName});
         setNewEndpointName('');
         setShowAddEndpoint(false);
-
-        if (result.restart_required) {
-          setNeedsRestart(true);
-        }
       } else {
         alert(`Failed to add endpoint: ${result.message}`);
       }
@@ -214,10 +202,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         const newNames = {...endpointNames};
         delete newNames[endpointId];
         setEndpointNames(newNames);
-
-        if (result.restart_required) {
-          setNeedsRestart(true);
-        }
       } else {
         alert(`Failed to remove endpoint: ${result.message}`);
       }
@@ -563,11 +547,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               <p className="text-sm text-[var(--text-muted)] mt-1">
                 AirPlay audio streaming (AirPlay 1 & 2) - {airplayEndpoints.length} endpoint{airplayEndpoints.length !== 1 ? 's' : ''}
               </p>
-              {needsRestart && (
-                <p className="text-xs text-amber-500 mt-1 font-semibold">
-                  ⚠️ Restart container to apply changes
-                </p>
-              )}
             </div>
 
             {/* Right: Chevron */}

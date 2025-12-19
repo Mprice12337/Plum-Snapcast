@@ -19,6 +19,81 @@ class AirPlayEndpointsManager:
 
     def __init__(self, settings_manager: SettingsManager = None):
         self.settings_manager = settings_manager or SettingsManager()
+        self.supervisorctl_cmd = [
+            'supervisorctl',
+            '-c',
+            '/app/supervisord/supervisord.conf'
+        ]
+
+    def _apply_endpoint_changes(self, affected_endpoint_ids: List[str] = None) -> Dict[str, Any]:
+        """Apply endpoint changes by running setup script and restarting services"""
+        try:
+            # Run setup script to create configs, FIFOs, etc.
+            logger.info("Running setup-airplay-multi-instance.sh to apply endpoint changes")
+            result = subprocess.run(
+                ['bash', '/app/scripts/setup-airplay-multi-instance.sh'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Setup script failed: {result.stderr}")
+                return {
+                    "success": False,
+                    "message": f"Failed to apply endpoint configuration: {result.stderr}"
+                }
+
+            # Reload supervisord config to pick up any changes
+            logger.info("Reloading supervisord configuration")
+            subprocess.run(
+                self.supervisorctl_cmd + ['reread'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            subprocess.run(
+                self.supervisorctl_cmd + ['update'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            # Restart affected endpoint services
+            if affected_endpoint_ids:
+                for endpoint_id in affected_endpoint_ids:
+                    services = [
+                        f'shairport-sync-{endpoint_id}',
+                        f'airplay-{endpoint_id}-fifo-keeper',
+                        f'airplay-{endpoint_id}-lifecycle-manager'
+                    ]
+
+                    for service in services:
+                        logger.info(f"Restarting service: {service}")
+                        subprocess.run(
+                            self.supervisorctl_cmd + ['restart', service],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+
+            return {
+                "success": True,
+                "message": "Endpoint changes applied successfully"
+            }
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout while applying endpoint changes")
+            return {
+                "success": False,
+                "message": "Timeout while applying changes"
+            }
+        except Exception as e:
+            logger.error(f"Failed to apply endpoint changes: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to apply changes: {str(e)}"
+            }
 
     def _get_next_endpoint_id(self, endpoints: List[Dict]) -> str:
         """Generate next available endpoint ID"""
@@ -140,11 +215,19 @@ class AirPlayEndpointsManager:
 
             logger.info(f"Added AirPlay endpoint: {new_endpoint}")
 
+            # Apply changes immediately (run setup script and restart services)
+            apply_result = self._apply_endpoint_changes([new_id])
+            if not apply_result["success"]:
+                return {
+                    "success": False,
+                    "message": f"Endpoint added to settings but failed to apply: {apply_result['message']}",
+                    "endpoint": new_endpoint
+                }
+
             return {
                 "success": True,
-                "message": f"Added endpoint '{device_name}'",
-                "endpoint": new_endpoint,
-                "restart_required": True  # Frontend should prompt for container restart
+                "message": f"Added endpoint '{device_name}' and applied changes",
+                "endpoint": new_endpoint
             }
 
         except Exception as e:
@@ -205,11 +288,19 @@ class AirPlayEndpointsManager:
 
             logger.info(f"Updated AirPlay endpoint {endpoint_id}: {endpoints[endpoint_index]}")
 
+            # Apply changes immediately (run setup script and restart services)
+            apply_result = self._apply_endpoint_changes([endpoint_id])
+            if not apply_result["success"]:
+                return {
+                    "success": False,
+                    "message": f"Endpoint updated in settings but failed to apply: {apply_result['message']}",
+                    "endpoint": endpoints[endpoint_index]
+                }
+
             return {
                 "success": True,
-                "message": f"Updated endpoint '{endpoint_id}'",
-                "endpoint": endpoints[endpoint_index],
-                "restart_required": True  # Frontend should prompt for container restart
+                "message": f"Updated endpoint '{endpoint_id}' and applied changes",
+                "endpoint": endpoints[endpoint_index]
             }
 
         except Exception as e:
@@ -255,6 +346,7 @@ class AirPlayEndpointsManager:
                 }
 
             removed_endpoint = endpoints.pop(endpoint_index)
+            removed_id = removed_endpoint["id"]
 
             # Update settings
             self.settings_manager.update_settings({
@@ -267,10 +359,35 @@ class AirPlayEndpointsManager:
 
             logger.info(f"Removed AirPlay endpoint: {removed_endpoint}")
 
+            # Apply changes immediately (run setup script to disable removed endpoint)
+            # Pass None to apply changes to all endpoints (this will disable the removed one)
+            apply_result = self._apply_endpoint_changes(None)
+            if not apply_result["success"]:
+                return {
+                    "success": False,
+                    "message": f"Endpoint removed from settings but failed to apply: {apply_result['message']}"
+                }
+
+            # Stop services for removed endpoint
+            try:
+                services = [
+                    f'shairport-sync-{removed_id}',
+                    f'airplay-{removed_id}-fifo-keeper',
+                    f'airplay-{removed_id}-lifecycle-manager'
+                ]
+                for service in services:
+                    subprocess.run(
+                        self.supervisorctl_cmd + ['stop', service],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to stop services for removed endpoint: {e}")
+
             return {
                 "success": True,
-                "message": f"Removed endpoint '{removed_endpoint['deviceName']}'",
-                "restart_required": True  # Frontend should prompt for container restart
+                "message": f"Removed endpoint '{removed_endpoint['deviceName']}' and applied changes"
             }
 
         except Exception as e:
