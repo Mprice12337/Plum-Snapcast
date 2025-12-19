@@ -463,18 +463,18 @@ class StreamLifecycleManager:
 
         # Build stream URI - Note: Dynamic streams require controlscript in /usr/share/snapserver/plug-ins/
         # Static config can use /app/scripts/ but JSON-RPC API enforces the plug-ins directory
-        # For multi-instance mode, pass instance-id to control script
+        # For multi-instance mode, use instance-specific wrapper script (Snapcast doesn't support args in controlscript)
         if self.instance_id:
-            control_script_cmd = f"{AIRPLAY_CONTROL_SCRIPT} --instance-id {self.instance_id}"
+            control_script = f"/usr/share/snapserver/plug-ins/airplay-control-script-{self.instance_id}.py"
         else:
-            control_script_cmd = AIRPLAY_CONTROL_SCRIPT
+            control_script = AIRPLAY_CONTROL_SCRIPT
 
         stream_uri = (
             f"pipe://{AIRPLAY_FIFO_PATH}"
             f"?name={AIRPLAY_STREAM_ID}"
             f"&sampleformat=44100:16:2"
             f"&codec=pcm"
-            f"&controlscript={control_script_cmd}"
+            f"&controlscript={control_script}"
         )
 
         # Now add stream - Snapserver will immediately start reading from FIFO
@@ -920,8 +920,26 @@ def main():
     # Multi-instance support: override paths based on instance-id
     if args.instance_id:
         instance_id = args.instance_id
+
+        # Get endpoint name from settings.json for stream display name
+        endpoint_name = None
+        try:
+            import json
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('airplay', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            import sys
+            print(f"[Init] WARNING: Could not read endpoint name from settings: {e}", file=sys.stderr)
+            endpoint_name = f'Endpoint {instance_id}'
+
         # Override module-level constants GLOBALLY for this instance
-        globals()['AIRPLAY_STREAM_ID'] = f"AirPlay-{instance_id}"
+        # Use format "AirPlay - [device name]" for stream display name
+        globals()['AIRPLAY_STREAM_ID'] = f"AirPlay - {endpoint_name}" if endpoint_name else f"AirPlay-{instance_id}"
         globals()['AIRPLAY_FIFO_PATH'] = f"/tmp/airplay-{instance_id}-fifo"
         globals()['METADATA_PIPE'] = f"/tmp/airplay-{instance_id}-metadata"
         globals()['AIRPLAY_CONTROL_SCRIPT'] = "/usr/share/snapserver/plug-ins/airplay-control-script.py"

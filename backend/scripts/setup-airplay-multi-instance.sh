@@ -24,7 +24,7 @@ if [ -z "$AIRPLAY_ENDPOINTS_JSON" ]; then
         AIRPLAY_ENDPOINTS_JSON=$(python3 -c "import json; data=json.load(open('/app/data/settings.json')); print(json.dumps(data.get('integrations', {}).get('airplay', {}).get('endpoints', [])))")
     else
         echo "WARNING: No settings.json found, using default single endpoint"
-        AIRPLAY_ENDPOINTS_JSON='[{"id":"1","enabled":true,"deviceName":"Plum Audio","port":5000,"udpPortBase":6001}]'
+        AIRPLAY_ENDPOINTS_JSON='[{"id":"1","enabled":true,"deviceName":"Plum Audio","port":5050,"udpPortBase":6001}]'
     fi
 fi
 
@@ -32,7 +32,7 @@ fi
 CONFIGURED_IDS=$(echo "$AIRPLAY_ENDPOINTS_JSON" | python3 -c "import sys, json; print(' '.join([ep['id'] for ep in json.load(sys.stdin)]))")
 echo "Configured endpoint IDs: $CONFIGURED_IDS"
 
-# Clean up old config files for removed endpoints (check 1-10)
+# Clean up old config files and wrapper scripts for removed endpoints (check 1-10)
 echo "Cleaning up old config files..."
 for check_id in 1 2 3 4 5 6 7 8 9 10; do
     if ! echo "$CONFIGURED_IDS" | grep -q "\b${check_id}\b"; then
@@ -40,6 +40,11 @@ for check_id in 1 2 3 4 5 6 7 8 9 10; do
         if [ -f "/app/config/shairport-sync-${check_id}.conf" ]; then
             echo "  Removing old config for endpoint ${check_id}"
             rm -f "/app/config/shairport-sync-${check_id}.conf"
+        fi
+        # Remove wrapper script if it exists
+        if [ -f "/usr/share/snapserver/plug-ins/airplay-control-script-${check_id}.py" ]; then
+            echo "  Removing old wrapper script for endpoint ${check_id}"
+            rm -f "/usr/share/snapserver/plug-ins/airplay-control-script-${check_id}.py"
         fi
     fi
 done
@@ -126,6 +131,22 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     chmod 666 "${SIGNAL_FILE}" 2>/dev/null || true
     chown snapcast:snapcast "${SIGNAL_FILE}" 2>/dev/null || true
     echo "    ✓ Signal file: ${SIGNAL_FILE}"
+
+    # Create instance-specific control script wrapper
+    # Snapcast's JSON-RPC API doesn't support arguments in controlscript parameter,
+    # so we create a wrapper script that calls the main script with --instance-id
+    WRAPPER_SCRIPT="/usr/share/snapserver/plug-ins/airplay-control-script-${INSTANCE_ID}.py"
+    cat > "${WRAPPER_SCRIPT}" <<EOF
+#!/usr/bin/env python3
+"""Wrapper script for AirPlay instance ${INSTANCE_ID}"""
+import sys
+import os
+# Execute main control script with instance ID
+os.execv("/usr/share/snapserver/plug-ins/airplay-control-script.py",
+         ["/usr/share/snapserver/plug-ins/airplay-control-script.py", "--instance-id", "${INSTANCE_ID}"])
+EOF
+    chmod +x "${WRAPPER_SCRIPT}"
+    echo "    ✓ Control script wrapper: ${WRAPPER_SCRIPT}"
 done
 
 echo ""

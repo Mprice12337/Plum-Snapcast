@@ -87,7 +87,7 @@ def main():
             instance_id = endpoint.get("id")
             device_name = endpoint.get("deviceName", f"Endpoint {instance_id}")
             enabled = endpoint.get("enabled", True)
-            port = endpoint.get("port", 5000)
+            port = endpoint.get("port", 5050)
 
             # Determine description
             if instance_id == "1":

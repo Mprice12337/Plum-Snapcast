@@ -175,6 +175,7 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000), `FEDERATION_API_PORT` (default: 5001)
 
 **Important Implementation Notes**:
+- **AirPlay**: Multi-instance support (up to 10 endpoints). Each endpoint runs separate shairport-sync instance with unique ports (5050-5059). Managed via GUI (Settings → Integrations → AirPlay). Dynamic stream lifecycle creates/removes streams based on playback activity. Stream names: "AirPlay - [device name]". Only endpoint 1 has D-Bus control enabled (avoids conflicts). Control script wrapper pattern works around Snapcast's no-arguments limitation in controlscript parameter.
 - **Bluetooth**: No album art (needs BlueZ 5.81+, Alpine has 5.70). SSP only (no PIN codes). Metadata via AVRCP.
 - **Spotify**: Uses spotifyd (not librespot) for D-Bus MPRIS. Patched with-avahi to avoid port conflicts. Album art cached to `/usr/share/snapserver/snapweb/coverart/`
 - **DLNA/UPnP**: gmrender-resurrect, GStreamer pipeline to 44.1kHz/16-bit stereo. Metadata from UPnP AVTransport.
@@ -184,9 +185,11 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 
 **Ports**:
 - Snapcast: 1704-1705 (clients), 1780 (HTTP/WS), 1788 (HTTPS/WS)
-- AirPlay: 3689, 5000, 6000-6009/udp, 5353/udp (mDNS), 7000 (AirPlay 2), 319-320/udp (NQPTP)
+- AirPlay Endpoints: 5050-5059 (up to 10 endpoints), 3689, 5353/udp (mDNS), UDP 6001-6100 (RTP/timing), 319-320/udp (NQPTP)
+- Internal APIs: 5001 (Federation), 5002 (Settings), 5003 (Integrations), 5004 (Audio)
 - Plexamp: 32500 (HTTP API)
 - Frontend: 3000 (configurable)
+- Metadata Debug: 8080 (HTTP)
 
 **Requirements**: Layer 2 network for mDNS/Avahi, host networking mode, no VLANs without repeater
 
@@ -246,6 +249,37 @@ POST /api/integrations/dlna/disable
 POST /api/integrations/dlna/device-name
 GET  /api/integrations/dlna/status
 ```
+
+### AirPlay Endpoints REST API
+- **Protocol**: HTTP REST (Flask)
+- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/airplay/endpoints`
+- **Implementation**: `backend/scripts/airplay_endpoints_api.py`
+
+**Endpoints**:
+```typescript
+GET  /api/airplay/endpoints → List all AirPlay endpoints
+POST /api/airplay/endpoints → Add new endpoint (body: {deviceName: string, enabled?: boolean})
+PUT  /api/airplay/endpoints/:id → Update endpoint (body: {deviceName?: string, enabled?: boolean})
+DELETE /api/airplay/endpoints/:id → Remove endpoint
+```
+
+**Endpoint Object**:
+```typescript
+{
+  id: string,              // "1", "2", etc.
+  enabled: boolean,
+  deviceName: string,      // Display name on network
+  port: number,            // 5050, 5051, ... (auto-assigned)
+  udpPortBase: number      // 6001, 6011, ... (auto-assigned)
+}
+```
+
+**Key Features**:
+- Supports up to 10 simultaneous AirPlay endpoints
+- Port allocation: 5050 + (id - 1), UDP: 6001 + (id - 1) × 10
+- Dynamic management: Changes applied without container restart
+- Stream naming: "AirPlay - [deviceName]" format
+- Control script wrappers: Instance-specific scripts for Snapcast integration
 
 ### Audio Configuration REST API
 - **Protocol**: HTTP REST (Flask)
@@ -381,6 +415,7 @@ git pull && docker compose pull && docker compose up -d
 16. **Audio I/O Configuration**: Audio devices configured via GUI (Settings → Audio). **Output**: Device selection persists in `settings.json`, snapclient reloads on restart. SNAPCLIENT_SOUNDCARD env var deprecated (auto-migrated). **Tested on RPi with multiple devices (headphones, HDMI, HAT)**. **Input (BETA)**: Enable devices to create Snapcast streams. Each enabled device creates an ALSA input stream via `manage_input_streams.py` (uses JSON-RPC API). Custom stream names configurable. Default: all inputs disabled. **NOT YET TESTED with physical audio input devices** - requires USB microphone or audio interface for validation. UI includes beta warning. Supports all ALSA devices: built-in (headphones/HDMI), USB, HATs, microphones.
 17. **Enhanced Theming**: 5 theme modes (light, dark, system, black, white). 6 built-in accent colors + custom color picker. Album art color extraction with WCAG AA contrast (4.5:1 minimum) - extracts background + accent colors from artwork, automatically adjusts for accessibility. Monochrome modes (black/white) disable accent selection. Theme settings persist in `settings.json`.
 18. **Audio Visualizer**: Full-screen overlay with multiple preset types (bars, circular, waveform, amorphous blob). Frequency-reactive animations using Web Audio API. Preset cycling on track change. Smart color theming from album artwork. Browser audio auto-start integration. Visualizer settings (preset, theme, colors) persist in `settings.json`. Accessible via "Visualize" button in Now Playing.
+19. **Multi-Instance AirPlay**: Up to 10 simultaneous AirPlay endpoints supported. Each endpoint has unique shairport-sync instance, port (5050-5059), UDP range, config file, FIFO, metadata pipe, and lifecycle manager. Control script wrapper pattern (`airplay-control-script-{id}.py`) works around Snapcast's controlscript parameter limitation (no command-line arguments). Endpoint management via GUI creates/updates/deletes endpoints dynamically without container restart. Runs `setup-airplay-multi-instance.sh` → regenerates supervisord config → restarts affected services. See `backend/scripts/airplay_endpoints_api.py` for implementation.
 
 ---
 

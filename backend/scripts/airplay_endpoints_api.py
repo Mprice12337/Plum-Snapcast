@@ -132,23 +132,23 @@ class AirPlayEndpointsManager:
     def _get_next_port_config(self, endpoints: List[Dict]) -> tuple:
         """Get next available port and UDP base port"""
         # Port allocation:
-        # ID 1: Port 5000, UDP 6001
-        # ID 2: Port 7000, UDP 6011
-        # ID 3: Port 8000, UDP 6021
-        # Pattern: Port = 5000 + (id-1)*2000, UDP = 6001 + (id-1)*10
+        # ID 1: Port 5050, UDP 6001
+        # ID 2: Port 5051, UDP 6011
+        # ID 3: Port 5052, UDP 6021
+        # Pattern: Port = 5050 + (id-1), UDP = 6001 + (id-1)*10
 
         if not endpoints:
-            return (5000, 6001)
+            return (5050, 6001)
 
         # Find highest port in use
-        used_ports = [ep.get("port", 5000) for ep in endpoints]
+        used_ports = [ep.get("port", 5050) for ep in endpoints]
         max_port = max(used_ports)
 
-        # Increment by 2000
-        next_port = max_port + 2000
+        # Increment by 1
+        next_port = max_port + 1
 
         # Calculate UDP base (pattern: 6001, 6011, 6021, ...)
-        port_index = (next_port - 5000) // 2000
+        port_index = (next_port - 5050)
         next_udp = 6001 + (port_index * 10)
 
         return (next_port, next_udp)
@@ -168,7 +168,7 @@ class AirPlayEndpointsManager:
                     "id": "1",
                     "enabled": airplay.get("enabled", True),
                     "deviceName": airplay.get("deviceName", "Plum Audio"),
-                    "port": 5000,
+                    "port": 5050,
                     "udpPortBase": 6001
                 }]
             else:

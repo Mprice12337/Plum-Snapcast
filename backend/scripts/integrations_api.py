@@ -115,7 +115,7 @@ class AirPlayController:
                         "id": "1",
                         "enabled": True,
                         "deviceName": "Plum Audio",
-                        "port": 5000,
+                        "port": 5050,
                         "udpPortBase": 6001
                     }]
                 }

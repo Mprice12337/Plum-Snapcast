@@ -60,7 +60,7 @@ def main():
             "id": "1",
             "enabled": airplay.get('enabled', True),
             "deviceName": airplay.get('deviceName', 'Plum Audio'),
-            "port": 5000,
+            "port": 5050,
             "udpPortBase": 6001
         }]
     else:
@@ -69,7 +69,7 @@ def main():
             "id": "1",
             "enabled": True,
             "deviceName": "Plum Audio",
-            "port": 5000,
+            "port": 5050,
             "udpPortBase": 6001
         }]
 

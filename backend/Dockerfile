@@ -258,11 +258,11 @@ RUN chown snapcast:snapcast /usr/share/snapserver/snapweb/index.html && \
 
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
-# Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
+# AirPlay Endpoints: 5050-5059 (up to 10 endpoints), 3689, 5353, 6001-6100/udp
+# Federation API: 5001 (HTTP REST API)
 # Metadata Debug Server: 8080 (HTTP)
-# Federation API: 5000 (HTTP REST API)
 # Note: Plexamp runs in separate container (port 32500)
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
+EXPOSE 1704 1705 1780 1788 3689 5001 5050-5059 5353 6001-6100/udp 8080
 
 # Set working directory
 WORKDIR /app

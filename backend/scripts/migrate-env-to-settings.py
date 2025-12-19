@@ -62,7 +62,7 @@ def main():
                     "id": "1",
                     "enabled": existing_airplay.get("enabled", bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True)),
                     "deviceName": existing_airplay.get("deviceName", os.getenv("AIRPLAY_DEVICE_NAME", "Plum Audio")),
-                    "port": 5000,
+                    "port": 5050,
                     "udpPortBase": 6001
                 }
             ]
@@ -75,7 +75,7 @@ def main():
                     "id": "1",
                     "enabled": bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True),
                     "deviceName": os.getenv("AIRPLAY_DEVICE_NAME", "Plum Audio"),
-                    "port": 5000,
+                    "port": 5050,
                     "udpPortBase": 6001
                 }
             ]
