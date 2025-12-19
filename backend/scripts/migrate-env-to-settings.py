@@ -174,6 +174,13 @@ def main():
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f, indent=2)
 
+        # Set ownership to snapcast user (UID 1000, GID 1000)
+        try:
+            os.chown(SETTINGS_FILE, 1000, 1000)
+            os.chmod(SETTINGS_FILE, 0o644)
+        except Exception as e:
+            print(f"\n✗ Warning: Could not set file ownership: {e}")
+
         print(f"\n✓ Successfully wrote settings to {SETTINGS_FILE}")
         print("\nMigrated settings:")
         print(json.dumps(settings, indent=2))
