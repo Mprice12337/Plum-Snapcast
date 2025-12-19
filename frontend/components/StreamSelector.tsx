@@ -7,6 +7,7 @@ interface StreamSelectorProps {
     currentStreamId: string | null;
     onSelectStream: (streamId: string | null) => void;
     federationEnabled?: boolean;
+    openUpward?: boolean;
 }
 
 /**
@@ -21,7 +22,7 @@ const getStreamDisplayName = (stream: Stream, isMainTitle: boolean = false): str
     return stream.name;
 };
 
-export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false}) => {
+export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false, openUpward = false}) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const currentStream = streams.find(s => s.id === currentStreamId);
@@ -76,7 +77,9 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
 
             {isOpen && (
                 <div
-                    className="absolute z-10 top-full mt-2 w-full max-w-xs bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl"
+                    className={`absolute z-10 w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-xl ${
+                        openUpward ? 'bottom-full mb-2' : 'top-full mt-2'
+                    }`}
                     role="listbox"
                 >
                     <ul className="py-2 text-base text-[var(--text-primary)] max-h-60 overflow-auto">

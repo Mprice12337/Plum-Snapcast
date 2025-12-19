@@ -7,18 +7,26 @@ Keeps audio services (AirPlay, Spotify, etc.) always discoverable but only
 creates Snapcast streams when clients are actively connected/playing.
 
 Features:
-- Hybrid detection approach for reliability:
-  * Monitors shairport-sync metadata pipe for instant session detection (pbeg, pend, disc, mden)
-  * Monitors Snapcast WebSocket for stream status changes (playing/idle)
-- Adds AirPlay stream to Snapserver when client connects
-- Removes stream after idle timeout when client disconnects
+- Metadata pipe monitoring for stream creation (pbeg detection only)
+- Automatic handoff to control script after stream creation
+- WebSocket monitoring for stream status and removal
 - Event-driven timeout management (no polling)
 - Communicates with Snapserver via JSON-RPC 2.0 (HTTP + WebSocket)
+
+Architecture:
+1. Lifecycle manager monitors metadata pipe waiting for 'pbeg' (play begin)
+2. On pbeg: Creates stream, then STOPS monitoring metadata pipe
+3. Control script (started by Snapserver) takes over metadata pipe for updates
+4. WebSocket monitor tracks stream status (playing/idle)
+5. On idle timeout: Removes stream, restarts metadata monitoring for next session
+
+This eliminates metadata pipe conflicts between lifecycle manager and control script.
 """
 
 import argparse
 import base64
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +50,7 @@ IDLE_TIMEOUT = 300  # 5 minutes - time to wait after stream ends before removing
 AIRPLAY_STREAM_ID = "AirPlay"
 AIRPLAY_FIFO_PATH = "/tmp/snapfifo"
 AIRPLAY_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/airplay-control-script.py"
+STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
 
 
 class StreamState(Enum):
@@ -293,16 +302,21 @@ class SnapcastWebSocketMonitor:
 class StreamLifecycleManager:
     """Manages AirPlay stream lifecycle based on client activity"""
 
-    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, on_stream_removed_callback=None):
         self.client = snapserver_client
         self.idle_timeout = idle_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
+        self.on_stream_removed = on_stream_removed_callback  # Called after stream is removed
 
         # Fallback idle detection (for when pend event isn't generated)
-        self.consecutive_idle_count = 0
-        self.idle_threshold = 60  # 60 consecutive idle status updates (~5 minutes at 5s intervals)
+        self.idle_start_time = None  # Timestamp when stream first went idle
+        self.idle_check_interval = 30  # Check every 30 seconds
+        self.idle_check_timer = None
+
+        # Signal file monitoring
+        self.last_signal_time = 0
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
@@ -348,29 +362,69 @@ class StreamLifecycleManager:
         """Handle Snapcast status change to 'idle'
 
         Implements fallback timeout for when pend event isn't generated (ungraceful disconnect).
-        If stream is ACTIVE and has been idle for sustained period, start timeout.
-        We ignore rapid idle/playing flips during playback (normal behavior).
+        Start tracking idle time when stream first goes idle.
         """
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
-                self.consecutive_idle_count += 1
-
-                # If idle for sustained period (no pend event received), trigger timeout
-                if self.consecutive_idle_count >= self.idle_threshold:
-                    log(f"Fallback: Stream idle for {self.consecutive_idle_count} updates → starting timeout")
-                    self._start_timeout()
-                    self.state = StreamState.TIMEOUT
-                    self.consecutive_idle_count = 0
+                if self.idle_start_time is None:
+                    # First idle event - start tracking
+                    self.idle_start_time = time.time()
+                    log(f"Fallback: Stream went idle, starting idle timer")
+                    # Start periodic check
+                    self._start_idle_check()
 
     def on_status_playing(self):
         """Handle Snapcast status change to 'playing'
 
-        Resets idle counter - indicates stream is actively playing.
+        Resets idle timer - indicates stream is actively playing.
+        If we're in TIMEOUT state, cancel the timeout and return to ACTIVE.
         """
         with self.state_lock:
-            # Reset idle counter when playing
-            if self.consecutive_idle_count > 0:
-                self.consecutive_idle_count = 0
+            # Reset idle tracking when playing
+            if self.idle_start_time is not None:
+                log("Fallback: Stream playing again, cancelling idle timer")
+                self.idle_start_time = None
+                self._cancel_idle_check()
+
+            # If we're in timeout but stream is playing, cancel timeout and return to ACTIVE
+            if self.state == StreamState.TIMEOUT:
+                log("Stream playing while in TIMEOUT - cancelling timeout, returning to ACTIVE")
+                self._cancel_timeout()
+                self.state = StreamState.ACTIVE
+
+    def _start_idle_check(self):
+        """Start periodic idle duration check"""
+        self._cancel_idle_check()
+        self.idle_check_timer = threading.Timer(self.idle_check_interval, self._check_idle_duration)
+        self.idle_check_timer.daemon = True
+        self.idle_check_timer.start()
+
+    def _cancel_idle_check(self):
+        """Cancel periodic idle check"""
+        if self.idle_check_timer and self.idle_check_timer.is_alive():
+            self.idle_check_timer.cancel()
+            self.idle_check_timer = None
+
+    def _check_idle_duration(self):
+        """Check how long stream has been idle and trigger removal if needed"""
+        with self.state_lock:
+            if self.state == StreamState.ACTIVE and self.idle_start_time is not None:
+                idle_duration = time.time() - self.idle_start_time
+
+                if idle_duration >= self.idle_timeout:
+                    # Stream has been idle for longer than timeout threshold
+                    # For ungraceful disconnect (no pend event), remove immediately
+                    log(f"Fallback: Stream idle for {idle_duration:.0f}s (threshold: {self.idle_timeout}s) → removing stream")
+                    self.state = StreamState.IDLE
+                    self.idle_start_time = None
+                    self._cancel_idle_check()
+                    # Remove stream directly (no additional timeout needed for ungraceful disconnect)
+                    self._remove_stream()
+                else:
+                    # Still idle but haven't reached threshold yet - check again later
+                    remaining = self.idle_timeout - idle_duration
+                    log(f"Fallback: Stream idle for {idle_duration:.0f}s, checking again in {self.idle_check_interval}s (timeout in {remaining:.0f}s)")
+                    self._start_idle_check()  # Schedule next check
 
     def _add_stream(self):
         """Add AirPlay stream to Snapserver"""
@@ -378,6 +432,23 @@ class StreamLifecycleManager:
         # Snapcast doesn't clean these up automatically, and multiple control scripts
         # competing for FIFO reads causes choppy/sped-up audio
         self._cleanup_control_scripts()
+
+        # CRITICAL: Remove any existing AirPlay stream BEFORE adding new one
+        # This prevents duplicate streams which cause multiple FIFO readers
+        # Snapserver has a bug where it doesn't close FIFO file handles immediately on stream removal
+        status = self.client.get_status()
+        if status and 'server' in status and 'streams' in status['server']:
+            for stream in status['server']['streams']:
+                if stream['id'] == AIRPLAY_STREAM_ID:
+                    log(f"WARNING: AirPlay stream already exists during add - this should NOT happen!")
+                    log(f"WARNING: Stream state before removal: {stream}")
+                    self.client.remove_stream(AIRPLAY_STREAM_ID)
+                    # Give snapserver MUCH longer to close file handles - snapserver has a bug
+                    # where it doesn't immediately close FIFO handles on Stream.RemoveStream
+                    log("Waiting 3s for snapserver to close orphaned file handles...")
+                    time.sleep(3)
+                    log("Proceeding with stream creation")
+                    break
 
         # CRITICAL: Stop FIFO keeper BEFORE adding stream to prevent multiple readers
         # If both cat and snapserver read simultaneously, audio data gets split between them
@@ -422,8 +493,122 @@ class StreamLifecycleManager:
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
+        # CRITICAL: Stop Avahi BEFORE cleanup to prevent race conditions
+        # If Avahi keeps advertising during cleanup, clients can try to reconnect
+        # while shairport-sync is stopped/restarting, causing orphaned FIFO handles
+        log("Stopping Avahi to hide AirPlay endpoint during cleanup (prevent reconnection race)...")
+        try:
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'avahi'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                log("Avahi stopped - endpoint hidden from network")
+            else:
+                log(f"WARNING: Avahi stop returned code {result.returncode}: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            log("WARNING: Avahi stop timed out (may already be stopped)")
+        except Exception as e:
+            log(f"WARNING: Failed to stop Avahi: {e}")
+
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
+
+        # CRITICAL: Restart shairport-sync AFTER stream removal to close orphaned FIFO handles
+        # This prevents choppy audio on reconnection caused by shairport-sync accumulating
+        # multiple file descriptors to /tmp/snapfifo over time
+        # By restarting here (during IDLE state), we ensure clean state before next pbeg
+        log("Restarting shairport-sync after stream removal to ensure clean FIFO state for next connection...")
+        try:
+            # Use supervisorctl stop + start (NOT pkill) for controlled restart
+            # supervisorctl stop prevents autorestart even with autorestart=true
+            # This gives us full control over the restart timing
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync stopped")
+
+            # Wait for clean shutdown and file handles to close
+            time.sleep(2)
+
+            # Start shairport-sync cleanly
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', 'shairport-sync'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("shairport-sync started")
+
+            # Wait for full startup before continuing
+            time.sleep(3)
+            log("shairport-sync restart complete")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: shairport-sync restart timed out: {e}")
+            log("Waiting additional time for background restart to complete...")
+            # Even if we timeout, wait to ensure the operation completes
+            time.sleep(10)
+        except Exception as e:
+            log(f"WARNING: Failed to restart shairport-sync: {e}")
+            # Wait anyway to be safe
+            time.sleep(5)
+
+        # CRITICAL: Restart snapserver to close orphaned FIFO file handles
+        # Snapserver has a bug where Stream.RemoveStream doesn't actually close
+        # the FIFO file handle. This causes snapserver to accumulate FDs over time.
+        # When a new stream is added, snapserver opens a NEW handle but keeps the old
+        # one, causing multiple readers on the FIFO → choppy audio
+        log("Restarting snapserver to close orphaned FIFO file handles (snapserver bug workaround)...")
+        try:
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log("snapserver restarted")
+            # Wait for snapserver to fully restart and WebSocket to reconnect
+            time.sleep(5)
+            log("snapserver restart complete")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: snapserver restart timed out: {e}")
+            time.sleep(10)
+        except Exception as e:
+            log(f"WARNING: Failed to restart snapserver: {e}")
+            time.sleep(5)
+
+        # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again
+        # Now that cleanup is complete, it's safe for clients to reconnect
+        # Use restart instead of start in case supervisord already auto-restarted it
+        log("Restarting Avahi to make AirPlay endpoint discoverable again...")
+        try:
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'avahi'],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if result.returncode == 0:
+                log("Avahi restarted - endpoint visible on network again")
+            else:
+                log(f"WARNING: Avahi restart returned code {result.returncode}: {result.stderr.strip()}")
+            # Give Avahi time to register the service
+            time.sleep(2)
+        except subprocess.TimeoutExpired:
+            log("WARNING: Avahi restart timed out (may still be starting)")
+            time.sleep(2)
+        except Exception as e:
+            log(f"WARNING: Failed to restart Avahi: {e}")
+            time.sleep(2)
+
+        # Notify metadata monitor to resume monitoring (if callback set)
+        if self.on_stream_removed:
+            self.on_stream_removed()
 
     def _start_timeout(self):
         """Start timeout timer before removing stream"""
@@ -513,42 +698,74 @@ class StreamLifecycleManager:
         """
         import subprocess
         try:
-            # Find all airplay-control-script.py processes
+            # Use pgrep to find airplay-control-script.py processes (more reliable than ps aux parsing)
             result = subprocess.run(
-                ['ps', 'aux'],
+                ['pgrep', '-f', 'airplay-control-script.py'],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
 
-            killed_count = 0
-            for line in result.stdout.splitlines():
-                if 'airplay-control-script.py' in line and 'grep' not in line:
-                    # Extract PID (second column in ps aux output)
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        try:
-                            pid = int(parts[1])
-                            subprocess.run(['kill', str(pid)], timeout=2)
-                            killed_count += 1
-                            log(f"Killed orphaned control script: PID {pid}")
-                        except (ValueError, subprocess.TimeoutExpired):
-                            pass
+            if result.returncode == 0 and result.stdout.strip():
+                # pgrep found processes - kill them all
+                pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                killed_count = 0
 
-            if killed_count == 0:
-                log("No orphaned control scripts found")
-            else:
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str)
+                        subprocess.run(['kill', str(pid)], timeout=2)
+                        killed_count += 1
+                        log(f"Killed orphaned control script: PID {pid}")
+                    except (ValueError, subprocess.TimeoutExpired) as e:
+                        log(f"Failed to kill PID {pid_str}: {e}")
+
                 log(f"Cleaned up {killed_count} orphaned control script(s)")
+            else:
+                log("No orphaned control scripts found")
 
         except Exception as e:
             log(f"Failed to cleanup control scripts: {e}")
 
+    def _check_signal_file(self):
+        """Check if control script has signaled stream end via signal file
+
+        The control script has exclusive access to the metadata pipe and writes
+        to this signal file when it detects a 'pend' event. This allows the
+        lifecycle manager to know when to start the stream removal timeout.
+        """
+        try:
+            if Path(STREAM_END_SIGNAL_FILE).exists():
+                mtime = Path(STREAM_END_SIGNAL_FILE).stat().st_mtime
+                if mtime > self.last_signal_time:
+                    log(f"Signal: Control script signaled stream end (mtime: {mtime})")
+                    self.last_signal_time = mtime
+                    self.on_stream_end()
+        except Exception as e:
+            # Only log real errors, not missing file (expected when no signal yet)
+            if Path(STREAM_END_SIGNAL_FILE).exists():
+                log(f"Signal: Error checking signal file: {e}")
+
 
 class MetadataMonitor:
-    """Monitor shairport-sync metadata pipe for session events"""
+    """Monitor shairport-sync metadata pipe for session events
+
+    Monitors ONLY for pbeg (play begin) to detect stream start.
+    After detecting pbeg and creating stream, STOPS monitoring to give
+    exclusive pipe access to the control script for metadata updates.
+    Resumes monitoring after stream is removed.
+    """
 
     def __init__(self, lifecycle_manager: StreamLifecycleManager):
         self.manager = lifecycle_manager
+        self.should_stop = False
+        self.pipe_handle = None
+
+    def reset(self):
+        """Reset monitor state to resume monitoring after stream removal"""
+        self.should_stop = False
+        self.pipe_handle = None
+        log("Metadata: Monitor reset - ready to detect next pbeg")
 
     def parse_item(self, item_xml: str):
         """Parse XML item and detect session events"""
@@ -565,26 +782,23 @@ class MetadataMonitor:
             code = bytes.fromhex(code_elem.text).decode('ascii', errors='ignore')
 
             # Check for session control events (ssnc type)
+            # We ONLY monitor for pbeg to detect stream start
+            # After stream created, control script takes over metadata pipe
             if item_type == "ssnc":
                 if code == "pbeg":
                     # Play stream begin - client connected
                     log("Metadata: pbeg (play stream begin)")
                     self.manager.on_stream_begin()
 
-                elif code == "pend":
-                    # Play stream end - client disconnected
-                    log("Metadata: pend (play stream end)")
-                    self.manager.on_stream_end()
+                    # CRITICAL: Stop monitoring metadata pipe immediately after pbeg
+                    # This gives exclusive access to the control script for metadata updates
+                    log("Metadata: Stopping pipe monitoring - handing off to control script")
+                    self.should_stop = True
+                    return  # Exit parse_item immediately
 
-                elif code == "disc":
-                    # Client disconnected (alternative to pend for abrupt disconnects)
-                    log("Metadata: disc (client disconnected)")
-                    self.manager.on_stream_end()
-
-                elif code == "mden":
-                    # Metadata end - session ending
-                    log("Metadata: mden (metadata stream end)")
-                    self.manager.on_stream_end()
+                # Note: We do NOT monitor pend, disc, or mden here
+                # Control script and WebSocket monitoring handle stream end detection
+                # This prevents metadata pipe conflicts
 
         except ET.ParseError:
             # Expected when buffer cuts mid-XML
@@ -593,7 +807,7 @@ class MetadataMonitor:
             log(f"Parse error: {e}")
 
     def run(self):
-        """Monitor metadata pipe"""
+        """Monitor metadata pipe until pbeg detected, then hand off to control script"""
         log(f"Starting metadata monitor: {METADATA_PIPE}")
 
         # Wait for pipe
@@ -603,12 +817,25 @@ class MetadataMonitor:
 
         log(f"Metadata pipe found: {METADATA_PIPE}")
 
-        # Read pipe line-by-line
+        # Read pipe line-by-line until we detect pbeg
         tmp = ""
         try:
-            while True:
+            while not self.should_stop:
+                log("Metadata: Opening pipe for reading...")
                 with open(METADATA_PIPE, 'r') as pipe:
+                    self.pipe_handle = pipe
+                    log("Metadata: Pipe opened, reading lines...")
+                    line_count = 0
                     for line in pipe:
+                        line_count += 1
+                        if line_count % 100 == 0:
+                            log(f"Metadata: Read {line_count} lines so far...")
+                        # Check if we should stop (pbeg detected)
+                        if self.should_stop:
+                            log("Metadata: Exiting pipe monitor (pbeg detected)")
+                            self.pipe_handle = None
+                            return
+
                         strip_line = line.strip()
 
                         if strip_line.endswith("</item>"):
@@ -616,6 +843,12 @@ class MetadataMonitor:
                             item_xml = tmp + strip_line
                             self.parse_item(item_xml)
                             tmp = ""
+
+                            # Check again after parsing (parse_item may set should_stop)
+                            if self.should_stop:
+                                log("Metadata: Exiting pipe monitor (pbeg detected)")
+                                self.pipe_handle = None
+                                return
 
                         elif strip_line.startswith("<item>"):
                             # New item starting
@@ -651,24 +884,62 @@ def main():
     log("=== Stream Lifecycle Manager Starting ===")
     log(f"Snapserver: {snapserver_host}:{snapserver_port}")
     log(f"Idle timeout: {idle_timeout}s")
-    log(f"Monitoring: {METADATA_PIPE}")
+    log(f"Strategy: Metadata pipe monitoring for pbeg detection")
+    log(f"          Control script handles metadata updates")
+    log(f"          WebSocket monitoring for stream removal")
 
     # Create Snapserver client
     snapserver = SnapserverClient(snapserver_host, snapserver_port)
 
-    # Create lifecycle manager
-    lifecycle = StreamLifecycleManager(snapserver, idle_timeout)
+    # Create metadata monitor
+    monitor = MetadataMonitor(None)  # Will set lifecycle manager below
+
+    # Create lifecycle manager with callback to restart metadata monitoring
+    def on_stream_removed():
+        """Called when stream is removed - restart metadata monitoring"""
+        log("Stream removed - restarting metadata monitor for next session")
+        monitor.reset()
+        # Run monitor in background thread (non-blocking)
+        import threading
+
+        def monitor_with_exception_handling():
+            try:
+                log("Metadata monitor thread starting...")
+                monitor.run()
+                log("Metadata monitor thread exited normally")
+            except Exception as e:
+                log(f"ERROR: Metadata monitor thread crashed: {e}")
+                import traceback
+                log(f"Traceback: {traceback.format_exc()}")
+
+        monitor_thread = threading.Thread(target=monitor_with_exception_handling, daemon=True)
+        monitor_thread.start()
+        log("Metadata monitor thread started in background")
+
+    lifecycle = StreamLifecycleManager(snapserver, idle_timeout, on_stream_removed_callback=on_stream_removed)
+    monitor.manager = lifecycle  # Set the lifecycle manager reference
 
     # Create and start WebSocket monitor (runs in background thread)
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
     ws_monitor.start()
 
-    # Create metadata monitor
-    monitor = MetadataMonitor(lifecycle)
-
-    # Run monitor (blocks)
+    # Run initial metadata monitor (blocks until pbeg detected)
     try:
+        log("Starting initial metadata monitor (waiting for pbeg)...")
         monitor.run()
+
+        # After pbeg detected and stream created, keep main thread alive
+        # WebSocket monitor handles stream status, metadata monitor will restart on stream removal
+        # Main loop monitors signal file for stream end events from control script
+        log("Metadata monitor handed off to control script")
+        log("WebSocket monitor active - waiting for stream lifecycle events")
+        log("Signal file monitor active - checking for control script signals")
+
+        while True:
+            # Check signal file for stream end events (control script has metadata pipe access)
+            lifecycle._check_signal_file()
+            time.sleep(1)  # Check every second for responsive timeout triggers
+
     except KeyboardInterrupt:
         log("Shutting down...")
         ws_monitor.stop()

@@ -551,7 +551,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                     <button
                       onClick={handleApplyAirplayDeviceName}
                       disabled={airplayNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
                     >
                       {airplayNameStatus === 'applying' ? 'Applying...' : 'Apply'}
                     </button>
@@ -646,7 +646,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                     <button
                       onClick={handleApplyBluetoothDeviceName}
                       disabled={bluetoothNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {bluetoothNameStatus === 'applying' ? 'Applying...' : 'Apply'}
                     </button>
@@ -781,7 +781,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                     <button
                       onClick={handleApplySpotifyDeviceName}
                       disabled={spotifyNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
                     >
                       {spotifyNameStatus === 'applying' ? 'Applying...' : 'Apply'}
                     </button>
@@ -906,7 +906,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                     <button
                       onClick={handleApplyDlnaDeviceName}
                       disabled={dlnaNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] text-white rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] accent-button-text rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {dlnaNameStatus === 'applying' ? 'Applying...' : 'Apply'}
                     </button>

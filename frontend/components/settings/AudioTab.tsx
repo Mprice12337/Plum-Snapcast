@@ -298,7 +298,7 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                 <button
                   onClick={handleApply}
                   disabled={isLoading}
-                  className="px-4 py-2 bg-[var(--accent-color)] text-white rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="px-4 py-2 bg-[var(--accent-color)] accent-button-text rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   {applyingState === 'loading' ? (
                     <>
@@ -490,7 +490,7 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                           {nameChanged && (
                             <button
                               onClick={() => handleApplyInputDeviceName(device.hw_id)}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] text-white rounded hover:opacity-80"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80"
                             >
                               Apply
                             </button>

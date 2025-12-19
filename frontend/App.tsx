@@ -1,19 +1,24 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {Routes, Route, useNavigate} from 'react-router-dom';
 import {NowPlaying} from './components/NowPlaying';
 import {PlayerControls} from './components/PlayerControls';
 import {StreamSelector} from './components/StreamSelector';
 import {ClientManager} from './components/ClientManager';
 import {SyncedDevices} from './components/SyncedDevices';
 import {Settings as SettingsModal} from './components/Settings';
+import {Visualizer} from './components/Visualizer';
 import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
-import type {Client, Server, Settings, Stream} from './types';
+import type {Client, Server, Settings, Stream, VisualizerPreset} from './types';
+import {DEFAULT_VISUALIZER_SETTINGS, BUILT_IN_PRESETS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
 import { Icon } from './components/Icon';
 import {updateFavicon} from './utils/favicon';
+import {getTextColorForBackground, lightenColor, darkenColor} from './utils/colorContrast';
+import {extractDualColorsFromAlbumArt, type DualColorExtractionResult} from './utils/albumArtColorExtraction';
 import musicNotePlaceholderRaw from './src/assets/icons/music-note-placeholder.svg?raw';
 
 // Convert raw SVG to data URI for use in img src
@@ -31,6 +36,12 @@ const App: React.FC = () => {
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [preMuteGroupVolumes, setPreMuteGroupVolumes] = useState<Record<string, Record<string, number>>>({});
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState<string | undefined>(undefined);
+    const [isVisualizerOpen, setIsVisualizerOpen] = useState(false);
+
+    // Album art dual-color extraction state (background + accent)
+    const [extractedAlbumArtColors, setExtractedAlbumArtColors] = useState<DualColorExtractionResult | null>(null);
+    const [isExtractingColor, setIsExtractingColor] = useState(false);
 
     // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
@@ -61,11 +72,14 @@ const App: React.FC = () => {
     // Capture the target stream when "Listen in Browser" is clicked
     const [targetStreamForBrowserAudio, setTargetStreamForBrowserAudio] = useState<string | null>(null);
 
+    // Visualizer preset cycling state
+    const [previousTrackId, setPreviousTrackId] = useState<string | null>(null);
+    const [currentCycleIndex, setCurrentCycleIndex] = useState(0);
+
     // Initialize settings from service (fetch from server + local storage)
     useEffect(() => {
         settingsService.init().then((initialSettings) => {
             setSettings(initialSettings);
-            console.log('[Settings] Initialized:', initialSettings);
         }).catch((error) => {
             console.error('[Settings] Failed to initialize:', error);
         });
@@ -73,7 +87,6 @@ const App: React.FC = () => {
         // Subscribe to settings changes
         const unsubscribe = settingsService.subscribe((updatedSettings) => {
             setSettings(updatedSettings);
-            console.log('[Settings] Updated:', updatedSettings);
         });
 
         return () => unsubscribe();
@@ -86,10 +99,10 @@ const App: React.FC = () => {
         }
     }, [settings.deviceName]);
 
-    // Update favicon when accent color changes
+    // Update favicon when theme changes
     useEffect(() => {
-        updateFavicon(settings.theme.accent);
-    }, [settings.theme.accent]);
+        updateFavicon(settings.theme.accent, settings.theme.customColor, settings.theme.mode);
+    }, [settings.theme.accent, settings.theme.customColor, settings.theme.mode]);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -111,10 +124,144 @@ const App: React.FC = () => {
 
         root.setAttribute('data-accent', settings.theme.accent);
 
+        // Determine the effective theme mode (resolve 'system' to actual mode)
+        const effectiveMode = settings.theme.mode === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : settings.theme.mode;
+
+        // Check if we're in a monochrome mode
+        const isMonochromeMode = effectiveMode === 'black' || effectiveMode === 'white';
+
+        // Only set colors if NOT in monochrome mode
+        // Monochrome modes define their own colors in CSS
+        if (isMonochromeMode) {
+            // Clear any previously set inline styles so CSS takes over
+            root.style.removeProperty('--accent-text-color');
+            root.style.removeProperty('--bg-primary');
+            root.style.removeProperty('--bg-secondary');
+            root.style.removeProperty('--bg-tertiary');
+            root.style.removeProperty('--bg-secondary-hover');
+            root.style.removeProperty('--bg-tertiary-hover');
+            root.style.removeProperty('--border-color');
+            root.style.removeProperty('--text-primary');
+            root.style.removeProperty('--text-secondary');
+            root.style.removeProperty('--text-muted');
+            root.style.removeProperty('--icon-muted');
+            root.style.removeProperty('--accent-color');
+            root.style.removeProperty('--accent-color-hover');
+            root.style.removeProperty('--custom-accent-color');
+            root.style.removeProperty('--custom-accent-color-hover');
+            root.style.removeProperty('--control-icon-color');
+        } else {
+            // Priority: Extracted album art colors (if enabled) > User-selected colors
+            if (settings.theme.useAlbumArtColors && extractedAlbumArtColors) {
+                // Apply extracted dual colors (background + accent)
+                const bgColor = extractedAlbumArtColors.backgroundColor;
+                const accentColor = extractedAlbumArtColors.accentColor;
+                const isDark = extractedAlbumArtColors.isDarkTheme;
+
+                // Apply background colors
+                // --bg-primary: Main background
+                root.style.setProperty('--bg-primary', bgColor);
+
+                // Calculate secondary background (slightly lighter for dark, slightly lighter for light)
+                const bgSecondary = isDark ? lightenColor(bgColor, 5) : lightenColor(bgColor, 3);
+                root.style.setProperty('--bg-secondary', bgSecondary);
+
+                // Calculate tertiary background (slightly lighter than secondary)
+                const bgTertiary = isDark ? lightenColor(bgColor, 8) : lightenColor(bgColor, 5);
+                root.style.setProperty('--bg-tertiary', bgTertiary);
+
+                // Calculate hover states (slightly lighter than their base)
+                const bgSecondaryHover = isDark ? lightenColor(bgSecondary, 5) : lightenColor(bgSecondary, 3);
+                root.style.setProperty('--bg-secondary-hover', bgSecondaryHover);
+
+                const bgTertiaryHover = isDark ? lightenColor(bgTertiary, 5) : lightenColor(bgTertiary, 3);
+                root.style.setProperty('--bg-tertiary-hover', bgTertiaryHover);
+
+                // Calculate border color (lighter than background)
+                const borderColor = isDark ? lightenColor(bgColor, 15) : darkenColor(bgColor, 10);
+                root.style.setProperty('--border-color', borderColor);
+
+                // Calculate text colors based on theme
+                if (isDark) {
+                    // Dark theme: light text on dark background
+                    root.style.setProperty('--text-primary', '#f0f0f0');
+                    root.style.setProperty('--text-secondary', '#b0b0c0');
+                    root.style.setProperty('--text-muted', '#808090');
+                    root.style.setProperty('--icon-muted', '#707080');
+                } else {
+                    // Light theme: dark text on light background
+                    root.style.setProperty('--text-primary', '#181c32');
+                    root.style.setProperty('--text-secondary', '#5e6278');
+                    root.style.setProperty('--text-muted', '#7e8299');
+                    root.style.setProperty('--icon-muted', '#a1a5b7');
+                }
+
+                // Apply accent colors
+                const accentHover = lightenColor(accentColor, 15);
+                root.style.setProperty('--accent-color', accentColor);
+                root.style.setProperty('--accent-color-hover', accentHover);
+                root.style.setProperty('--custom-accent-color', accentColor);
+                root.style.setProperty('--custom-accent-color-hover', accentHover);
+
+                // Calculate optimal text color for accent
+                const textColor = getTextColorForBackground(accentColor);
+                root.style.setProperty('--accent-text-color', textColor);
+
+                // Set control icon color to accent (for media control buttons)
+                root.style.setProperty('--control-icon-color', accentColor);
+            } else {
+                // Clear background and text overrides when not using album art colors
+                root.style.removeProperty('--bg-primary');
+                root.style.removeProperty('--bg-secondary');
+                root.style.removeProperty('--bg-tertiary');
+                root.style.removeProperty('--bg-secondary-hover');
+                root.style.removeProperty('--bg-tertiary-hover');
+                root.style.removeProperty('--border-color');
+                root.style.removeProperty('--text-primary');
+                root.style.removeProperty('--text-secondary');
+                root.style.removeProperty('--text-muted');
+                root.style.removeProperty('--icon-muted');
+                root.style.removeProperty('--control-icon-color');
+
+                // Determine the effective accent color
+                // Priority: Custom color > Built-in color
+                let effectiveAccentColor: string;
+
+                if (settings.theme.accent === 'custom' && settings.theme.customColor) {
+                    effectiveAccentColor = settings.theme.customColor;
+                } else {
+                    // Use built-in accent color
+                    const accentColors: Record<string, string> = {
+                        purple: '#aa5cc3',
+                        blue: '#3b82f6',
+                        green: '#22c55e',
+                        orange: '#f97316',
+                        red: '#ef4444',
+                        yellow: '#eab308',
+                    };
+                    effectiveAccentColor = accentColors[settings.theme.accent] || accentColors.purple;
+                }
+
+                // Apply the effective accent color
+                const accentHover = lightenColor(effectiveAccentColor, 15);
+                const textColor = getTextColorForBackground(effectiveAccentColor);
+
+                // Set both --accent-color and --custom-accent-color to ensure it applies
+                // regardless of the data-accent attribute
+                root.style.setProperty('--accent-color', effectiveAccentColor);
+                root.style.setProperty('--accent-color-hover', accentHover);
+                root.style.setProperty('--custom-accent-color', effectiveAccentColor);
+                root.style.setProperty('--custom-accent-color-hover', accentHover);
+                root.style.setProperty('--accent-text-color', textColor);
+            }
+        }
+
         return () => {
             mediaQuery.removeEventListener('change', handleSystemThemeChange);
         };
-    }, [settings.theme]);
+    }, [settings.theme, extractedAlbumArtColors]);
 
     // Helper to get the local server
     const getLocalServer = () => servers.find(s => s.isLocal);
@@ -202,15 +349,174 @@ const App: React.FC = () => {
         }
     }, [browserAudio.state.isActive, browserAudio.state.clientId, clients, myClient, browserClientAutoAssigned, targetStreamForBrowserAudio, streams, servers, settings.federation.enabled]);
 
+    // Stop browser audio client if its assigned stream is removed or set to none-snapserver
+    useEffect(() => {
+        if (!browserAudio.state.isActive) {
+            return; // Browser audio not active, nothing to do
+        }
+
+        // Find the browser audio client in the client list
+        const browserClient = clients.find(c => c.id === browserClientId);
+        if (!browserClient) {
+            return; // Browser client not registered yet, wait for it to appear
+        }
+
+        // Stop if no stream is assigned
+        if (!browserClient.currentStreamId) {
+            browserAudio.stop();
+            return;
+        }
+
+        // Stop if assigned to the none-snapserver stream (fallback when source stream is removed)
+        if (browserClient.currentStreamId === 'none-snapserver') {
+            browserAudio.stop();
+            return;
+        }
+
+        // Check if the assigned stream still exists
+        const assignedStream = streams.find(s => s.id === browserClient.currentStreamId);
+        if (!assignedStream) {
+            // Stream was removed - stop the browser audio client
+            browserAudio.stop();
+        }
+    }, [browserAudio.state.isActive, streams, clients, browserClientId]);
+
+    // Visualizer preset cycling on track change
+    useEffect(() => {
+        // Get visualizer settings
+        const viz = typeof settings.integrations.visualizer === 'object'
+            ? settings.integrations.visualizer
+            : DEFAULT_VISUALIZER_SETTINGS;
+
+        // Skip if cycling is disabled or no presets selected
+        if (!viz.cycleEnabled || !viz.cyclePresetIds || viz.cyclePresetIds.length === 0) {
+            return;
+        }
+
+        // Get current track ID
+        const currentTrackId = currentStream?.currentTrack?.id;
+
+        // Skip if no track or track hasn't changed
+        if (!currentTrackId || currentTrackId === previousTrackId) {
+            return;
+        }
+
+        // Track has changed - cycle to next preset
+        console.log('[Visualizer] Track changed, cycling to next preset');
+        setPreviousTrackId(currentTrackId);
+
+        // Get all presets (built-in + user)
+        const userPresets = settings.integrations.visualizerPresets || [];
+        const allPresets = [...BUILT_IN_PRESETS, ...userPresets];
+
+        // Filter to only selected presets
+        const cyclePresets = allPresets.filter(p => viz.cyclePresetIds.includes(p.id));
+
+        if (cyclePresets.length === 0) {
+            return;
+        }
+
+        // Get next preset
+        const nextIndex = (currentCycleIndex + 1) % cyclePresets.length;
+        const nextPreset = cyclePresets[nextIndex];
+        setCurrentCycleIndex(nextIndex);
+
+        console.log(`[Visualizer] Applying preset: ${nextPreset.name} (${nextIndex + 1}/${cyclePresets.length})`);
+
+        // Apply preset settings
+        const newVisualizerSettings = {
+            enabled: viz.enabled,
+            cycleEnabled: viz.cycleEnabled,
+            cyclePresetIds: viz.cyclePresetIds,
+            ...nextPreset.settings
+        };
+
+        settingsService.updateServerSettings({
+            integrations: {
+                ...settings.integrations,
+                visualizer: newVisualizerSettings
+            }
+        });
+    }, [currentStream, settings, previousTrackId, currentCycleIndex]);
+
+    // Extract dual colors (background + accent) from album art when artwork changes (if enabled)
+    useEffect(() => {
+        // Reset colors when feature disabled or no stream/artwork
+        if (!settings.theme.useAlbumArtColors || !currentStream?.currentTrack.albumArtUrl) {
+            setExtractedAlbumArtColors(null);
+            return;
+        }
+
+        const artworkUrl = currentStream.currentTrack.albumArtUrl;
+
+        // Skip extraction for placeholder artwork
+        if (artworkUrl === musicNotePlaceholder || artworkUrl.startsWith('data:image/svg+xml')) {
+            setExtractedAlbumArtColors(null);
+            return;
+        }
+
+        // Debounce: Don't extract if already extracting
+        if (isExtractingColor) return;
+
+        // Determine if current theme is dark
+        const effectiveMode = settings.theme.mode === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : settings.theme.mode;
+        const isDarkTheme = effectiveMode === 'dark' || effectiveMode === 'black';
+
+        // Get fallback accent color
+        const accentColors: Record<string, string> = {
+            purple: '#aa5cc3',
+            blue: '#3b82f6',
+            green: '#22c55e',
+            orange: '#f97316',
+            red: '#ef4444',
+            yellow: '#eab308',
+        };
+        const fallbackAccent = settings.theme.accent === 'custom' && settings.theme.customColor
+            ? settings.theme.customColor
+            : accentColors[settings.theme.accent] || accentColors.purple;
+
+        setIsExtractingColor(true);
+
+        extractDualColorsFromAlbumArt(artworkUrl, isDarkTheme, fallbackAccent)
+            .then((result) => {
+                if (result) {
+                    setExtractedAlbumArtColors(result);
+                } else {
+                    console.warn('[AlbumArtColor] Extraction returned null, using fallback');
+                    setExtractedAlbumArtColors(null);
+                }
+                setIsExtractingColor(false);
+            })
+            .catch((error) => {
+                console.warn('[AlbumArtColor] Extraction failed:', error);
+                setExtractedAlbumArtColors(null);
+                setIsExtractingColor(false);
+            });
+    }, [
+        currentStream?.currentTrack.albumArtUrl,
+        currentStream?.id,
+        settings.theme.useAlbumArtColors,
+        settings.theme.mode,
+        settings.theme.accent,
+        settings.theme.customColor,
+        isExtractingColor
+    ]);
+
     // Update browser client name, volume, and connection status if server has reported it
     // Volume is managed locally (not synced to server), so override with local state
     const allClients = clients.map(c => {
         // If this is our browser audio client, ensure proper naming, local volume, and connection status
         if (browserAudio.state.isActive && c.id === browserClientId) {
+            // Determine client name based on endpoint name or device name
+            const endpointName = settings.deviceName || 'Device';
+            const visualizerClientName = `${endpointName}-Visualizer`;
+
             return {
                 ...c,
-                // Use a friendly name instead of "snapweb"
-                name: c.name.toLowerCase().includes('snapweb') ? 'Browser Audio' : c.name,
+                // Use visualizer-specific naming
+                name: visualizerClientName,
                 // Override volume with local state (browser audio volume is local only)
                 volume: browserAudio.state.volume,
                 // Override connection status - if browser audio is active, it's connected
@@ -226,9 +532,12 @@ const App: React.FC = () => {
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
+            const endpointName = settings.deviceName || 'Device';
+            const visualizerClientName = `${endpointName}-Visualizer`;
+
             const browserClient: Client = {
                 id: browserClientId,
-                name: 'Browser Audio (Connecting...)',
+                name: `${visualizerClientName} (Connecting...)`,
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
                 connected: false
@@ -238,14 +547,21 @@ const App: React.FC = () => {
     }
 
     // Helper function to detect if a client should be hidden
-    // Hide snapweb clients that aren't our active browser audio client
+    // Hide clients ending with "-Visualizer" only when browser audio is muted (visualizer mode)
+    // Show them when unmuted (listening mode)
     const shouldHideClient = (client: Client): boolean => {
-        // If this is our active browser audio client, NEVER hide it (check ID first!)
-        if (client.id === browserClientId && browserAudio.state.isActive) {
-            return false;
+        // Check if this is our browser audio visualizer client
+        if (client.name.endsWith('-Visualizer')) {
+            // If browser audio is active, check if it's muted
+            if (browserAudio.state.isActive && client.id === browserClientId) {
+                // Hide if muted (visualizer-only mode), show if unmuted (listening mode)
+                return browserAudio.state.muted;
+            }
+            // Hide other visualizer clients
+            return true;
         }
 
-        // Hide other snapweb/browser clients (auto-created by server)
+        // Also hide other snapweb/browser clients (auto-created by server)
         const browserIndicators = ['snapweb', 'browser'];
         const clientName = client.name.toLowerCase();
         const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
@@ -1600,17 +1916,26 @@ const App: React.FC = () => {
         );
     }
 
+    // Toggle visualizer
+    const toggleVisualizer = () => {
+        setIsVisualizerOpen(!isVisualizerOpen);
+    };
+
     return (
-        <div
-            className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8 flex flex-col">
-            {connectionError && (
-                <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
-                    <div className="flex items-center">
-                        <Icon name="triangle-exclamation" className="text-red-400 mr-2" />
-                        <span className="text-red-400">{connectionError}</span>
-                    </div>
-                </div>
-            )}
+        <>
+            <Routes>
+                {/* Main UI Route */}
+                <Route path="/" element={
+                <div
+                    className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans p-4 md:p-8 flex flex-col">
+                    {connectionError && (
+                        <div className="w-full max-w-7xl mx-auto mb-4 p-4 bg-red-600/20 border border-red-600/30 rounded-lg">
+                            <div className="flex items-center">
+                                <Icon name="triangle-exclamation" className="text-red-400 mr-2" />
+                                <span className="text-red-400">{connectionError}</span>
+                            </div>
+                        </div>
+                    )}
 
             <div className="w-full max-w-7xl mx-auto flex-grow grid grid-cols-1 lg:grid-cols-3 gap-8">
 
@@ -1637,6 +1962,7 @@ const App: React.FC = () => {
                                     stream={currentStream}
                                     canSeek={streamCapabilities.canSeek}
                                     onSeek={handleSeek}
+                                    onAlbumArtClick={toggleVisualizer}
                                 />
                                 <PlayerControls
                                     stream={currentStream}
@@ -1659,8 +1985,8 @@ const App: React.FC = () => {
                         <div
                             className="flex-grow flex flex-col items-center justify-center bg-[var(--bg-secondary)] rounded-lg p-8 h-full min-h-[300px]">
                             <Icon name="music" className="text-6xl text-[var(--text-muted)] mb-4" />
-                            <h2 className="text-2xl font-semibold text-[var(--text-secondary)]">No Stream Selected</h2>
-                            <p className="text-[var(--text-muted)] mt-2">Choose a source to begin.</p>
+                            <h2 className="text-2xl font-semibold text-[var(--text-primary)]">No Stream Selected</h2>
+                            <p className="text-[var(--text-secondary)] mt-2">Choose a source to begin.</p>
                         </div>
                     )}
                 </div>
@@ -1692,16 +2018,71 @@ const App: React.FC = () => {
                 className="w-full max-w-7xl mx-auto grid grid-cols-3 items-center text-[var(--text-muted)] mt-12 text-sm">
                 <div>{/* Spacer */}</div>
                 <p className="text-center">Sync Audio Controller &copy; 2024</p>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
                     <button
-                        onClick={() => setIsSettingsOpen(true)}
-                        className="p-2 rounded-full hover:bg-[var(--bg-secondary)]"
+                        onClick={() => {
+                            setSettingsInitialTab(undefined);
+                            setIsSettingsOpen(true);
+                        }}
+                        className="p-2 rounded-full hover:bg-[var(--bg-secondary)] transition-colors"
                         aria-label="Open Settings"
                     >
                         <Icon name="gear" className="text-lg" />
                     </button>
                 </div>
             </footer>
+                    {isSettingsOpen && (
+                        <SettingsModal
+                            settings={settings}
+                            onSettingsChange={(newSettings) => {
+                                // Use settingsService to update settings (handles server + local storage)
+                                settingsService.updateSettings(newSettings).catch((error) => {
+                                    console.error('[Settings] Failed to update:', error);
+                                });
+                            }}
+                            onClose={() => {
+                                setIsSettingsOpen(false);
+                                setSettingsInitialTab(undefined);
+                            }}
+                            initialTab={settingsInitialTab}
+                        />
+                    )}
+                </div>
+            } />
+            </Routes>
+
+            {/* Visualizer Overlay */}
+            <Visualizer
+                stream={currentStream}
+                streams={streams}
+                settings={settings}
+                browserAudioSnapStream={browserAudio.getSnapStream?.() || null}
+                browserAudioMuted={browserAudio.state.muted}
+                extractedAlbumArtColors={extractedAlbumArtColors}
+                onPlayPause={handlePlayPause}
+                onSkip={handleSkip}
+                onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                onStreamChange={(streamId) => handleStreamChange(myClient.id, streamId)}
+                onOpenSettings={() => {
+                    setSettingsInitialTab(undefined);
+                    setIsSettingsOpen(true);
+                }}
+                onOpenVisualizerSettings={() => {
+                    setSettingsInitialTab('visualizer');
+                    setIsSettingsOpen(true);
+                }}
+                onStartBrowserAudio={() => {
+                    const targetStream = myClient?.currentStreamId || null;
+                    setTargetStreamForBrowserAudio(targetStream);
+                    browserAudio.start(true); // Start muted for visualizer mode
+                }}
+                onToggleBrowserAudioMute={() => browserAudio.toggleMute()}
+                onClose={() => setIsVisualizerOpen(false)}
+                currentVolume={myClient.volume}
+                isOpen={isVisualizerOpen}
+            />
+
+            {/* Global Settings Modal */}
             {isSettingsOpen && (
                 <SettingsModal
                     settings={settings}
@@ -1711,10 +2092,14 @@ const App: React.FC = () => {
                             console.error('[Settings] Failed to update:', error);
                         });
                     }}
-                    onClose={() => setIsSettingsOpen(false)}
+                    onClose={() => {
+                        setIsSettingsOpen(false);
+                        setSettingsInitialTab(undefined);
+                    }}
+                    initialTab={settingsInitialTab}
                 />
             )}
-        </div>
+        </>
     );
 };
 

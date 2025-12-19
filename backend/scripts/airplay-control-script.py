@@ -25,6 +25,7 @@ from typing import Dict, Optional
 METADATA_PIPE = "/tmp/shairport-sync-metadata"
 COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 LOG_FILE = "/tmp/airplay-control-script.log"
+STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
 
 # Set up logging to file
 def log(message: str):
@@ -37,6 +38,17 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+def signal_stream_end():
+    """Signal to lifecycle manager that stream should be removed"""
+    try:
+        # Write current timestamp to signal file
+        # Lifecycle manager watches this file and removes stream when it updates
+        with open(STREAM_END_SIGNAL_FILE, 'w') as f:
+            f.write(str(time.time()))
+        log("[Signal] Notified lifecycle manager to remove stream")
+    except Exception as e:
+        log(f"[Signal] Failed to write signal file: {e}")
 
 # Try to import D-Bus - graceful fallback if not available
 try:
@@ -257,13 +269,16 @@ class MetadataParser:
                     return False
 
                 elif code == "pend":
-                    # Play stream end
-                    log(f"[Session] Play stream END")
+                    # Play stream end - NOTE: This happens frequently during normal playback
+                    # (between tracks, during buffering, etc.). DO NOT signal stream end here.
+                    # The lifecycle manager will detect actual stream end via idle timeout.
+                    log(f"[Session] Play stream END (pend) - NOT signaling removal")
                     current_state = self.store.get_all().get("playback_status", "Stopped")
                     if current_state != "Stopped":
-                        self.store.update(playback_status="Stopped")
-                        log(f"[State] Playback state → Stopped (stream end)")
-                        return True  # Signal update
+                        # Don't change playback status to Stopped - this is likely just a track change
+                        # The stream is still active even if we get pend events
+                        log(f"[State] Ignoring pend - stream still active")
+                        return False
                     return False
 
                 elif code == "prgr":

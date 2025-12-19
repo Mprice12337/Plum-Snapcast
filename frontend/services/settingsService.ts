@@ -6,6 +6,7 @@
  */
 
 import type {Settings, ThemeMode, AccentColor} from '../types';
+import {DEFAULT_VISUALIZER_SETTINGS} from '../types';
 
 const SETTINGS_API_URL = '/api/settings';
 const LOCAL_STORAGE_KEY = 'plum-snapcast-local-settings';
@@ -15,6 +16,7 @@ const DEFAULT_LOCAL_SETTINGS = {
   theme: {
     mode: 'system' as ThemeMode,
     accent: 'purple' as AccentColor,
+    useAlbumArtColors: false,
   },
   display: {
     showOfflineDevices: false,
@@ -49,8 +51,13 @@ const DEFAULT_SERVER_SETTINGS = {
       sourceName: 'DLNA',
       deviceName: 'Plum Audio',
     },
+    plexamp: {
+      available: false,
+      enabled: false,
+      sourceName: 'Plexamp',
+    },
     snapcast: true,
-    visualizer: false,
+    visualizer: DEFAULT_VISUALIZER_SETTINGS,
   },
   federation: {
     enabled: false,
@@ -186,8 +193,14 @@ class SettingsService {
       if (stored) {
         const parsed = JSON.parse(stored);
         this.localSettings = {
-          theme: parsed.theme || DEFAULT_LOCAL_SETTINGS.theme,
-          display: parsed.display || DEFAULT_LOCAL_SETTINGS.display,
+          theme: {
+            ...DEFAULT_LOCAL_SETTINGS.theme,
+            ...parsed.theme,
+          },
+          display: {
+            ...DEFAULT_LOCAL_SETTINGS.display,
+            ...parsed.display,
+          },
         };
       }
     } catch (error) {

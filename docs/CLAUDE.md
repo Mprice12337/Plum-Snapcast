@@ -6,7 +6,7 @@
 
 **Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with AirPlay, Spotify Connect, DLNA/UPnP, Plexamp, and Bluetooth sources.
 
-**Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), browser audio client, React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control
+**Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), browser audio client, React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control, full-screen audio visualizer, enhanced theming with album art color extraction
 
 **Project Context**: Production-ready, solo developer with AI assistance, built on firefrei/docker-snapcast foundation
 
@@ -33,8 +33,9 @@
 ### Frontend
 - React 19.1.1, TypeScript 5.8.2, Vite 6.2.0
 - Custom CSS with variables, WebSocket JSON-RPC 2.0
-- Components: NowPlaying, PlayerControls, StreamSelector, ClientManager, Settings
+- Components: NowPlaying, PlayerControls, StreamSelector, ClientManager, Settings, Visualizer
 - Services: snapcastService.ts (WebSocket client), snapcastDataService.ts (data transforms)
+- Dependencies: ColorThief (album art color extraction), react-colorful (custom color picker)
 
 ### Infrastructure
 - Docker multi-arch builds (amd64, arm64), Docker Hub registry
@@ -378,6 +379,8 @@ git pull && docker compose pull && docker compose up -d
 14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
 15. **Dynamic Stream Lifecycle**: All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use lifecycle managers to dynamically create/remove Snapcast streams based on activity. Lifecycle managers monitor metadata/events, create streams on activity, and remove after idle timeout. FIFO keepers prevent audio service blocking when no stream exists. See `_resources/DYNAMIC-STREAM-LIFECYCLE-FRAMEWORK.md` for implementation details.
 16. **Audio I/O Configuration**: Audio devices configured via GUI (Settings → Audio). **Output**: Device selection persists in `settings.json`, snapclient reloads on restart. SNAPCLIENT_SOUNDCARD env var deprecated (auto-migrated). **Tested on RPi with multiple devices (headphones, HDMI, HAT)**. **Input (BETA)**: Enable devices to create Snapcast streams. Each enabled device creates an ALSA input stream via `manage_input_streams.py` (uses JSON-RPC API). Custom stream names configurable. Default: all inputs disabled. **NOT YET TESTED with physical audio input devices** - requires USB microphone or audio interface for validation. UI includes beta warning. Supports all ALSA devices: built-in (headphones/HDMI), USB, HATs, microphones.
+17. **Enhanced Theming**: 5 theme modes (light, dark, system, black, white). 6 built-in accent colors + custom color picker. Album art color extraction with WCAG AA contrast (4.5:1 minimum) - extracts background + accent colors from artwork, automatically adjusts for accessibility. Monochrome modes (black/white) disable accent selection. Theme settings persist in `settings.json`.
+18. **Audio Visualizer**: Full-screen overlay with multiple preset types (bars, circular, waveform, amorphous blob). Frequency-reactive animations using Web Audio API. Preset cycling on track change. Smart color theming from album artwork. Browser audio auto-start integration. Visualizer settings (preset, theme, colors) persist in `settings.json`. Accessible via "Visualize" button in Now Playing.
 
 ---
 

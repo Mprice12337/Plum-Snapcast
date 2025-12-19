@@ -82,7 +82,7 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
         <h3 className="font-bold text-lg text-[var(--text-primary)]">Servers</h3>
         <button
           onClick={() => showAddForm ? handleCancelEdit() : setShowAddForm(true)}
-          className="bg-[var(--accent-color)] text-white font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors text-sm"
+          className="bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors text-sm"
         >
           <Icon name={showAddForm ? 'xmark' : 'plus'} className="mr-1" style={{ color: 'inherit' }} />
           {showAddForm ? 'Cancel' : 'Add Server'}
@@ -140,7 +140,7 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full bg-[var(--accent-color)] text-white font-bold py-2 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-2 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSubmitting
               ? (editingServerId ? 'Saving...' : 'Adding...')
@@ -163,7 +163,7 @@ export const ServerManager: React.FC<ServerManagerProps> = ({ servers, onAddServ
               <div className="flex items-center gap-2">
                 <h4 className="font-semibold text-[var(--text-primary)] truncate">{server.name}</h4>
                 {server.isLocal && (
-                  <span className="text-xs bg-[var(--accent-color)] text-white px-2 py-0.5 rounded-full">
+                  <span className="text-xs bg-[var(--accent-color)] accent-button-text px-2 py-0.5 rounded-full">
                     Local
                   </span>
                 )}

@@ -94,6 +94,9 @@ export class SnapcastService {
     private metadataUpdateListeners: Set<(streamId: string, metadata: any) => void> = new Set();
     private playbackStateListeners: Set<(streamId: string, playbackStatus: string, properties: SnapcastStreamProperties) => void> = new Set();
     private positionUpdateListeners: Set<(streamId: string, position: number, duration: number) => void> = new Set();
+    private reconnectTimer: number | null = null;
+    private reconnectAttempts = 0;
+    private maxReconnectAttempts = 10;
 
     constructor() {
         this.host =
@@ -167,13 +170,55 @@ export class SnapcastService {
                 };
 
                 this.ws.onclose = () => {
+                    console.log('[SnapcastService] WebSocket closed');
                     this.ws = null;
                     this.isConnected = false;
+
+                    // Trigger automatic reconnection with exponential backoff
+                    this.scheduleReconnect();
                 };
             } catch (error) {
                 reject(error);
             }
         });
+    }
+
+    private scheduleReconnect() {
+        // Clear any existing reconnect timer
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+
+        // Don't reconnect if we've exceeded max attempts
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.error(`[SnapcastService] Max reconnection attempts (${this.maxReconnectAttempts}) reached. Please refresh the page.`);
+            return;
+        }
+
+        // Calculate exponential backoff delay (1s, 2s, 4s, 8s, max 30s)
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.reconnectAttempts++;
+
+        console.log(`[SnapcastService] Scheduling reconnection attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`);
+
+        this.reconnectTimer = window.setTimeout(() => {
+            this.attemptReconnect();
+        }, delay);
+    }
+
+    private async attemptReconnect() {
+        console.log(`[SnapcastService] Attempting to reconnect (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+
+        try {
+            await this.connect();
+            console.log('[SnapcastService] ✓ Reconnected successfully');
+            // Reset reconnect attempts on successful connection
+            this.reconnectAttempts = 0;
+        } catch (error) {
+            console.error('[SnapcastService] ✗ Reconnection failed:', error);
+            // scheduleReconnect will be called automatically by onclose handler
+        }
     }
 
     private handleNotification(message: SnapcastResponse) {

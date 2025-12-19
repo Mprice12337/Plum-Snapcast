@@ -6,6 +6,7 @@ interface NowPlayingProps {
     stream: Stream;
     canSeek?: boolean;
     onSeek?: (position: number) => void;
+    onAlbumArtClick?: () => void;
 }
 
 const ScrollingText: React.FC<{ text: string; className: string }> = ({text, className}) => {
@@ -33,7 +34,7 @@ const ScrollingText: React.FC<{ text: string; className: string }> = ({text, cla
     );
 };
 
-export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, onSeek}) => {
+export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, onSeek, onAlbumArtClick}) => {
     const {currentTrack, progress} = stream;
     const progressPercent = currentTrack.duration > 0
         ? Math.min(100, Math.max(0, (progress / currentTrack.duration) * 100))
@@ -59,13 +60,17 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, 
                 <img
                     src={currentTrack.albumArtUrl}
                     alt={`Album art for ${currentTrack.album}`}
-                    className="w-48 h-48 md:w-56 md:h-56 rounded-lg shadow-lg object-cover transition-transform duration-300 hover:scale-105"
+                    className={`w-48 h-48 md:w-56 md:h-56 rounded-lg shadow-lg object-cover transition-transform duration-300 hover:scale-105 ${
+                        onAlbumArtClick ? 'cursor-pointer' : ''
+                    }`}
+                    onClick={onAlbumArtClick}
+                    title={onAlbumArtClick ? 'Click to open visualizer' : undefined}
                 />
             </div>
             <div className="flex-1 text-center md:text-left min-w-0">
-                <ScrollingText text={currentTrack.title} className="text-3xl font-bold" />
-                <ScrollingText text={currentTrack.artist} className="text-lg text-[var(--text-secondary)] mt-1" />
-                <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-muted)] mt-1" />
+                <ScrollingText text={currentTrack.title} className="text-3xl font-bold text-[var(--accent-color)]" />
+                <ScrollingText text={currentTrack.artist} className="text-lg text-[var(--text-primary)] mt-1" />
+                <ScrollingText text={currentTrack.album} className="text-md text-[var(--text-secondary)] mt-1" />
 
                 <div className="mt-6">
                     <div
@@ -79,7 +84,7 @@ export const NowPlaying: React.FC<NowPlayingProps> = ({stream, canSeek = false, 
                             style={{width: `${progressPercent}%`}}
                         ></div>
                     </div>
-                    <div className="flex justify-between text-xs text-[var(--text-muted)] mt-2">
+                    <div className="flex justify-between text-xs text-[var(--text-secondary)] mt-2">
                         <span>{formatTime(progress)}</span>
                         <span>{formatTime(currentTrack.duration)}</span>
                     </div>

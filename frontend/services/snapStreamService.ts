@@ -504,12 +504,14 @@ export class SnapStream {
     private streamsocket?: WebSocket;
     private ctx?: AudioContext;
     private gainNode?: GainNode;
+    private analyserNode?: AnalyserNode; // For visualizer
     private timeProvider: TimeProvider;
     private stream?: AudioStream;
     private sampleFormat?: SampleFormat;
     private serverSettings?: ServerSettingsMessage;
     private msgId: number = 0;
     private syncHandle: number = -1;
+    private reconnectHandle: number = -1;
     private playTime: number = 0;
     private audioBuffers: Array<any> = [];
     private freeBuffers: Array<AudioBuffer> = [];
@@ -552,6 +554,7 @@ export class SnapStream {
         if (!this.isPlaying) return;
 
         window.clearInterval(this.syncHandle);
+        window.clearTimeout(this.reconnectHandle); // Cancel any pending reconnection
         this.stopAudio();
         if (this.streamsocket && (this.streamsocket.readyState === WebSocket.OPEN || this.streamsocket.readyState === WebSocket.CONNECTING)) {
             this.streamsocket.onclose = () => {};
@@ -569,6 +572,28 @@ export class SnapStream {
         }
         if (this.stream) {
             this.stream.setVolume(percent, muted);
+        }
+    }
+
+    /**
+     * Get current frequency data for visualizer
+     */
+    getFrequencyData(): Uint8Array | null {
+        if (!this.analyserNode) return null;
+
+        const bufferLength = this.analyserNode.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        this.analyserNode.getByteFrequencyData(dataArray);
+        return dataArray;
+    }
+
+    /**
+     * Update analyser settings (called when visualizer settings change)
+     */
+    updateAnalyserSettings(fftSize: number, smoothing: number): void {
+        if (this.analyserNode) {
+            this.analyserNode.fftSize = fftSize;
+            this.analyserNode.smoothingTimeConstant = smoothing / 100;
         }
     }
 
@@ -604,7 +629,16 @@ export class SnapStream {
         };
 
         this.ctx = new AudioContext(options);
+
+        // Create AnalyserNode for visualizer (BEFORE GainNode for volume-independent analysis)
+        this.analyserNode = this.ctx.createAnalyser();
+        this.analyserNode.fftSize = 2048;
+        this.analyserNode.smoothingTimeConstant = 0.6;
+
         this.gainNode = this.ctx.createGain();
+
+        // Connect: Analyser → Gain → Destination
+        this.analyserNode.connect(this.gainNode);
         this.gainNode.connect(this.ctx.destination);
         return true;
     }
@@ -636,7 +670,7 @@ export class SnapStream {
             console.info('SnapStream connection lost');
             if (this.isPlaying) {
                 console.info('Reconnecting in 1s');
-                setTimeout(() => this.connect(), 1000);
+                this.reconnectHandle = window.setTimeout(() => this.connect(), 1000);
             }
         };
     }
@@ -745,7 +779,8 @@ export class SnapStream {
 
         const source = this.ctx!.createBufferSource();
         source.buffer = buffer;
-        source.connect(this.gainNode!);
+        // Connect to analyserNode for visualizer (falls back to gainNode if no analyser)
+        source.connect(this.analyserNode || this.gainNode!);
 
         const playBuffer = {
             buffer,
