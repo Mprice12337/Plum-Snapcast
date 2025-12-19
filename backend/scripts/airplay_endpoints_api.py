@@ -37,8 +37,14 @@ class AirPlayEndpointsManager:
                 timeout=30
             )
 
+            # Log setup script output for debugging
+            if result.stdout:
+                logger.info(f"Setup script output: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"Setup script stderr: {result.stderr}")
+
             if result.returncode != 0:
-                logger.error(f"Setup script failed: {result.stderr}")
+                logger.error(f"Setup script failed with exit code {result.returncode}")
                 return {
                     "success": False,
                     "message": f"Failed to apply endpoint configuration: {result.stderr}"
@@ -59,7 +65,7 @@ class AirPlayEndpointsManager:
                 timeout=10
             )
 
-            # Restart affected endpoint services
+            # Start or restart affected endpoint services
             if affected_endpoint_ids:
                 for endpoint_id in affected_endpoint_ids:
                     services = [
@@ -69,13 +75,31 @@ class AirPlayEndpointsManager:
                     ]
 
                     for service in services:
-                        logger.info(f"Restarting service: {service}")
-                        subprocess.run(
-                            self.supervisorctl_cmd + ['restart', service],
+                        # Check if service is running to decide between start vs restart
+                        status_result = subprocess.run(
+                            self.supervisorctl_cmd + ['status', service],
                             capture_output=True,
                             text=True,
                             timeout=10
                         )
+
+                        # If service exists and is not FATAL, restart it. Otherwise start it.
+                        if status_result.returncode == 0 and 'FATAL' not in status_result.stdout:
+                            logger.info(f"Restarting service: {service}")
+                            subprocess.run(
+                                self.supervisorctl_cmd + ['restart', service],
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                        else:
+                            logger.info(f"Starting service: {service}")
+                            subprocess.run(
+                                self.supervisorctl_cmd + ['start', service],
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
 
             return {
                 "success": True,
