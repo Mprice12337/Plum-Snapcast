@@ -11,17 +11,30 @@ interface IntegrationsTabProps {
 
 type ApplyStatus = 'idle' | 'pending' | 'applying' | 'success' | 'error';
 
+type AirPlayEndpoint = {
+  id: string;
+  enabled: boolean;
+  deviceName: string;
+  port: number;
+  udpPortBase: number;
+};
+
 export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   settings,
   onSettingsChange,
 }) => {
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
-  // AirPlay device name state
-  const [airplayDeviceName, setAirplayDeviceName] = useState(settings.integrations.airplay.deviceName);
-  const [airplayNameStatus, setAirplayNameStatus] = useState<ApplyStatus>('idle');
-  const [airplayNameMessage, setAirplayNameMessage] = useState('');
-  const [isTogglingAirplay, setIsTogglingAirplay] = useState(false);
+  // AirPlay endpoints state
+  const [airplayEndpoints, setAirplayEndpoints] = useState<AirPlayEndpoint[]>([]);
+  const [endpointNames, setEndpointNames] = useState<Record<string, string>>({});
+  const [endpointNameStatuses, setEndpointNameStatuses] = useState<Record<string, ApplyStatus>>({});
+  const [endpointNameMessages, setEndpointNameMessages] = useState<Record<string, string>>({});
+  const [isTogglingEndpoint, setIsTogglingEndpoint] = useState<Record<string, boolean>>({});
+  const [isAddingEndpoint, setIsAddingEndpoint] = useState(false);
+  const [newEndpointName, setNewEndpointName] = useState('');
+  const [showAddEndpoint, setShowAddEndpoint] = useState(false);
+  const [needsRestart, setNeedsRestart] = useState(false);
 
   // Bluetooth device name state
   const [bluetoothDeviceName, setBluetoothDeviceName] = useState(settings.integrations.bluetooth.deviceName);
@@ -44,10 +57,26 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   // Plexamp state
   const [isTogglingPlexamp, setIsTogglingPlexamp] = useState(false);
 
-  // Update local state when settings change externally
+  // Load AirPlay endpoints on mount
   useEffect(() => {
-    setAirplayDeviceName(settings.integrations.airplay.deviceName);
-  }, [settings.integrations.airplay.deviceName]);
+    const loadEndpoints = async () => {
+      try {
+        const result = await airplayService.listEndpoints();
+        if (result.success && result.endpoints) {
+          setAirplayEndpoints(result.endpoints);
+          // Initialize endpoint name states
+          const names: Record<string, string> = {};
+          result.endpoints.forEach(ep => {
+            names[ep.id] = ep.deviceName;
+          });
+          setEndpointNames(names);
+        }
+      } catch (error) {
+        console.error('Failed to load AirPlay endpoints:', error);
+      }
+    };
+    loadEndpoints();
+  }, []);
 
   useEffect(() => {
     setBluetoothDeviceName(settings.integrations.bluetooth.deviceName);
@@ -62,7 +91,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   }, [settings.integrations.dlna.deviceName]);
 
   // Check if device name has changed
-  const airplayNameChanged = airplayDeviceName !== settings.integrations.airplay.deviceName;
   const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
   const spotifyNameChanged = spotifyDeviceName !== settings.integrations.spotify.deviceName;
   const dlnaNameChanged = dlnaDeviceName !== settings.integrations.dlna.deviceName;
@@ -71,89 +99,131 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setExpandedSection(expandedSection === section ? null : section);
   };
 
-  const handleAirplayToggle = async (enabled: boolean) => {
-    setIsTogglingAirplay(true);
+  // AirPlay endpoint handlers
+  const handleEndpointToggle = async (endpointId: string, enabled: boolean) => {
+    setIsTogglingEndpoint({...isTogglingEndpoint, [endpointId]: true});
     try {
-      const result = enabled
-        ? await airplayService.enable()
-        : await airplayService.disable();
+      const result = await airplayService.updateEndpoint(endpointId, undefined, enabled);
 
       if (result.success) {
-        // Update settings in state
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            airplay: {
-              ...settings.integrations.airplay,
-              enabled,
-            },
-          },
-        });
+        // Update local state
+        setAirplayEndpoints(airplayEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, enabled} : ep
+        ));
+        if (result.restart_required) {
+          setNeedsRestart(true);
+        }
       } else {
-        console.error('Failed to toggle AirPlay:', result.message);
-        alert(`Failed to ${enabled ? 'enable' : 'disable'} AirPlay: ${result.message}`);
-      }
-    } catch (error) {
-      console.error('Error toggling AirPlay:', error);
-      alert(`Error ${enabled ? 'enabling' : 'disabling'} AirPlay`);
-    } finally {
-      setIsTogglingAirplay(false);
-    }
-  };
-
-  const handleApplyAirplayDeviceName = async () => {
-    if (!airplayNameChanged) return;
-
-    setAirplayNameStatus('applying');
-    setAirplayNameMessage('Applying changes... this may take up to 60 seconds');
-
-    try {
-      const result = await airplayService.updateDeviceName(airplayDeviceName);
-
-      if (result.success) {
-        setAirplayNameStatus('success');
-        setAirplayNameMessage('Applied');
-
-        // Update settings - note: restarting service enables AirPlay
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            airplay: {
-              ...settings.integrations.airplay,
-              deviceName: airplayDeviceName,
-              enabled: true,
-            },
-          },
-        });
-
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setAirplayNameStatus('idle');
-          setAirplayNameMessage('');
-        }, 3000);
-      } else {
-        setAirplayNameStatus('error');
-        setAirplayNameMessage(result.message || 'Failed to apply');
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} endpoint: ${result.message}`);
       }
     } catch (error: any) {
-      setAirplayNameStatus('error');
-      setAirplayNameMessage(error.message || 'Error applying changes');
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} endpoint: ${error.message}`);
+    } finally {
+      setIsTogglingEndpoint({...isTogglingEndpoint, [endpointId]: false});
     }
   };
 
-  const handleAirplayChange = (field: string, value: boolean | string) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        airplay: {
-          ...settings.integrations.airplay,
-          [field]: value,
-        },
-      },
-    });
+  const handleEndpointNameChange = async (endpointId: string) => {
+    const newName = endpointNames[endpointId];
+    const endpoint = airplayEndpoints.find(ep => ep.id === endpointId);
+
+    if (!endpoint || newName === endpoint.deviceName) return;
+
+    setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'applying'});
+    setEndpointNameMessages({...endpointNameMessages, [endpointId]: 'Applying...'});
+
+    try {
+      const result = await airplayService.updateEndpoint(endpointId, newName, undefined);
+
+      if (result.success) {
+        setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'success'});
+        setEndpointNameMessages({...endpointNameMessages, [endpointId]: 'Applied'});
+
+        // Update local state
+        setAirplayEndpoints(airplayEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, deviceName: newName} : ep
+        ));
+
+        if (result.restart_required) {
+          setNeedsRestart(true);
+        }
+
+        setTimeout(() => {
+          setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'idle'});
+          setEndpointNameMessages({...endpointNameMessages, [endpointId]: ''});
+        }, 3000);
+      } else {
+        setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'error'});
+        setEndpointNameMessages({...endpointNameMessages, [endpointId]: result.message || 'Failed'});
+      }
+    } catch (error: any) {
+      setEndpointNameStatuses({...endpointNameStatuses, [endpointId]: 'error'});
+      setEndpointNameMessages({...endpointNameMessages, [endpointId]: error.message || 'Error'});
+    }
+  };
+
+  const handleAddEndpoint = async () => {
+    if (!newEndpointName.trim()) {
+      alert('Please enter a device name');
+      return;
+    }
+
+    setIsAddingEndpoint(true);
+    try {
+      const result = await airplayService.addEndpoint(newEndpointName, true);
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setAirplayEndpoints([...airplayEndpoints, result.endpoint]);
+        setEndpointNames({...endpointNames, [result.endpoint.id]: result.endpoint.deviceName});
+        setNewEndpointName('');
+        setShowAddEndpoint(false);
+
+        if (result.restart_required) {
+          setNeedsRestart(true);
+        }
+      } else {
+        alert(`Failed to add endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error adding endpoint: ${error.message}`);
+    } finally {
+      setIsAddingEndpoint(false);
+    }
+  };
+
+  const handleRemoveEndpoint = async (endpointId: string) => {
+    if (airplayEndpoints.length <= 1) {
+      alert('Cannot remove the last AirPlay endpoint');
+      return;
+    }
+
+    const endpoint = airplayEndpoints.find(ep => ep.id === endpointId);
+    if (!endpoint) return;
+
+    if (!confirm(`Remove AirPlay endpoint "${endpoint.deviceName}"?`)) {
+      return;
+    }
+
+    try {
+      const result = await airplayService.removeEndpoint(endpointId);
+
+      if (result.success) {
+        // Update local state
+        setAirplayEndpoints(airplayEndpoints.filter(ep => ep.id !== endpointId));
+        const newNames = {...endpointNames};
+        delete newNames[endpointId];
+        setEndpointNames(newNames);
+
+        if (result.restart_required) {
+          setNeedsRestart(true);
+        }
+      } else {
+        alert(`Failed to remove endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error removing endpoint: ${error.message}`);
+    }
   };
 
   const handleBluetoothToggle = async (enabled: boolean) => {
@@ -491,33 +561,17 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <div className="flex flex-col flex-1">
               <span className="text-base font-semibold text-[var(--text-secondary)]">AirPlay</span>
               <p className="text-sm text-[var(--text-muted)] mt-1">
-                AirPlay audio streaming (AirPlay 1 & 2)
+                AirPlay audio streaming (AirPlay 1 & 2) - {airplayEndpoints.length} endpoint{airplayEndpoints.length !== 1 ? 's' : ''}
               </p>
-              {isTogglingAirplay && (
-                <p className="text-xs text-amber-500 mt-1">
-                  Processing... this may take up to 60 seconds
+              {needsRestart && (
+                <p className="text-xs text-amber-500 mt-1 font-semibold">
+                  ⚠️ Restart container to apply changes
                 </p>
               )}
             </div>
 
-            {/* Right: Toggle + Chevron */}
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={settings.integrations.airplay.enabled}
-                  onChange={(e) => handleAirplayToggle(e.target.checked)}
-                  disabled={isTogglingAirplay}
-                  id="airplay-toggle"
-                />
-                <label
-                  htmlFor="airplay-toggle"
-                  className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.airplay.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingAirplay ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.airplay.enabled ? 'translate-x-6' : ''}`}></div>
-                </label>
-              </div>
+            {/* Right: Chevron */}
+            <div className="flex items-center flex-shrink-0">
               <button
                 onClick={() => toggleSection('airplay')}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -528,52 +582,144 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           </div>
 
           {expandedSection === 'airplay' && (
-            <div className="mt-4 ml-14 space-y-3">
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Device Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={airplayDeviceName}
-                    onChange={(e) => setAirplayDeviceName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && airplayNameChanged) {
-                        handleApplyAirplayDeviceName();
-                      }
-                    }}
-                    className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                    placeholder="Plum Audio"
-                    disabled={airplayNameStatus === 'applying'}
-                  />
-                  {airplayNameChanged && (
+            <div className="mt-4 ml-14 space-y-4">
+              {/* Endpoints list */}
+              {airplayEndpoints.map((endpoint) => {
+                const nameChanged = endpointNames[endpoint.id] !== endpoint.deviceName;
+                return (
+                  <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                        Endpoint #{endpoint.id}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={endpoint.enabled}
+                            onChange={(e) => handleEndpointToggle(endpoint.id, e.target.checked)}
+                            disabled={isTogglingEndpoint[endpoint.id]}
+                            id={`endpoint-${endpoint.id}-toggle`}
+                          />
+                          <label
+                            htmlFor={`endpoint-${endpoint.id}-toggle`}
+                            className={`block w-10 h-5 rounded-full transition cursor-pointer ${endpoint.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingEndpoint[endpoint.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform ${endpoint.enabled ? 'translate-x-5' : ''}`}></div>
+                          </label>
+                        </div>
+                        {airplayEndpoints.length > 1 && (
+                          <button
+                            onClick={() => handleRemoveEndpoint(endpoint.id)}
+                            className="text-red-500 hover:text-red-400 text-xs"
+                            title="Remove endpoint"
+                          >
+                            <Icon name="trash" className="text-sm" style={{ color: 'inherit' }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--text-muted)] mb-1">
+                        Device Name
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={endpointNames[endpoint.id] || endpoint.deviceName}
+                          onChange={(e) => setEndpointNames({...endpointNames, [endpoint.id]: e.target.value})}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && nameChanged) {
+                              handleEndpointNameChange(endpoint.id);
+                            }
+                          }}
+                          className="w-full px-2 py-1.5 pr-16 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                          placeholder="Plum Audio"
+                          disabled={endpointNameStatuses[endpoint.id] === 'applying'}
+                        />
+                        {nameChanged && (
+                          <button
+                            onClick={() => handleEndpointNameChange(endpoint.id)}
+                            disabled={endpointNameStatuses[endpoint.id] === 'applying'}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {endpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
+                          </button>
+                        )}
+                      </div>
+                      {endpointNameMessages[endpoint.id] && (
+                        <p className={`text-xs mt-1 ${
+                          endpointNameStatuses[endpoint.id] === 'success'
+                            ? 'text-green-500'
+                            : endpointNameStatuses[endpoint.id] === 'error'
+                            ? 'text-red-500'
+                            : 'text-[var(--text-muted)]'
+                        }`}>
+                          {endpointNameMessages[endpoint.id]}
+                        </p>
+                      )}
+                      {nameChanged && !endpointNameMessages[endpoint.id] && (
+                        <p className="text-xs text-amber-500 mt-1">
+                          Pending changes
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)] mt-2">
+                      Port: {endpoint.port}, UDP: {endpoint.udpPortBase}-{endpoint.udpPortBase + 9}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add endpoint button/form */}
+              {!showAddEndpoint && airplayEndpoints.length < 10 && (
+                <button
+                  onClick={() => setShowAddEndpoint(true)}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
+                >
+                  + Add Endpoint
+                </button>
+              )}
+
+              {showAddEndpoint && (
+                <div className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--accent-color)]">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                    New Endpoint Name
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newEndpointName}
+                      onChange={(e) => setNewEndpointName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddEndpoint()}
+                      className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                      placeholder="Living Room"
+                      disabled={isAddingEndpoint}
+                    />
                     <button
-                      onClick={handleApplyAirplayDeviceName}
-                      disabled={airplayNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                      onClick={handleAddEndpoint}
+                      disabled={isAddingEndpoint}
+                      className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {airplayNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                      {isAddingEndpoint ? 'Adding...' : 'Add'}
                     </button>
-                  )}
+                    <button
+                      onClick={() => {setShowAddEndpoint(false); setNewEndpointName('');}}
+                      disabled={isAddingEndpoint}
+                      className="px-3 py-1.5 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary-hover)] rounded text-xs text-[var(--text-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                {airplayNameMessage && (
-                  <p className={`text-xs mt-1 ${
-                    airplayNameStatus === 'success'
-                      ? 'text-green-500'
-                      : airplayNameStatus === 'error'
-                      ? 'text-red-500'
-                      : 'text-[var(--text-muted)]'
-                  }`}>
-                    {airplayNameMessage}
-                  </p>
-                )}
-                {airplayNameChanged && !airplayNameMessage && (
-                  <p className="text-xs text-amber-500 mt-1">
-                    Pending changes - press Enter or click Apply
-                  </p>
-                )}
-              </div>
+              )}
+
+              {airplayEndpoints.length >= 10 && (
+                <p className="text-xs text-[var(--text-muted)] italic">
+                  Maximum of 10 endpoints reached
+                </p>
+              )}
             </div>
           )}
         </div>
