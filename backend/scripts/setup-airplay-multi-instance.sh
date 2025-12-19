@@ -70,6 +70,7 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     if [ ! -p "${FIFO_PATH}" ]; then
         mkfifo "${FIFO_PATH}"
         chmod 666 "${FIFO_PATH}"
+        chown snapcast:snapcast "${FIFO_PATH}" 2>/dev/null || true
         echo "    ✓ Audio FIFO: ${FIFO_PATH}"
     fi
 
@@ -78,19 +79,22 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     if [ ! -p "${METADATA_PIPE}" ]; then
         mkfifo "${METADATA_PIPE}"
         chmod 666 "${METADATA_PIPE}"
+        chown snapcast:snapcast "${METADATA_PIPE}" 2>/dev/null || true
         echo "    ✓ Metadata pipe: ${METADATA_PIPE}"
     fi
 
     # Create artwork cache directory
     ARTWORK_DIR="/tmp/shairport-sync-${INSTANCE_ID}/.cache/coverart"
     mkdir -p "${ARTWORK_DIR}"
-    chmod -R 777 "/tmp/shairport-sync-${INSTANCE_ID}/.cache"
+    chown -R snapcast:snapcast "/tmp/shairport-sync-${INSTANCE_ID}/.cache" 2>/dev/null || true
+    chmod -R 777 "/tmp/shairport-sync-${INSTANCE_ID}/.cache" 2>/dev/null || true
     echo "    ✓ Artwork cache: ${ARTWORK_DIR}"
 
     # Create stream end signal file
     SIGNAL_FILE="/tmp/airplay-${INSTANCE_ID}-stream-end.signal"
     touch "${SIGNAL_FILE}"
-    chmod 666 "${SIGNAL_FILE}"
+    chmod 666 "${SIGNAL_FILE}" 2>/dev/null || true
+    chown snapcast:snapcast "${SIGNAL_FILE}" 2>/dev/null || true
     echo "    ✓ Signal file: ${SIGNAL_FILE}"
 
     # Enable/disable supervisord services based on endpoint enabled state
