@@ -59,6 +59,10 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
         -e "s/DBUS_ENABLED/${DBUS}/g" \
         /app/config/shairport-sync.conf.template > "${CONFIG_FILE}"
 
+    # Ensure config file is owned by snapcast user (for dynamic updates via API)
+    chown snapcast:snapcast "${CONFIG_FILE}" 2>/dev/null || true
+    chmod 644 "${CONFIG_FILE}" 2>/dev/null || true
+
     echo "    ✓ Config: ${CONFIG_FILE}"
 
     # Create FIFO pipe for audio
