@@ -91,7 +91,7 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
 
     # Enable/disable supervisord services based on endpoint enabled state
     # Update airplay-multi-instance.ini to set autostart for this endpoint
-    SUPERVISOR_CONFIG="/app/config/supervisord/airplay-multi-instance.ini"
+    SUPERVISOR_CONFIG="/app/supervisord/airplay-multi-instance.ini"
 
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
         # Disable all services for this endpoint
