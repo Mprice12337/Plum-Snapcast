@@ -92,66 +92,130 @@ class IntegrationController:
 
 
 class AirPlayController:
-    """Controls AirPlay (shairport-sync) service"""
+    """Controls AirPlay endpoints via settings (multi-instance architecture)"""
 
     def __init__(self, integration_controller: IntegrationController, settings_manager: SettingsManager = None):
         self.controller = integration_controller
-        self.service_name = "shairport-sync"
-        self.config_file = SHAIRPORT_SYNC_CONF
         self.settings_manager = settings_manager or SettingsManager()
 
     def enable(self) -> Dict[str, Any]:
-        """Enable AirPlay service"""
-        success, output = self.controller.start_service(self.service_name)
+        """Enable first AirPlay endpoint in settings (requires container restart to apply)"""
+        try:
+            settings = self.settings_manager.get_settings()
+            airplay = settings.get("integrations", {}).get("airplay", {})
 
-        # Update settings to persist state
-        if success:
-            try:
-                self.settings_manager.update_settings({
-                    "integrations": {
-                        "airplay": {
-                            "enabled": True
-                        }
-                    }
-                })
-            except Exception as e:
-                logger.error(f"Failed to persist AirPlay enabled state: {e}")
+            # Get or create first endpoint
+            if "endpoints" in airplay and len(airplay["endpoints"]) > 0:
+                # Update first endpoint to enabled
+                airplay["endpoints"][0]["enabled"] = True
+            else:
+                # Create default endpoint
+                airplay = {
+                    "endpoints": [{
+                        "id": "1",
+                        "enabled": True,
+                        "deviceName": "Plum Audio",
+                        "port": 5000,
+                        "udpPortBase": 6001
+                    }]
+                }
 
-        return {
-            "success": success,
-            "message": "AirPlay enabled" if success else "Failed to enable AirPlay",
-            "details": output.strip()
-        }
+            self.settings_manager.update_settings({
+                "integrations": {
+                    "airplay": airplay
+                }
+            })
+
+            logger.info("Enabled first AirPlay endpoint in settings")
+
+            return {
+                "success": True,
+                "message": "AirPlay enabled (container restart required to apply)",
+                "restart_required": True
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to enable AirPlay: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to enable AirPlay: {str(e)}"
+            }
 
     def disable(self) -> Dict[str, Any]:
-        """Disable AirPlay service"""
-        success, output = self.controller.stop_service(self.service_name)
+        """Disable first AirPlay endpoint in settings (requires container restart to apply)"""
+        try:
+            settings = self.settings_manager.get_settings()
+            airplay = settings.get("integrations", {}).get("airplay", {})
 
-        # Update settings to persist state
-        if success:
-            try:
+            if "endpoints" in airplay and len(airplay["endpoints"]) > 0:
+                # Disable first endpoint
+                airplay["endpoints"][0]["enabled"] = False
+
                 self.settings_manager.update_settings({
                     "integrations": {
-                        "airplay": {
-                            "enabled": False
-                        }
+                        "airplay": airplay
                     }
                 })
-            except Exception as e:
-                logger.error(f"Failed to persist AirPlay disabled state: {e}")
 
-        return {
-            "success": success,
-            "message": "AirPlay disabled" if success else "Failed to disable AirPlay",
-            "details": output.strip()
-        }
+                logger.info("Disabled first AirPlay endpoint in settings")
+
+                return {
+                    "success": True,
+                    "message": "AirPlay disabled (container restart required to apply)",
+                    "restart_required": True
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "No AirPlay endpoints configured"
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to disable AirPlay: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to disable AirPlay: {str(e)}"
+            }
 
     def get_status(self) -> Dict[str, Any]:
-        """Get AirPlay service status"""
-        return self.controller.get_service_status(self.service_name)
+        """Get AirPlay endpoint status from settings"""
+        try:
+            settings = self.settings_manager.get_settings()
+            airplay = settings.get("integrations", {}).get("airplay", {})
+
+            # Check if first endpoint exists and is enabled
+            if "endpoints" in airplay and len(airplay["endpoints"]) > 0:
+                first_endpoint = airplay["endpoints"][0]
+                enabled = first_endpoint.get("enabled", False)
+
+                # Check if the actual service is running
+                service_status = self.controller.get_service_status("shairport-sync-1")
+
+                return {
+                    "running": service_status.get("running", False) and enabled,
+                    "status": "running" if (service_status.get("running", False) and enabled) else "stopped",
+                    "enabled": enabled,
+                    "endpoint_count": len(airplay["endpoints"])
+                }
+            else:
+                # Old format or no endpoints
+                return {
+                    "running": False,
+                    "status": "stopped",
+                    "enabled": airplay.get("enabled", False),
+                    "endpoint_count": 0
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to get AirPlay status: {e}")
+            return {
+                "running": False,
+                "status": "error",
+                "error": str(e)
+            }
 
     def update_device_name(self, device_name: str) -> Dict[str, Any]:
-        """Update AirPlay device name in config and restart service"""
+        """Update first AirPlay endpoint device name in settings (requires container restart)"""
         try:
             # Validate device name
             if not device_name or len(device_name) > 50:
@@ -160,52 +224,32 @@ class AirPlayController:
                     "message": "Invalid device name (must be 1-50 characters)"
                 }
 
-            # Escape special characters for sed
-            device_name_escaped = device_name.replace('"', '\\"').replace('/', '\\/')
+            settings = self.settings_manager.get_settings()
+            airplay = settings.get("integrations", {}).get("airplay", {})
 
-            # Use sed to update config (same approach as setup.sh)
-            sed_pattern = f'/^general = {{/,/^}}/{{s/name = ".*";/name = "{device_name_escaped}";/}}'
-            sed_cmd = ["sed", "-i", sed_pattern, self.config_file]
+            if "endpoints" in airplay and len(airplay["endpoints"]) > 0:
+                # Update first endpoint's device name
+                airplay["endpoints"][0]["deviceName"] = device_name
 
-            result = subprocess.run(sed_cmd, capture_output=True, text=True, timeout=10)
+                self.settings_manager.update_settings({
+                    "integrations": {
+                        "airplay": airplay
+                    }
+                })
 
-            if result.returncode != 0:
-                logger.error(f"sed command failed: {result.stderr}")
+                logger.info(f"Updated first AirPlay endpoint device name to: {device_name}")
+
+                return {
+                    "success": True,
+                    "message": f"Device name updated to '{device_name}' (container restart required to apply)",
+                    "device_name": device_name,
+                    "restart_required": True
+                }
+            else:
                 return {
                     "success": False,
-                    "message": "Failed to update config file",
-                    "details": result.stderr.strip()
+                    "message": "No AirPlay endpoints configured"
                 }
-
-            logger.info(f"Updated AirPlay device name to: {device_name}")
-
-            # Restart service to apply changes
-            success, output = self.controller.restart_service(self.service_name)
-
-            if not success:
-                logger.error(f"Failed to restart shairport-sync: {output}")
-
-            # Update settings to persist device name and enabled state
-            # Note: restarting the service enables it, so we set enabled=True
-            if success:
-                try:
-                    self.settings_manager.update_settings({
-                        "integrations": {
-                            "airplay": {
-                                "deviceName": device_name,
-                                "enabled": True
-                            }
-                        }
-                    })
-                except Exception as e:
-                    logger.error(f"Failed to persist AirPlay device name: {e}")
-
-            return {
-                "success": success,
-                "message": f"Device name updated to '{device_name}'" if success else "Failed to restart AirPlay service",
-                "device_name": device_name if success else None,
-                "details": output.strip()
-            }
 
         except Exception as e:
             logger.error(f"Failed to update device name: {e}")
