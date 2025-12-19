@@ -106,6 +106,21 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     fi
 done
 
+# Disable any unconfigured instances (1, 2, 3)
+# Get list of configured instance IDs
+CONFIGURED_IDS=$(echo "$AIRPLAY_ENDPOINTS_JSON" | python3 -c "import sys, json; print(' '.join([ep['id'] for ep in json.load(sys.stdin)]))")
+
+# Check instances 1, 2, 3 and disable if not configured
+for check_id in 1 2 3; do
+    if ! echo "$CONFIGURED_IDS" | grep -q "\b${check_id}\b"; then
+        echo "Disabling unconfigured instance ${check_id}..."
+        SUPERVISOR_CONFIG="/app/supervisord/airplay-multi-instance.ini"
+        sed -i "/^\[program:shairport-sync-${check_id}\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
+        sed -i "/^\[program:airplay-${check_id}-fifo-keeper\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
+        sed -i "/^\[program:airplay-${check_id}-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/" "$SUPERVISOR_CONFIG" 2>/dev/null || true
+    fi
+done
+
 echo ""
 echo "AirPlay endpoint configuration complete!"
 echo ""
