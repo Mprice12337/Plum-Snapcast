@@ -20,6 +20,7 @@ class AirPlayEndpointsManager:
     def __init__(self, settings_manager: SettingsManager = None):
         self.settings_manager = settings_manager or SettingsManager()
         self.supervisorctl_cmd = [
+            'sudo',
             'supervisorctl',
             '-c',
             '/app/supervisord/supervisord.conf'
@@ -31,7 +32,7 @@ class AirPlayEndpointsManager:
             # Run setup script to create configs, FIFOs, etc.
             logger.info("Running setup-airplay-multi-instance.sh to apply endpoint changes")
             result = subprocess.run(
-                ['bash', '/app/scripts/setup-airplay-multi-instance.sh'],
+                ['sudo', 'bash', '/app/scripts/setup-airplay-multi-instance.sh'],
                 capture_output=True,
                 text=True,
                 timeout=30

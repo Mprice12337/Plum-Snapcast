@@ -46,7 +46,8 @@ RUN apk add --no-cache \
     gst-plugins-bad \
     gst-plugins-ugly \
     gst-libav \
-    libupnp
+    libupnp \
+    sudo
 
 # Install Python packages for federation service and lifecycle manager
 RUN pip3 install --no-cache-dir --break-system-packages websockets websocket-client
@@ -171,6 +172,12 @@ RUN deluser snapcast 2>/dev/null || true && \
     addgroup snapcast audio && \
     addgroup -S messagebus 2>/dev/null || true && \
     adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true
+
+# Configure sudo for snapcast user (needed for API to manage endpoints)
+# Allow snapcast to run setup script and supervisorctl without password
+RUN echo "snapcast ALL=(ALL) NOPASSWD: /bin/bash /app/scripts/setup-airplay-multi-instance.sh" >> /etc/sudoers.d/snapcast && \
+    echo "snapcast ALL=(ALL) NOPASSWD: /usr/bin/supervisorctl" >> /etc/sudoers.d/snapcast && \
+    chmod 0440 /etc/sudoers.d/snapcast
 
 # Configure D-Bus machine-id (required for D-Bus to create socket)
 RUN mkdir -p /var/lib/dbus && \
