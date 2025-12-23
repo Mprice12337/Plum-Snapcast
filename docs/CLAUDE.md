@@ -317,6 +317,55 @@ POST /api/audio/input/device/<hw_id>/toggle → Toggle input device enabled stat
 }
 ```
 
+### Playback Position API
+- **Protocol**: HTTP REST (Flask)
+- **Base URL**: `http://[host]:[FEDERATION_API_PORT]/api/playback`
+- **Implementation**: `backend/scripts/playback_api.py`
+- **Purpose**: Real-time position tracking without audio stuttering
+
+**Problem**: Snapcast's `Plugin.Stream.Player.Properties` notifications cause audio stuttering when position updates are pushed frequently, making real-time position tracking impossible through the standard Snapcast API.
+
+**Solution**: Independent position tracking with server-side interpolation:
+1. Control scripts POST position updates when they change (track start, seek, pause)
+2. Server interpolates position between updates using dual timestamps
+3. Frontend polls for interpolated position every 2 seconds
+4. No impact on Snapcast audio pipeline
+
+**Two-Timestamp Architecture**:
+- `last_update`: Updated on every heartbeat (prevents staleness detection)
+- `position_timestamp`: Updated only when position changes >500ms (enables interpolation)
+
+This allows heartbeat updates (every 10s) to keep data fresh while maintaining accurate interpolation between actual position changes.
+
+**Endpoints**:
+```typescript
+POST /api/playback/<stream_id> → Update position (called by control scripts)
+GET  /api/playback/<stream_id> → Get position for specific stream
+GET  /api/playback             → Get position for all streams
+DELETE /api/playback/<stream_id> → Remove position data
+POST /api/playback/cleanup     → Manually cleanup stale entries (>30s old)
+```
+
+**Position Data Object**:
+```typescript
+{
+  stream_id: string,
+  position: number,              // milliseconds (last reported)
+  duration: number,              // milliseconds
+  playback_status: 'playing' | 'paused' | 'stopped' | 'unknown',
+  interpolated_position: number, // milliseconds (server-calculated)
+  last_update: number,           // Unix timestamp (staleness check)
+  position_timestamp: number,    // Unix timestamp (interpolation base)
+  age_seconds: number,           // How long since last update
+  is_stale: boolean              // True if no update for >30s
+}
+```
+
+**Integration Points**:
+- Control scripts (`airplay-control-script.py`): POST position on `prgr` events, heartbeat every 10s
+- Frontend (`App.tsx`): Poll every 2s, use interpolated position with >2s sync threshold
+- Nginx (`frontend/Dockerfile`): Proxy `/api/playback` to federation service
+
 ---
 
 ## Coding Conventions

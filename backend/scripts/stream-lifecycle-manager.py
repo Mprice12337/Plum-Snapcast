@@ -317,7 +317,8 @@ class StreamLifecycleManager:
         self.idle_check_timer = None
 
         # Signal file monitoring
-        self.last_signal_time = 0
+        # Initialize to current time to ignore any stale signal files from previous runs
+        self.last_signal_time = time.time()
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 

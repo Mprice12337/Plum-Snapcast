@@ -14,9 +14,12 @@ Based on proven pattern from metadata-debug-server.py:
 import argparse
 import base64
 import json
+import os
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,6 +29,11 @@ METADATA_PIPE = "/tmp/shairport-sync-metadata"
 COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 LOG_FILE = "/tmp/airplay-control-script.log"
 STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
+
+# Playback API configuration (for real-time position tracking independent of Snapcast)
+# This API runs on the federation service port (default 5000)
+PLAYBACK_API_PORT = int(os.getenv("FEDERATION_API_PORT", "5000"))
+PLAYBACK_API_URL = f"http://localhost:{PLAYBACK_API_PORT}/api/playback"
 
 # Set up logging to file
 def log(message: str):
@@ -50,6 +58,51 @@ def signal_stream_end():
     except Exception as e:
         log(f"[Signal] Failed to write signal file: {e}")
 
+
+def post_playback_position(stream_id: str, position_ms: int, duration_ms: int,
+                           playback_status: str = "playing", **extra):
+    """
+    POST position update to playback API (non-blocking).
+
+    Sends position data to our API instead of Snapcast notifications to avoid audio stuttering.
+    """
+    def _post():
+        try:
+            # URL-encode the stream_id for the path
+            encoded_stream_id = urllib.request.quote(stream_id, safe='')
+            url = f"{PLAYBACK_API_URL}/{encoded_stream_id}"
+
+            data = {
+                "position": position_ms,
+                "duration": duration_ms,
+                "playback_status": playback_status,
+                **extra
+            }
+
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=2) as response:
+                if response.status == 200:
+                    log(f"[PlaybackAPI] Posted position: {position_ms}ms / {duration_ms}ms ({playback_status})")
+                else:
+                    log(f"[PlaybackAPI] Unexpected status: {response.status}")
+
+        except urllib.error.URLError as e:
+            # API might not be ready yet - this is expected during startup
+            log(f"[PlaybackAPI] Failed to post (API may not be ready): {e.reason}")
+        except Exception as e:
+            log(f"[PlaybackAPI] Error posting position: {e}")
+
+    # Run in background thread to avoid blocking metadata processing
+    thread = threading.Thread(target=_post, daemon=True)
+    thread.start()
+
+
 # Try to import D-Bus - graceful fallback if not available
 try:
     import dbus
@@ -64,7 +117,12 @@ except ImportError:
 class MetadataStore:
     """
     Thread-safe storage for current metadata and playback state.
-    This ensures atomic reads/writes and consistency.
+
+    Position Interpolation:
+    - Stores position and timestamp when D-Bus ProgressString updates
+    - get_current_position() calculates current position by adding elapsed time
+    - Provides smooth progress tracking between D-Bus updates (which only occur
+      on track change/seek, not continuously during playback)
     """
 
     def __init__(self):
@@ -76,9 +134,10 @@ class MetadataStore:
             "track_id": None,
             "artwork_url": None,
             "last_updated": None,
-            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
-            "duration": None,  # Track duration in milliseconds
-            "position": 0,  # Current position in milliseconds
+            "playback_status": "stopped",  # "playing", "paused", or "stopped"
+            "duration": 0,  # Track duration in milliseconds
+            "position": 0,  # Last known position from D-Bus (milliseconds)
+            "position_timestamp": None,  # When position was last updated (for interpolation)
         }
 
     def update(self, **kwargs):
@@ -86,12 +145,41 @@ class MetadataStore:
         with self.lock:
             self.data.update(kwargs)
             self.data["last_updated"] = time.time()
+            # Record timestamp when position is updated for interpolation
+            if "position" in kwargs:
+                self.data["position_timestamp"] = time.time()
             log(f"[Store] Updated: {list(kwargs.keys())}")
 
     def get_all(self) -> Dict:
         """Get all metadata (returns a copy)"""
         with self.lock:
             return self.data.copy()
+
+    def get_current_position(self) -> int:
+        """
+        Get current playback position with client-side interpolation.
+        If playing, calculates position based on elapsed time since last update.
+        Returns position in milliseconds.
+        """
+        with self.lock:
+            stored_position = self.data.get("position", 0)
+            playback_status = self.data.get("playback_status", "stopped")
+            position_timestamp = self.data.get("position_timestamp")
+            duration = self.data.get("duration")
+
+            # If not playing or no timestamp, return stored position
+            if playback_status != "playing" or position_timestamp is None:
+                return stored_position
+
+            # Calculate elapsed time and interpolate
+            elapsed_ms = int((time.time() - position_timestamp) * 1000)
+            interpolated_position = stored_position + elapsed_ms
+
+            # Clamp to duration if available
+            if duration and interpolated_position > duration:
+                return duration
+
+            return interpolated_position
 
     def get_metadata_for_snapcast(self) -> Optional[Dict]:
         """
@@ -102,31 +190,38 @@ class MetadataStore:
         - artist (array of strings)
         - album (string)
         - artUrl (string)
+        - duration (float, seconds)
+
+        Returns partial metadata if available - duration from prgr events
+        can arrive before title/artist metadata.
         """
         with self.lock:
-            # Only return if we have at least a title
+            meta = {}
+
+            # Snapcast metadata fields (simple names, not MPRIS)
             if self.data.get("title"):
-                meta = {}
+                meta["title"] = self.data["title"]
 
-                # Snapcast metadata fields (simple names, not MPRIS)
-                if self.data.get("title"):
-                    meta["title"] = self.data["title"]
+            if self.data.get("artist"):
+                # Snapcast expects artist as an array
+                meta["artist"] = [self.data["artist"]]
 
-                if self.data.get("artist"):
-                    # Snapcast expects artist as an array
-                    meta["artist"] = [self.data["artist"]]
+            if self.data.get("album"):
+                meta["album"] = self.data["album"]
 
-                if self.data.get("album"):
-                    meta["album"] = self.data["album"]
+            if self.data.get("artwork_url"):
+                meta["artUrl"] = self.data["artwork_url"]
 
-                if self.data.get("artwork_url"):
-                    meta["artUrl"] = self.data["artwork_url"]
+            # Duration in SECONDS per Snapcast API (convert from internal milliseconds)
+            # Internal storage is in ms, but Snapcast expects seconds (like position)
+            # CRITICAL: Include duration even without title! prgr events provide duration
+            # before metadata events arrive, allowing frontend to display progress immediately.
+            if self.data.get("duration"):
+                meta["duration"] = self.data["duration"] / 1000.0
 
-                if self.data.get("duration"):
-                    meta["duration"] = self.data["duration"]
-
-                return meta
-            return None
+            # Return metadata if we have ANY fields (duration, title, etc.)
+            # Don't wait for complete metadata - partial updates are valuable
+            return meta if meta else None
 
 
 class MetadataParser:
@@ -139,8 +234,11 @@ class MetadataParser:
     - Handle artwork independently
     """
 
-    def __init__(self, store: MetadataStore):
+    def __init__(self, store: MetadataStore, on_position_update=None, dbus_monitor=None, on_state_change=None):
         self.store = store
+        self.on_position_update = on_position_update  # Callback for position updates
+        self.dbus_monitor = dbus_monitor  # D-Bus monitor for accurate position
+        self.on_state_change = on_state_change  # Callback for playback state changes (sends Snapcast notification)
 
         # Current state (what's been applied)
         self.current = {
@@ -218,6 +316,17 @@ class MetadataParser:
 
                     updated = False
 
+                    # Detect track change by checking if title changed
+                    track_changed = False
+                    if self.pending_metadata["title"]:
+                        old_title = self.current.get("title")
+                        new_title = self.pending_metadata["title"]
+                        # Track changed if title changed AND old title wasn't placeholder/empty
+                        # (Don't treat initial connection as track change - preserves mid-track position)
+                        if old_title != new_title and old_title and old_title not in ["Unknown Track", "N/A"]:
+                            track_changed = True
+                            log(f"[Bundle] Track changed: '{old_title}' → '{new_title}'")
+
                     # Apply all pending metadata at once to both current and store
                     if self.pending_metadata["title"]:
                         self.current["title"] = self.pending_metadata["title"]
@@ -237,12 +346,14 @@ class MetadataParser:
                         log(f"[Bundle] Applied album: {self.pending_metadata['album']}")
                         updated = True
 
-                    # When we receive metadata, the stream is playing
-                    # Update playback state to "Playing"
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (metadata received)")
+                    # CRITICAL: Do NOT set playback status based on metadata!
+                    # Metadata arrives even when paused (AirPlay sends metadata updates).
+                    # Only pbeg, pfls, paus, prsm, prgr events and control commands should update status.
+
+                    # CRITICAL: Reset position when track changes to prevent interpolation from previous track
+                    if track_changed:
+                        log(f"[Bundle] Resetting position for new track")
+                        self.store.update(position=0, duration=0, position_timestamp=None)
                         updated = True
 
                     # Check for cached artwork (in case track changed but artwork is from same album)
@@ -261,32 +372,62 @@ class MetadataParser:
                 elif code == "pbeg":
                     # Play stream begin
                     log(f"[Session] Play stream BEGIN")
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (stream begin)")
-                        return True  # Signal update
+                    current_state = self.store.get_all().get("playback_status", "stopped")
+                    if current_state != "playing":
+                        # Get actual starting position from D-Bus (handles mid-track connections)
+                        position_ms = 0
+                        duration_ms = 0
+                        if self.dbus_monitor and self.dbus_monitor.is_available():
+                            progress = self.dbus_monitor.get_progress()
+                            if progress:
+                                position_ms, duration_ms = progress
+                                log(f"[State] Play begin at position {position_ms}ms from D-Bus (mid-track connection)")
+
+                        # Start interpolation immediately if we have a valid position
+                        self.store.update(playback_status="playing", position=position_ms, duration=duration_ms, position_timestamp=time.time())
+
+                        # Send immediate Snapcast notification
+                        if self.on_state_change:
+                            self.on_state_change()
+
+                        # Update playback API immediately with starting position
+                        if self.on_position_update:
+                            self.on_position_update(position_ms, duration_ms, "playing")
+
+                        log(f"[State] Playback state → playing (stream begin, position={position_ms}ms) - notified")
+                        return False  # Don't trigger duplicate notification
                     return False
 
                 elif code == "pend":
-                    # Play stream end - NOTE: This happens frequently during normal playback
-                    # (between tracks, during buffering, etc.). DO NOT signal stream end here.
-                    # The lifecycle manager will detect actual stream end via idle timeout.
-                    log(f"[Session] Play stream END (pend) - NOT signaling removal")
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Stopped":
-                        # Don't change playback status to Stopped - this is likely just a track change
-                        # The stream is still active even if we get pend events
-                        log(f"[State] Ignoring pend - stream still active")
-                        return False
-                    return False
+                    # Play stream end - Can indicate pause from source device or track end
+                    # NOTE: Also happens during track changes, but in that case pbeg will follow
+                    log(f"[Session] Play stream END (pend)")
+                    current_state = self.store.get_all().get("playback_status", "stopped")
+
+                    # Treat pend as pause - stream goes idle
+                    # Always update playback API and notify (frontend needs this for source device pause)
+                    self.store.update(playback_status="paused")
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Always send immediate Snapcast notification for pause from source
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused (stream ended) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification from pipe monitor
 
                 elif code == "prgr":
-                    # Progress information: "start_rtp/current_rtp/end_rtp"
-                    # RTP timestamps at 44.1kHz sample rate
+                    # Progress information: "start_rtp/current_rtp/end_rtp" (RTP timestamps at 44.1kHz)
+                    # Position updates POST to playback API (not Snapcast) to avoid audio stuttering
                     if data_text:
                         try:
-                            parts = data_text.split("/")
+                            decoded = base64.b64decode(data_text).decode('utf-8')
+                            parts = decoded.split("/")
                             if len(parts) == 3:
                                 start_rtp = int(parts[0])
                                 current_rtp = int(parts[1])
@@ -296,43 +437,118 @@ class MetadataParser:
                                 duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
                                 position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
 
-                                # Update store with position and duration
-                                self.store.update(duration=duration_ms, position=position_ms)
-                                # Don't log every progress update (too verbose)
-                                return True  # Signal update
-                        except (ValueError, ZeroDivisionError) as e:
+                                # Detect track changes by position jumping backwards significantly
+                                # This can happen when prgr arrives before metadata bundle completes
+                                state_data = self.store.get_all()
+                                old_position = state_data.get("position", 0)
+                                old_duration = state_data.get("duration", 0)
+
+                                # Track changed if position decreased by >5s or duration changed significantly
+                                track_likely_changed = (
+                                    (old_position > 5000 and position_ms < old_position - 5000) or
+                                    (old_duration > 0 and abs(duration_ms - old_duration) > 10000)
+                                )
+
+                                if track_likely_changed:
+                                    log(f"[Progress] Track change detected (position: {old_position}ms → {position_ms}ms, duration: {old_duration}ms → {duration_ms}ms)")
+
+                                current_state = state_data.get("playback_status", "stopped")
+                                if current_state != "playing":
+                                    # State change to playing - notify Snapcast
+                                    self.store.update(playback_status="playing", duration=duration_ms, position=position_ms, position_timestamp=time.time())
+                                    if self.on_position_update:
+                                        self.on_position_update(position_ms, duration_ms, "playing")
+                                    return True  # Notify on state change
+                                else:
+                                    # Position update only - no Snapcast notification (avoid stuttering)
+                                    self.store.update(duration=duration_ms, position=position_ms, position_timestamp=time.time())
+                                    if self.on_position_update:
+                                        self.on_position_update(position_ms, duration_ms, "playing")
+                                    return False  # No notification for position-only updates
+                        except (ValueError, ZeroDivisionError, UnicodeDecodeError) as e:
                             log(f"[Progress] Failed to parse prgr: {data_text} - {e}")
                     return False
 
                 elif code == "paus":
                     # Pause (older shairport-sync versions)
                     log(f"[Session] PAUSE")
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    if current_state != "Paused":
-                        self.store.update(playback_status="Paused")
-                        log(f"[State] Playback state → Paused")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "paused")
+
+                    # Always update playback API and send notification
+                    # (Frontend needs notification even if state unchanged to sync UI)
+                    self.store.update(playback_status="paused")
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "pfls":
                     # Play stream flush (pause/stop)
                     log(f"[Session] Play stream FLUSH (pause)")
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    if current_state != "Paused":
-                        self.store.update(playback_status="Paused")
-                        log(f"[State] Playback state → Paused (stream flushed)")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "paused")
+
+                    # Always update playback API and send notification
+                    # (Frontend needs notification even if state unchanged to sync UI)
+                    self.store.update(playback_status="paused")
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused (stream flushed) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "prsm":
                     # Play stream resume
                     log(f"[Session] Play stream RESUME")
-                    current_state = self.store.get_all().get("playback_status", "Playing")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (stream resumed)")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "playing")
+
+                    # Get actual position from D-Bus before resuming (for accuracy)
+                    if self.dbus_monitor and self.dbus_monitor.is_available():
+                        progress = self.dbus_monitor.get_progress()
+                        if progress:
+                            position_ms, duration_ms = progress
+                            # Start interpolation from D-Bus position
+                            self.store.update(playback_status="playing", position=position_ms, duration=duration_ms, position_timestamp=time.time())
+                            log(f"[State] Playback state → playing (stream resumed), position from D-Bus: {position_ms}ms")
+                        else:
+                            # No D-Bus position, start from last known position
+                            self.store.update(playback_status="playing", position_timestamp=time.time())
+                            log(f"[State] Playback state → playing (stream resumed, no D-Bus position)")
+                    else:
+                        # No D-Bus, start from last known position
+                        self.store.update(playback_status="playing", position_timestamp=time.time())
+                        log(f"[State] Playback state → playing (stream resumed)")
+
+                    # Always notify playback API and frontend (even if already playing)
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "playing"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → playing (resumed) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "pvol":
                     # Volume change (informational, we don't track volume from source)
@@ -557,15 +773,12 @@ class DBusMonitor:
                 log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous)")
                 log("[DBus] Note: Playback state tracked via metadata events")
 
-                # Set initial state to Paused (will update when metadata arrives)
-                self.store.update(playback_status="Paused")
+                # Set initial state to paused (will update when metadata arrives)
+                self.store.update(playback_status="paused")
 
                 # Notify parent that we're ready
                 if self.on_state_change:
                     self.on_state_change()
-
-                # Start progress polling thread
-                self.start_progress_polling()
 
                 return  # Success!
 
@@ -662,6 +875,9 @@ class DBusMonitor:
         """
         Get progress from D-Bus ProgressString property.
         Returns (position_ms, duration_ms) tuple or None if not available.
+
+        If progress data is available, that means stream is playing,
+        so we also update playback status to "playing".
         """
         if not self.dbus_properties:
             return None
@@ -686,6 +902,11 @@ class DBusMonitor:
                     duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
                     position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
 
+                    # CRITICAL: Do NOT set playback status here!
+                    # D-Bus ProgressString returns data even when paused, so having progress
+                    # data doesn't mean the stream is playing. Only metadata events (pfls, paus,
+                    # prsm, pbeg) and prgr events should control playback state.
+
                     return (position_ms, duration_ms)
         except Exception as e:
             # Property may not be available when stream is not playing
@@ -694,74 +915,29 @@ class DBusMonitor:
 
         return None
 
-    def start_progress_polling(self):
-        """Start background thread to poll progress updates from D-Bus
-
-        Note: shairport-sync's ProgressString only updates when metadata changes
-        (track start/end, not continuously during playback). We poll to detect
-        these changes and send updates to frontend, which then uses client-side
-        sync to increment position smoothly.
+    def get_playback_state(self):
         """
-        def poll_progress():
-            log("[DBus] Progress polling thread started")
-            last_progress_string = None
+        Get current playback state from D-Bus PlayerState property.
+        Returns "Playing", "Stopped", "Paused", or None if not available.
 
-            while self.is_available():
-                try:
-                    # Only poll when playing
-                    playback_status = self.store.get_all().get("playback_status", "Stopped")
+        This is critical for iOS AirPlay which doesn't send pause metadata events.
+        """
+        if not self.dbus_properties:
+            return None
 
-                    if playback_status == "Playing":
-                        progress = self.get_progress()
+        try:
+            # Get PlayerState property from RemoteControl interface
+            player_state = self.dbus_properties.Get(
+                'org.gnome.ShairportSync.RemoteControl',
+                'PlayerState'
+            )
+            return str(player_state) if player_state else None
+        except Exception:
+            # Property may not be available when stream is not playing
+            # This is normal - don't log spam
+            pass
 
-                        if progress:
-                            position_ms, duration_ms = progress
-
-                            # Get the raw ProgressString to detect actual changes
-                            try:
-                                progress_str = self.dbus_properties.Get(
-                                    'org.gnome.ShairportSync.RemoteControl',
-                                    'ProgressString'
-                                )
-                                current_progress_string = str(progress_str)
-                            except:
-                                current_progress_string = None
-
-                            # Only send update if ProgressString actually changed
-                            # This happens on: track change, seek, initial connection
-                            if current_progress_string and current_progress_string != last_progress_string:
-                                # Update store
-                                self.store.update(position=position_ms, duration=duration_ms)
-
-                                # Determine reason for change
-                                if last_progress_string is None:
-                                    reason = "initial"
-                                elif position_ms < 5000:  # Position near start suggests new track
-                                    reason = "track_change"
-                                else:
-                                    reason = "seek"
-
-                                log(f"[DBus] Position changed: {position_ms}ms ({reason})")
-
-                                # Send update to frontend
-                                if self.on_metadata_update:
-                                    self.on_metadata_update()
-
-                                # Track this ProgressString
-                                last_progress_string = current_progress_string
-
-                    # Poll every second
-                    time.sleep(1)
-
-                except Exception as e:
-                    log(f"[DBus] Progress polling error: {e}")
-                    time.sleep(1)
-
-            log("[DBus] Progress polling thread stopped")
-
-        # Start polling in background thread
-        poll_thread = threading.Thread(target=poll_progress, daemon=True)
-        poll_thread.start()
+        return None
 
     def is_available(self):
         """Check if D-Bus control is available"""
@@ -778,9 +954,24 @@ class SnapcastControlScript:
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
         self.store = MetadataStore()
-        self.metadata_parser = MetadataParser(self.store)
         self.dbus_monitor = DBusMonitor(self.store, self.send_playback_state_update, self.send_metadata_update)
+        self.metadata_parser = MetadataParser(
+            self.store,
+            on_position_update=self._on_position_update,
+            dbus_monitor=self.dbus_monitor,
+            on_state_change=self.send_playback_state_update
+        )
+        self.last_metadata_update_time = 0  # For debouncing metadata updates
         log(f"[Init] Initialized for stream: {stream_id}")
+
+    def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
+        """Callback for position updates - posts to our playback API"""
+        post_playback_position(
+            stream_id=self.stream_id,
+            position_ms=position_ms,
+            duration_ms=duration_ms,
+            playback_status=playback_status
+        )
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -794,11 +985,10 @@ class SnapcastControlScript:
 
     def send_playback_state_update(self):
         """Send playback state update to Snapcast (called when D-Bus state changes)"""
-        playback_status = self.store.get_all().get("playback_status", "Stopped")
+        playback_status = self.store.get_all().get("playback_status", "stopped")
         can_control = self.dbus_monitor.is_available()
 
         params = {
-            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
             "playbackStatus": playback_status,
             "canGoNext": can_control,
             "canGoPrevious": can_control,
@@ -810,20 +1000,19 @@ class SnapcastControlScript:
         log(f"[Snapcast] Playback state → {playback_status} (stream={self.stream_id})")
 
     def send_metadata_update(self):
-        """Send Plugin.Stream.Player.Properties with current metadata from store"""
-        # Always send update - position/duration is important even without metadata
-        meta_obj = self.store.get_metadata_for_snapcast() or {}
+        """
+        Send Plugin.Stream.Player.Properties notification to Snapcast.
 
-        # Get current playback state and position from store
+        Only call on metadata/state changes (NOT position updates to avoid stuttering).
+        Position is excluded from notifications and only provided via GetProperties.
+        """
+        meta_obj = self.store.get_metadata_for_snapcast() or {}
         state_data = self.store.get_all()
-        playback_status = state_data.get("playback_status", "Stopped")
-        position = state_data.get("position", 0)
+        playback_status = state_data.get("playback_status", "stopped")
         can_control = self.dbus_monitor.is_available()
 
-        # Notification params: include stream ID and all properties
+        # Build notification params (position excluded - only in GetProperties)
         params = {
-            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
-
             # Playback state (same fields as GetProperties)
             "playbackStatus": playback_status,
             "loopStatus": "none",
@@ -831,9 +1020,8 @@ class SnapcastControlScript:
             "volume": 100,
             "mute": False,
             "rate": 1.0,
-            "position": position,
 
-            # Control capabilities (enable if D-Bus is available)
+            # Control capabilities
             "canGoNext": can_control,
             "canGoPrevious": can_control,
             "canPlay": can_control,
@@ -846,15 +1034,11 @@ class SnapcastControlScript:
         }
         self.send_notification("Plugin.Stream.Player.Properties", params)
 
-        # Log what we sent (check simple format keys)
+        # Log notification
         title = meta_obj.get('title', 'N/A')
         artist = meta_obj.get('artist', ['N/A'])
         artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-        duration_from_meta = meta_obj.get('duration', 0) if meta_obj else 0
-        log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
-        log(f"[Snapcast]   Position: {position}ms, Duration: {duration_from_meta}ms")
-        if "artUrl" in meta_obj:
-            log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
+        log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}]")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -867,15 +1051,17 @@ class SnapcastControlScript:
             log(f"[Command] Received: {method} (id={request_id})")
 
             if method == "Plugin.Stream.Player.GetProperties":
-                # Return COMPLETE properties object (not just metadata)
-                # Snapcast requires all fields: playback state, control capabilities, AND metadata
-                meta_obj = self.store.get_metadata_for_snapcast() or {}
+                # Return complete properties: playback state, control capabilities, metadata, position
                 state_data = self.store.get_all()
-                playback_status = state_data.get("playback_status", "Stopped")
-                position = state_data.get("position", 0)
+                playback_status = state_data.get("playback_status", "stopped")
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
                 can_control = self.dbus_monitor.is_available()
 
-                # Build complete properties response per Snapcast Stream Plugin API
+                # Get current position with interpolation
+                position = self.store.get_current_position()
+                position_seconds = position / 1000.0 if position is not None else 0.0
+
+                # Build properties response
                 properties = {
                     # Playback state (from D-Bus if available)
                     "playbackStatus": playback_status,
@@ -884,7 +1070,7 @@ class SnapcastControlScript:
                     "volume": 100,
                     "mute": False,
                     "rate": 1.0,
-                    "position": position,
+                    "position": position_seconds,  # Convert milliseconds to seconds (float) per Snapcast API
 
                     # Control capabilities (enable if D-Bus available)
                     "canGoNext": can_control,
@@ -903,8 +1089,9 @@ class SnapcastControlScript:
                     "id": request_id,
                     "result": properties
                 }
+
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, position={position_seconds:.1f}s")
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
@@ -924,38 +1111,25 @@ class SnapcastControlScript:
                     print(json.dumps(error_response), file=sys.stdout, flush=True)
                     return
 
-                # Execute command via D-Bus and update state
+                # Execute command via D-Bus - let metadata events update state
                 if command == "play":
                     self.dbus_monitor.play()
-                    self.store.update(playback_status="Playing")
-                    self.send_playback_state_update()
+                    log("[Command] Play command sent - waiting for metadata confirmation")
+
                 elif command == "pause":
                     self.dbus_monitor.pause()
-                    self.store.update(playback_status="Paused")
-                    self.send_playback_state_update()
+                    log("[Command] Pause command sent - waiting for metadata confirmation")
+
                 elif command == "playPause":
                     self.dbus_monitor.play_pause()
-                    # Toggle state
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    new_state = "Paused" if current_state == "Playing" else "Playing"
-                    self.store.update(playback_status=new_state)
-                    self.send_playback_state_update()
+                    log("[Command] PlayPause command sent - waiting for metadata confirmation")
                 elif command == "next":
                     self.dbus_monitor.next_track()
-                    # State remains Playing after skip
-                    self.store.update(playback_status="Playing")
-                    # Reset position to 0 for new track
-                    self.store.update(position=0)
-                    self.send_playback_state_update()
-                    # Note: Don't send metadata update here - wait for new metadata from pipe
+                    log("[Command] Next track command sent - waiting for metadata confirmation")
+
                 elif command == "previous" or command == "prev":
                     self.dbus_monitor.previous_track()
-                    # State remains Playing after skip
-                    self.store.update(playback_status="Playing")
-                    # Reset position to 0 for new track
-                    self.store.update(position=0)
-                    self.send_playback_state_update()
-                    # Note: Don't send metadata update here - wait for new metadata from pipe
+                    log("[Command] Previous track command sent - waiting for metadata confirmation")
                 elif command == "seek":
                     # Seek to specific position (in milliseconds)
                     position = params.get("position", 0)
@@ -1004,6 +1178,53 @@ class SnapcastControlScript:
                     }
                 }
                 print(json.dumps(error_response), file=sys.stdout, flush=True)
+
+    def monitor_position_updates(self):
+        """
+        Background thread for heartbeat updates to prevent playback API staleness.
+
+        Sends periodic heartbeats (10s) that keep data fresh without breaking interpolation.
+        Actual position changes come from prgr events.
+        """
+        log("[Init] Starting position monitor (heartbeat mode)")
+
+        # On startup, check D-Bus ONCE to detect if stream is already playing
+        if self.dbus_monitor.is_available():
+            progress = self.dbus_monitor.get_progress()
+            if progress:
+                position_ms, duration_ms = progress
+                self.store.update(
+                    position=position_ms,
+                    duration=duration_ms,
+                    position_timestamp=time.time(),
+                    playback_status="playing"
+                )
+                log(f"[Init] Detected active stream via D-Bus (position={position_ms}ms, duration={duration_ms}ms)")
+                # Send initial state notification to Snapcast
+                self.send_playback_state_update()
+                # Send initial position to playback API
+                self._on_position_update(position_ms, duration_ms, "playing")
+
+        # Periodic heartbeat loop - prevent API staleness
+        # API will only reset timestamp if position changed significantly
+        while True:
+            try:
+                time.sleep(10.0)  # Heartbeat every 10 seconds
+
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "unknown")
+
+                # Only send heartbeat if playing (avoid spam when idle)
+                if playback_status == "playing":
+                    position_ms = state_data.get("position", 0)
+                    duration_ms = state_data.get("duration", 0)
+
+                    # Send heartbeat (API won't reset timestamp if position unchanged)
+                    self._on_position_update(position_ms, duration_ms, playback_status)
+
+            except Exception as e:
+                log(f"[Error] Position monitor error: {e}")
+                time.sleep(30.0)
 
     def monitor_metadata_pipe(self):
         """Monitor shairport-sync metadata pipe"""
@@ -1063,6 +1284,8 @@ class SnapcastControlScript:
             import traceback
             log(f"[Error] {traceback.format_exc()}")
 
+
+
     def run(self):
         """Main event loop"""
         log("[Init] AirPlay Control Script starting...")
@@ -1070,6 +1293,10 @@ class SnapcastControlScript:
         # Start metadata monitor in background
         monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
         monitor_thread.start()
+
+        # Start position update monitor in background
+        position_thread = threading.Thread(target=self.monitor_position_updates, daemon=True)
+        position_thread.start()
 
         # Start D-Bus main loop in background (if available)
         if DBUS_AVAILABLE and self.dbus_monitor.is_available():
@@ -1107,6 +1334,22 @@ if __name__ == "__main__":
     # Multi-instance support: override paths based on instance-id
     if args.instance_id:
         instance_id = args.instance_id
+
+        # Get endpoint name from settings.json for stream display name (must match lifecycle manager)
+        endpoint_name = None
+        try:
+            import json
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('airplay', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            print(f"[Init] WARNING: Could not read endpoint name from settings: {e}", file=sys.stderr)
+            endpoint_name = f'Endpoint {instance_id}'
+
         # Override module-level constants GLOBALLY for this instance
         # These assignments modify the global variables defined at module level
         globals()['METADATA_PIPE'] = f"/tmp/airplay-{instance_id}-metadata"
@@ -1114,11 +1357,13 @@ if __name__ == "__main__":
         globals()['LOG_FILE'] = f"/tmp/airplay-{instance_id}-control-script.log"
         globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
 
-        # Auto-generate stream ID if not provided
-        stream_id = args.stream if args.stream else f"AirPlay-{instance_id}"
+        # Generate stream ID to match lifecycle manager format: "AirPlay - [device name]"
+        # This MUST match what the lifecycle manager uses when creating the stream
+        stream_id = args.stream if args.stream else (f"AirPlay - {endpoint_name}" if endpoint_name else f"AirPlay-{instance_id}")
 
         # Log confirmation (using the new global values)
         print(f"[Init] Multi-instance mode: instance={instance_id}, stream={stream_id}", file=sys.stderr)
+        print(f"[Init] Endpoint name: {endpoint_name}", file=sys.stderr)
         print(f"[Init] Metadata pipe: {globals()['METADATA_PIPE']}", file=sys.stderr)
         print(f"[Init] Artwork cache: {globals()['COVER_ART_CACHE_DIR']}", file=sys.stderr)
     else:

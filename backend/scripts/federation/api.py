@@ -13,11 +13,12 @@ from typing import Dict, List
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# Add parent directory to path to import settings_api, integrations_api, and audio_api
+# Add parent directory to path to import settings_api, integrations_api, audio_api, and playback_api
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from settings_api import create_settings_blueprint, SettingsManager
 from integrations_api import create_integrations_blueprint, IntegrationController
 from audio_api import create_audio_blueprint, AudioConfigController
+from playback_api import create_playback_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class FederationAPI:
         self._setup_settings_api()
         self._setup_integrations_api()
         self._setup_audio_api()
+        self._setup_playback_api()
 
     def _setup_routes(self):
         """Setup all API routes"""
@@ -252,6 +254,12 @@ class FederationAPI:
         audio_bp = create_audio_blueprint(audio_controller)
         self.app.register_blueprint(audio_bp)
         logger.info("Audio API registered")
+
+    def _setup_playback_api(self):
+        """Register playback position API routes (for real-time position tracking)"""
+        playback_bp = create_playback_blueprint()
+        self.app.register_blueprint(playback_bp)
+        logger.info("Playback API registered")
 
     def run(self, debug: bool = False):
         """Run the Flask server"""

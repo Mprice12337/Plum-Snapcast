@@ -22,6 +22,7 @@ metadata = {
     cover_art_cache_directory = "/tmp/shairport-sync-INSTANCE_ID/.cache/coverart";
     pipe_name = "/tmp/airplay-INSTANCE_ID-metadata";
     pipe_timeout = 5000;
+    progress_interval = 1.0;
 };
 
 pipe = {

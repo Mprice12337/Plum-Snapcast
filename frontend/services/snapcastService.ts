@@ -246,11 +246,11 @@ export class SnapcastService {
             }
 
             // Notify position listeners if position changed
-            // Position comes from backend in milliseconds, duration too
+            // Position and duration come from backend in SECONDS (already converted by control script)
             if (props && props.position !== undefined) {
-                const position = props.position || 0;  // milliseconds
-                const duration = props.metadata?.duration || 0;  // milliseconds
-                console.log(`[SnapcastService] Position update: stream=${streamId}, position=${position}ms (${Math.floor(position/1000)}s), duration=${duration}ms`);
+                const position = props.position || 0;  // seconds
+                const duration = props.metadata?.duration || 0;  // seconds
+                console.log(`[SnapcastService] Position update: stream=${streamId}, position=${position}s, duration=${duration}s`);
                 this.positionUpdateListeners.forEach(listener => {
                     listener(streamId, position, duration);
                 });
@@ -307,7 +307,7 @@ export class SnapcastService {
                 if (stream.properties && stream.properties.position !== undefined) {
                     const position = stream.properties.position || 0;
                     const duration = stream.properties.metadata?.duration || 0;
-                    console.log(`[SnapcastService] Position update from Stream.OnUpdate: stream=${streamId}, position=${position}ms (${Math.floor(position/1000)}s)`);
+                    console.log(`[SnapcastService] Position update from Stream.OnUpdate: stream=${streamId}, position=${position}s, duration=${duration}s`);
                     this.positionUpdateListeners.forEach(listener => {
                         listener(streamId, position, duration);
                     });

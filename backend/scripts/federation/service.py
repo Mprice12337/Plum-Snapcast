@@ -411,6 +411,7 @@ def main():
         from settings_api import create_settings_blueprint, SettingsManager
         from integrations_api import create_integrations_blueprint, IntegrationController
         from audio_api import create_audio_blueprint, AudioConfigController
+        from playback_api import create_playback_blueprint
 
         # Create minimal Flask app with just settings and integrations APIs
         app = Flask(__name__)
@@ -439,6 +440,11 @@ def main():
         audio_bp = create_audio_blueprint(audio_controller)
         app.register_blueprint(audio_bp)
         logger.info("Audio API registered")
+
+        # Register playback API (for real-time position tracking independent of Snapcast)
+        playback_bp = create_playback_blueprint()
+        app.register_blueprint(playback_bp)
+        logger.info("Playback API registered")
 
         # Start settings monitor to watch for federation being enabled
         settings_file = "/app/data/settings.json"

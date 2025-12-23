@@ -1,4 +1,5 @@
 import {snapcastService} from './snapcastService';
+import {getStreamPlayback} from './playbackService';
 import type {Client, Stream, Track} from '../types';
 
 // Default fallback data for when no metadata is available
@@ -140,8 +141,8 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         artist: formatArtist(metadata.artist),
         album: metadata.album || 'Unknown Album',
         albumArtUrl: albumArtUrl,
-        // Duration comes from backend in milliseconds, convert to seconds
-        duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0,
+        // Duration comes from backend in seconds (per Snapcast API)
+        duration: metadata.duration ? Math.floor(metadata.duration) : 0,
     };
 
     // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
@@ -154,17 +155,50 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         isPlaying = snapStream.status === 'playing';
     }
 
-    // Extract position from properties (comes from backend in milliseconds, convert to seconds)
+    // Extract position - prefer playback API for real-time interpolation
     let progress = 0;
-    if (snapStream.properties?.position !== undefined && snapStream.properties.position !== null) {
-        progress = Math.floor(snapStream.properties.position / 1000);
+    let duration = track.duration;
+
+    // Helper to extract position from Snapcast stream properties
+    const getPositionFromProperties = (): number => {
+        if (snapStream.properties?.position !== undefined && snapStream.properties.position !== null) {
+            return Math.floor(snapStream.properties.position);  // Already in seconds
+        }
+        return 0;
+    };
+
+    // Try to get position from playback API (server-side interpolation)
+    // This ensures page refreshes show correct position immediately
+    if (isPlaying && snapStream.id !== 'none-snapserver') {
+        try {
+            const playbackData = await getStreamPlayback(snapStream.id);
+            if (playbackData && !playbackData.is_stale) {
+                // Use interpolated position from playback API
+                progress = Math.floor(playbackData.interpolated_position / 1000);
+                duration = Math.floor(playbackData.duration / 1000);
+                console.log(`[DataService] Loaded initial position from playback API: ${progress}s / ${duration}s for stream ${snapStream.id}`);
+            } else {
+                // Fall back to stream properties
+                progress = getPositionFromProperties();
+            }
+        } catch (error) {
+            console.warn(`[DataService] Failed to fetch playback data for ${snapStream.id}:`, error);
+            // Fall back to stream properties
+            progress = getPositionFromProperties();
+        }
+    } else {
+        // Not playing or none-snapserver stream - use stream properties
+        progress = getPositionFromProperties();
     }
 
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
-        currentTrack: track,
+        currentTrack: {
+            ...track,
+            duration: duration  // Update duration from playback API if available
+        },
         isPlaying: isPlaying,
         progress: progress,
     };
