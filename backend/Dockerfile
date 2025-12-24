@@ -111,6 +111,7 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
         --with-ssl=openssl \
         --with-metadata \
         --with-dbus-interface \
+        --with-mpris-interface \
         --with-stdout \
         --with-pipe \
         --with-apple-alac && \

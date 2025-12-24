@@ -71,21 +71,17 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     PORT=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['port'])")
     UDP_BASE=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['udpPortBase'])")
 
-    # Only instance 1 gets D-Bus control
-    # shairport-sync 4.3.7 does NOT support custom D-Bus service names
-    # All instances would register as "org.gnome.ShairportSync" (hardcoded)
-    # Only one instance can own this D-Bus name → only instance 1 can have controls
+    # Enable D-Bus for all instances with MPRIS support
+    # MPRIS provides multi-instance support via automatic PID-based service names:
+    # - Instance 1: org.mpris.MediaPlayer2.ShairportSync (base name)
+    # - Instance 2+: org.mpris.MediaPlayer2.ShairportSync.i[PID] (PID suffix)
     #
-    # TESTED: Specifying service_name in config is IGNORED by shairport-sync
-    # Commands sent to instance 2+ would go to instance 1 (wrong instance)
+    # This solves the shairport-sync 4.3.7 limitation where native D-Bus only
+    # supports a single instance (all try to register as "org.gnome.ShairportSync")
     #
-    # SOLUTION for multi-instance control: Implement MQTT
-    # shairport-sync supports MQTT with per-instance topics
-    if [ "$INSTANCE_ID" = "1" ]; then
-        DBUS="yes"
-    else
-        DBUS="no"
-    fi
+    # MPRIS is enabled via --with-mpris-interface build flag in Dockerfile
+    # Control script detects instance PID and connects to correct MPRIS service
+    DBUS="yes"
 
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
         echo "  - Instance ${INSTANCE_ID}: DISABLED"
