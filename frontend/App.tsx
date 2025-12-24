@@ -714,29 +714,16 @@ const App: React.FC = () => {
                         }
                         // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
-                        // When we receive metadata, the stream is actively playing
-                        // This gives us instant state feedback instead of waiting for stream.status
-                        const wasPlaying = stream.isPlaying;
-                        const nowPlaying = true; // Metadata = audio is flowing = playing
-
-                        // Check if there's a recent user-initiated pause (grace period)
-                        const now = Date.now();
-                        const gracePeriod = 8000;
-                        const hasRecentPause = recentPlaybackChange &&
-                            recentPlaybackChange.streamId === streamId &&
-                            (now - recentPlaybackChange.timestamp) < gracePeriod;
-
-                        // If user just paused, don't override with metadata-based playing state
-                        const finalPlayingState = hasRecentPause ? stream.isPlaying : nowPlaying;
-
-                        if (!wasPlaying && finalPlayingState && !hasRecentPause) {
-                            console.log(`[Metadata] Stream ${streamId} started playing (metadata received)`);
-                        }
+                        // Metadata updates should NOT change playback state
+                        // The playbackStateUpdate handler is the single source of truth for play/pause state
+                        // Metadata can arrive while paused (some sources send metadata independent of playback)
+                        // Metadata can arrive after a pause command but before backend confirmation
+                        // Let the playbackStateUpdate handler manage isPlaying state exclusively
 
                         return {
                             ...stream,
                             currentTrack: updatedTrack,
-                            isPlaying: finalPlayingState,
+                            // DO NOT change isPlaying - keep current state
                             // Reset progress to 0 when new track starts
                             progress: isNewTrack ? 0 : stream.progress
                         };
