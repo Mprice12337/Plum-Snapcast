@@ -30,6 +30,10 @@ COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 LOG_FILE = "/tmp/airplay-control-script.log"
 STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
 
+# D-Bus service name for shairport-sync (instance-specific in multi-instance mode)
+DBUS_SERVICE_NAME = "org.gnome.ShairportSync"
+DBUS_INTERFACE_NAME = "org.gnome.ShairportSync.RemoteControl"
+
 # Playback API configuration (for real-time position tracking independent of Snapcast)
 # This API runs on the federation service port (default 5000)
 PLAYBACK_API_PORT = int(os.getenv("FEDERATION_API_PORT", "5000"))
@@ -783,13 +787,14 @@ class DBusMonitor:
                 # Initialize D-Bus main loop on first attempt
                 if attempt == 0:
                     DBusGMainLoop(set_as_default=True)
+                    log(f"[DBus] Attempting to connect to service: {DBUS_SERVICE_NAME}")
 
                 # Connect to system bus
                 self.bus = dbus.SystemBus()
 
-                # Get ShairportSync RemoteControl interface
-                shairport = self.bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
-                self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
+                # Get ShairportSync RemoteControl interface (using instance-specific service name)
+                shairport = self.bus.get_object(DBUS_SERVICE_NAME, '/org/gnome/ShairportSync')
+                self.dbus_interface = dbus.Interface(shairport, DBUS_INTERFACE_NAME)
                 self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
 
                 # Try to get MPRIS interface for seeking (may not be available)
@@ -921,7 +926,7 @@ class DBusMonitor:
             # Get ProgressString property from RemoteControl interface
             # Format: "start_rtp/current_rtp/end_rtp"
             progress_str = self.dbus_properties.Get(
-                'org.gnome.ShairportSync.RemoteControl',
+                DBUS_INTERFACE_NAME,
                 'ProgressString'
             )
 
@@ -963,7 +968,7 @@ class DBusMonitor:
         try:
             # Get PlayerState property from RemoteControl interface
             player_state = self.dbus_properties.Get(
-                'org.gnome.ShairportSync.RemoteControl',
+                DBUS_INTERFACE_NAME,
                 'PlayerState'
             )
             return str(player_state) if player_state else None
@@ -1391,6 +1396,10 @@ if __name__ == "__main__":
         globals()['COVER_ART_CACHE_DIR'] = f"/tmp/shairport-sync-{instance_id}/.cache/coverart"
         globals()['LOG_FILE'] = f"/tmp/airplay-{instance_id}-control-script.log"
         globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
+
+        # Set instance-specific D-Bus service name
+        globals()['DBUS_SERVICE_NAME'] = f"org.gnome.ShairportSync.{instance_id}"
+        globals()['DBUS_INTERFACE_NAME'] = f"org.gnome.ShairportSync.{instance_id}.RemoteControl"
 
         # Generate stream ID to match lifecycle manager format: "AirPlay - [device name]"
         # This MUST match what the lifecycle manager uses when creating the stream
