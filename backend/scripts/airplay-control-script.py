@@ -767,10 +767,12 @@ class DBusMonitor:
         self.dbus_properties = None
         self.mpris_interface = None  # MPRIS interface for seeking
         self.bus = None
+        self._connection_complete = threading.Event()  # Signal when connection attempt finishes
 
         if not DBUS_AVAILABLE:
             log("[DBus] D-Bus Python bindings not available - control disabled")
             log("[DBus] Install py3-dbus and py3-gobject3 to enable controls")
+            self._connection_complete.set()  # Mark as complete (failed)
             return
 
         # Start connection in background thread to avoid blocking
@@ -820,6 +822,7 @@ class DBusMonitor:
                 if self.on_state_change:
                     self.on_state_change()
 
+                self._connection_complete.set()  # Signal that connection succeeded
                 return  # Success!
 
             except dbus.exceptions.DBusException as e:
@@ -831,9 +834,11 @@ class DBusMonitor:
                     log(f"[DBus] ✗ Failed to connect after {max_retries} attempts: {e}")
                     log("[DBus] Control features disabled - check that ShairportSync is running")
                     self.dbus_interface = None
+                    self._connection_complete.set()  # Signal that connection failed
             except Exception as e:
                 log(f"[DBus] ✗ Unexpected error during connection: {e}")
                 self.dbus_interface = None
+                self._connection_complete.set()  # Signal that connection failed
                 break
 
     def on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
@@ -978,6 +983,22 @@ class DBusMonitor:
             pass
 
         return None
+
+    def wait_for_connection(self, timeout=5.0):
+        """
+        Wait for D-Bus connection attempt to complete.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default: 5s)
+
+        Returns:
+            bool: True if connection succeeded, False if failed or timed out
+        """
+        completed = self._connection_complete.wait(timeout)
+        if not completed:
+            log(f"[DBus] Connection timeout after {timeout}s - continuing without D-Bus")
+            return False
+        return self.dbus_interface is not None
 
     def is_available(self):
         """Check if D-Bus control is available"""
@@ -1329,6 +1350,11 @@ class SnapcastControlScript:
     def run(self):
         """Main event loop"""
         log("[Init] AirPlay Control Script starting...")
+
+        # Wait for D-Bus connection attempt to complete (with timeout)
+        # This ensures capabilities are correctly reported from the start
+        log("[Init] Waiting for D-Bus connection...")
+        self.dbus_monitor.wait_for_connection(timeout=5.0)
 
         # Start metadata monitor in background
         monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
