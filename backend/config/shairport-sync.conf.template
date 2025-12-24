@@ -34,6 +34,6 @@ pipe = {
 dbus = {
     enabled = "DBUS_ENABLED";
     bus = "system";
-    service_name = "org.gnome.ShairportSync.INSTANCE_ID";
-    interface_name = "org.gnome.ShairportSync.INSTANCE_ID.RemoteControl";
+    service_name = "org.gnome.ShairportSync.iINSTANCE_ID";
+    interface_name = "org.gnome.ShairportSync.iINSTANCE_ID.RemoteControl";
 };

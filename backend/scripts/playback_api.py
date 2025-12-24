@@ -65,11 +65,11 @@ class PlaybackStore:
             existing = self._data.get(stream_id)
             now = time.time()
 
-            # Only reset position_timestamp if position changed significantly
-            # This allows heartbeats to keep data fresh without breaking interpolation
+            # Only reset position_timestamp if position actually changed
+            # This allows heartbeats (same position) to keep data fresh without breaking interpolation
             position_changed = (
                 not existing or
-                abs(position - existing.get("position", 0)) > 500 or  # >0.5s change
+                position != existing.get("position", 0) or  # Any position change
                 playback_status != existing.get("playback_status")
             )
 

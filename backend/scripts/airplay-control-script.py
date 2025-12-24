@@ -1398,8 +1398,9 @@ if __name__ == "__main__":
         globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
 
         # Set instance-specific D-Bus service name
-        globals()['DBUS_SERVICE_NAME'] = f"org.gnome.ShairportSync.{instance_id}"
-        globals()['DBUS_INTERFACE_NAME'] = f"org.gnome.ShairportSync.{instance_id}.RemoteControl"
+        # NOTE: D-Bus names cannot have a digit directly after a dot, so we use 'i' prefix (i1, i2, etc.)
+        globals()['DBUS_SERVICE_NAME'] = f"org.gnome.ShairportSync.i{instance_id}"
+        globals()['DBUS_INTERFACE_NAME'] = f"org.gnome.ShairportSync.i{instance_id}.RemoteControl"
 
         # Generate stream ID to match lifecycle manager format: "AirPlay - [device name]"
         # This MUST match what the lifecycle manager uses when creating the stream
