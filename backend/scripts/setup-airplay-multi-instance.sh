@@ -71,14 +71,13 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     PORT=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['port'])")
     UDP_BASE=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['udpPortBase'])")
 
-    # Only instance 1 gets D-Bus control (to avoid conflicts)
-    # shairport-sync doesn't support custom D-Bus service names, so only one instance
-    # can have D-Bus enabled. Media controls will only work on instance 1.
-    if [ "$INSTANCE_ID" = "1" ]; then
-        DBUS="yes"
-    else
-        DBUS="no"
-    fi
+    # Enable D-Bus for all instances with unique service names
+    # Each instance gets a unique D-Bus service name based on instance ID
+    # Format: org.gnome.ShairportSync.i{INSTANCE_ID} (e.g., i1, i2, i3)
+    # Using 'i' prefix because D-Bus names cannot have a digit directly after a dot
+    DBUS="yes"
+    DBUS_SERVICE_NAME="org.gnome.ShairportSync.i${INSTANCE_ID}"
+    DBUS_INTERFACE_NAME="org.gnome.ShairportSync.i${INSTANCE_ID}.RemoteControl"
 
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
         echo "  - Instance ${INSTANCE_ID}: DISABLED"
@@ -94,6 +93,8 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
         -e "s/AIRPLAY_UDP_BASE/${UDP_BASE}/g" \
         -e "s/INSTANCE_ID/${INSTANCE_ID}/g" \
         -e "s/DBUS_ENABLED/${DBUS}/g" \
+        -e "s|DBUS_SERVICE_NAME|${DBUS_SERVICE_NAME}|g" \
+        -e "s|DBUS_INTERFACE_NAME|${DBUS_INTERFACE_NAME}|g" \
         /app/config/shairport-sync.conf.template > "${CONFIG_FILE}"
 
     # Ensure config file is owned by snapcast user (for dynamic updates via API)

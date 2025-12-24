@@ -1423,9 +1423,14 @@ if __name__ == "__main__":
         globals()['LOG_FILE'] = f"/tmp/airplay-{instance_id}-control-script.log"
         globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
 
-        # NOTE: D-Bus service name is NOT instance-specific
-        # Only instance 1 has D-Bus enabled (all instances connect to org.gnome.ShairportSync)
-        # D-Bus controls (play/pause/skip) only work on instance 1
+        # Set instance-specific D-Bus service names
+        # Each instance registers with a unique D-Bus service name to avoid conflicts
+        # Format: org.gnome.ShairportSync.i{INSTANCE_ID} (e.g., i1, i2, i3)
+        # Using 'i' prefix because D-Bus names cannot have a digit directly after a dot
+        globals()['DBUS_SERVICE_NAME'] = f"org.gnome.ShairportSync.i{instance_id}"
+        globals()['DBUS_INTERFACE_NAME'] = f"org.gnome.ShairportSync.i{instance_id}.RemoteControl"
+        log(f"[Init] D-Bus service: {globals()['DBUS_SERVICE_NAME']}")
+        log(f"[Init] D-Bus interface: {globals()['DBUS_INTERFACE_NAME']}")
 
         # Generate stream ID to match lifecycle manager format: "AirPlay - [device name]"
         # This MUST match what the lifecycle manager uses when creating the stream

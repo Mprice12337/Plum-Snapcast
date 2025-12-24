@@ -34,4 +34,6 @@ pipe = {
 dbus = {
     enabled = "DBUS_ENABLED";
     bus = "system";
+    service_name = "DBUS_SERVICE_NAME";
+    interface_name = "DBUS_INTERFACE_NAME";
 };
