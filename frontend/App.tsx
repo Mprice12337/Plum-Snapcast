@@ -1018,45 +1018,17 @@ const App: React.FC = () => {
                             if (s.id === currentStream.id) {
                                 const updatedStream = { ...s };
 
-                                // Check if there's a recent user-initiated playback change
-                                const now = Date.now();
-                                const gracePeriod = 8000; // 8 seconds grace period
-                                const hasRecentChange = recentPlaybackChange &&
-                                    recentPlaybackChange.streamId === s.id &&
-                                    (now - recentPlaybackChange.timestamp) < gracePeriod;
-
-                                // Update playback state if changed (but respect grace period)
+                                // NEVER update playback state from polling - WebSocket events are the source of truth
+                                // Polling reads from Snapcast server state which may be stale/cached
+                                // WebSocket events (onPlaybackStateUpdate) provide real-time state changes
+                                // User clicks pause → optimistic update → wait for WebSocket confirmation
+                                // If polling overrides before WebSocket arrives, button flickers
+                                //
+                                // Only log state differences for debugging, don't apply them
                                 if (s.isPlaying !== isPlaying) {
-                                    if (hasRecentChange) {
-                                        console.log(`[Polling] Ignoring state change during grace period (${Math.round((gracePeriod - (now - recentPlaybackChange.timestamp!)) / 1000)}s remaining)`);
-                                    } else {
-                                        console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
-                                        updatedStream.isPlaying = isPlaying;
-
-                                        // If transitioning from paused to playing and artwork is placeholder, immediately refresh
-                                        // This handles the case where user skips while paused and artwork doesn't arrive until playback resumes
-                                        if (!s.isPlaying && isPlaying) {
-                                            const isDefaultArtwork = s.currentTrack.albumArtUrl === musicNotePlaceholder;
-                                            if (isDefaultArtwork) {
-                                                console.log(`[Polling] Playback resumed with placeholder artwork - fetching fresh metadata`);
-                                                // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
-                                                setTimeout(() => {
-                                                    snapcastService.getStreamStatus(s.id).then(freshStream => {
-                                                        const artUrl = freshStream?.properties?.metadata?.artUrl;
-                                                        if (artUrl && artUrl.trim() !== '') {
-                                                            console.log(`[Resume] Found artwork after resume - applying`);
-                                                            setStreams(prev => prev.map(st =>
-                                                                st.id === s.id
-                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: artUrl}}
-                                                                    : st
-                                                            ));
-                                                        }
-                                                    });
-                                                }, 500); // Small delay to let backend process resume
-                                            }
-                                        }
-                                    }
+                                    console.log(`[Polling] ℹ Playback state mismatch (UI: ${s.isPlaying}, Server: ${isPlaying}) - waiting for WebSocket update`);
                                 }
+
 
                                 // Update metadata if we got new data
                                 if (updatedMetadata) {
