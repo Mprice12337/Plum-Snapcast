@@ -451,17 +451,20 @@ class MetadataParser:
                                 old_duration = state_data.get("duration", 0)
 
                                 # CRITICAL: If waiting for fresh prgr after track change, validate this data
+                                fresh_prgr_accepted = False
                                 if self.waiting_for_fresh_prgr:
                                     # Accept prgr if position is near start (< 10s) - this is the new track
                                     if position_ms < 10000:
                                         log(f"[Progress] Accepting fresh prgr (position={position_ms}ms < 10s) after track change")
                                         self.waiting_for_fresh_prgr = False
                                         self.expected_new_duration = duration_ms
+                                        fresh_prgr_accepted = True
                                     # Also accept if duration changed significantly AND position is reasonable
                                     elif old_duration > 0 and abs(duration_ms - old_duration) > 10000 and position_ms < duration_ms * 0.2:
                                         log(f"[Progress] Accepting fresh prgr (duration changed: {old_duration}ms → {duration_ms}ms, position={position_ms}ms) after track change")
                                         self.waiting_for_fresh_prgr = False
                                         self.expected_new_duration = duration_ms
+                                        fresh_prgr_accepted = True
                                     else:
                                         # Reject stale prgr data - position too high or same duration
                                         log(f"[Progress] REJECTING stale prgr (position={position_ms}ms, duration={duration_ms}ms) - waiting for fresh data from new track")
@@ -469,9 +472,13 @@ class MetadataParser:
 
                                 # Detect track changes by position jumping backwards significantly
                                 # This can happen when prgr arrives before metadata bundle completes
+                                # BUT: Don't re-flag if we just accepted a fresh prgr above (prevents infinite rejection)
                                 track_likely_changed = (
-                                    (old_position > 5000 and position_ms < old_position - 5000) or
-                                    (old_duration > 0 and abs(duration_ms - old_duration) > 10000)
+                                    not fresh_prgr_accepted and
+                                    (
+                                        (old_position > 5000 and position_ms < old_position - 5000) or
+                                        (old_duration > 0 and abs(duration_ms - old_duration) > 10000)
+                                    )
                                 )
 
                                 if track_likely_changed:
