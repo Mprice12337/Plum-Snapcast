@@ -266,6 +266,10 @@ class MetadataParser:
         self.in_metadata_bundle = False
         self.in_artwork_bundle = False
 
+        # Track change flag - prevents stale prgr events from overwriting position reset
+        self.waiting_for_fresh_prgr = False
+        self.expected_new_duration = None  # Duration from metadata bundle
+
     def parse_item(self, item_xml: str) -> bool:
         """
         Parse one XML item and update store.
@@ -354,6 +358,10 @@ class MetadataParser:
                     if track_changed:
                         log(f"[Bundle] Resetting position for new track")
                         self.store.update(position=0, duration=0, position_timestamp=None)
+                        # Flag to reject stale prgr events until we get fresh data from new track
+                        self.waiting_for_fresh_prgr = True
+                        self.expected_new_duration = None
+                        log(f"[Bundle] Waiting for fresh prgr data from new track")
                         updated = True
 
                     # Check for cached artwork (in case track changed but artwork is from same album)
@@ -437,13 +445,30 @@ class MetadataParser:
                                 duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
                                 position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
 
-                                # Detect track changes by position jumping backwards significantly
-                                # This can happen when prgr arrives before metadata bundle completes
+                                # Get current state for comparison
                                 state_data = self.store.get_all()
                                 old_position = state_data.get("position", 0)
                                 old_duration = state_data.get("duration", 0)
 
-                                # Track changed if position decreased by >5s or duration changed significantly
+                                # CRITICAL: If waiting for fresh prgr after track change, validate this data
+                                if self.waiting_for_fresh_prgr:
+                                    # Accept prgr if position is near start (< 10s) - this is the new track
+                                    if position_ms < 10000:
+                                        log(f"[Progress] Accepting fresh prgr (position={position_ms}ms < 10s) after track change")
+                                        self.waiting_for_fresh_prgr = False
+                                        self.expected_new_duration = duration_ms
+                                    # Also accept if duration changed significantly AND position is reasonable
+                                    elif old_duration > 0 and abs(duration_ms - old_duration) > 10000 and position_ms < duration_ms * 0.2:
+                                        log(f"[Progress] Accepting fresh prgr (duration changed: {old_duration}ms → {duration_ms}ms, position={position_ms}ms) after track change")
+                                        self.waiting_for_fresh_prgr = False
+                                        self.expected_new_duration = duration_ms
+                                    else:
+                                        # Reject stale prgr data - position too high or same duration
+                                        log(f"[Progress] REJECTING stale prgr (position={position_ms}ms, duration={duration_ms}ms) - waiting for fresh data from new track")
+                                        return False
+
+                                # Detect track changes by position jumping backwards significantly
+                                # This can happen when prgr arrives before metadata bundle completes
                                 track_likely_changed = (
                                     (old_position > 5000 and position_ms < old_position - 5000) or
                                     (old_duration > 0 and abs(duration_ms - old_duration) > 10000)
@@ -451,6 +476,9 @@ class MetadataParser:
 
                                 if track_likely_changed:
                                     log(f"[Progress] Track change detected (position: {old_position}ms → {position_ms}ms, duration: {old_duration}ms → {duration_ms}ms)")
+                                    # Reset position and flag to wait for confirmation
+                                    self.waiting_for_fresh_prgr = True
+                                    self.expected_new_duration = duration_ms
 
                                 current_state = state_data.get("playback_status", "stopped")
                                 if current_state != "playing":
