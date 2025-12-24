@@ -71,9 +71,14 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     PORT=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['port'])")
     UDP_BASE=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['udpPortBase'])")
 
-    # Enable D-Bus for all instances (each gets unique service name to avoid conflicts)
-    # Service names: org.gnome.ShairportSync.1, org.gnome.ShairportSync.2, etc.
-    DBUS="yes"
+    # Only instance 1 gets D-Bus control (to avoid conflicts)
+    # shairport-sync doesn't support custom D-Bus service names, so only one instance
+    # can have D-Bus enabled. Media controls will only work on instance 1.
+    if [ "$INSTANCE_ID" = "1" ]; then
+        DBUS="yes"
+    else
+        DBUS="no"
+    fi
 
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
         echo "  - Instance ${INSTANCE_ID}: DISABLED"
