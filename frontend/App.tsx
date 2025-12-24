@@ -1764,6 +1764,27 @@ const App: React.FC = () => {
                         setRecentPlaybackChange({streamId: currentStream.id, timestamp});
                         setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
                         await snapcastService.pauseStream(localStreamId);
+
+                        // Safety fallback: If no WebSocket confirmation arrives within 15s, query actual state
+                        setTimeout(async () => {
+                            const current = streamsRef.current.find(s => s.id === currentStream.id);
+                            if (current && !current.isPlaying) {
+                                // Still showing paused - verify with backend
+                                const serverStatus = await snapcastService.getServerStatus();
+                                const serverStream = serverStatus?.server?.streams?.find((s: any) =>
+                                    s.id === getLocalStreamId(currentStream.id)
+                                );
+                                if (serverStream) {
+                                    const actualIsPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (actualIsPlaying !== current.isPlaying) {
+                                        console.log(`[Fallback] Pause command never confirmed - reverting to actual state: ${actualIsPlaying}`);
+                                        setStreams(prev => prev.map(s =>
+                                            s.id === currentStream.id ? {...s, isPlaying: actualIsPlaying} : s
+                                        ));
+                                    }
+                                }
+                            }
+                        }, 15000);
                     } else {
                         console.warn(`Stream ${currentStream.id} does not support pause`);
                     }
@@ -1779,6 +1800,27 @@ const App: React.FC = () => {
                         setRecentPlaybackChange({streamId: currentStream.id, timestamp});
                         setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
                         await snapcastService.playStream(localStreamId);
+
+                        // Safety fallback: If no WebSocket confirmation arrives within 15s, query actual state
+                        setTimeout(async () => {
+                            const current = streamsRef.current.find(s => s.id === currentStream.id);
+                            if (current && current.isPlaying) {
+                                // Still showing playing - verify with backend
+                                const serverStatus = await snapcastService.getServerStatus();
+                                const serverStream = serverStatus?.server?.streams?.find((s: any) =>
+                                    s.id === getLocalStreamId(currentStream.id)
+                                );
+                                if (serverStream) {
+                                    const actualIsPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (actualIsPlaying !== current.isPlaying) {
+                                        console.log(`[Fallback] Play command never confirmed - reverting to actual state: ${actualIsPlaying}`);
+                                        setStreams(prev => prev.map(s =>
+                                            s.id === currentStream.id ? {...s, isPlaying: actualIsPlaying} : s
+                                        ));
+                                    }
+                                }
+                            }
+                        }, 15000);
                     } else {
                         console.warn(`Stream ${currentStream.id} does not support play`);
                     }
