@@ -826,8 +826,27 @@ class DBusMonitor:
                 # Connect to system bus
                 self.bus = dbus.SystemBus()
 
-                # MPRIS-FIRST STRATEGY: Try MPRIS with PID-based naming for multi-instance support
-                mpris_connected = False
+                # DUAL-INTERFACE STRATEGY:
+                # 1. Native D-Bus RemoteControl for play/pause/next/previous (sends DACP to source)
+                # 2. MPRIS for seeking (controls received stream buffer)
+
+                # First, connect to native D-Bus for remote control (required for DACP commands)
+                try:
+                    shairport = self.bus.get_object(DBUS_SERVICE_NAME, '/org/gnome/ShairportSync')
+                    self.dbus_interface = dbus.Interface(shairport, DBUS_INTERFACE_NAME)
+                    self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
+                    log(f"[DBus] ✓ Connected to native RemoteControl: {DBUS_SERVICE_NAME}")
+
+                    # Only instance 1 can own the native D-Bus name (shairport-sync limitation)
+                    if instance_id != "1":
+                        log("[DBus] ⚠ WARNING: Instance 2+ connected to instance 1's D-Bus interface")
+                        log("[DBus] ⚠ Remote control commands will go to instance 1 (shairport-sync limitation)")
+
+                except dbus.exceptions.DBusException as e:
+                    log(f"[DBus] Failed to connect to native D-Bus: {e}")
+                    raise  # Re-raise to trigger retry logic
+
+                # Second, try to connect to MPRIS for seeking support
                 try:
                     # Get shairport-sync PID for this instance
                     instance_pid = get_shairport_pid(instance_id)
@@ -841,34 +860,21 @@ class DBusMonitor:
 
                     log(f"[DBus] Trying MPRIS interface: {mpris_name}")
                     mpris_obj = self.bus.get_object(mpris_name, '/org/mpris/MediaPlayer2')
-                    self.dbus_interface = dbus.Interface(mpris_obj, 'org.mpris.MediaPlayer2.Player')
-                    self.mpris_interface = self.dbus_interface  # MPRIS provides same methods as native
-                    self.dbus_properties = dbus.Interface(mpris_obj, 'org.freedesktop.DBus.Properties')
+                    self.mpris_interface = dbus.Interface(mpris_obj, 'org.mpris.MediaPlayer2.Player')
 
                     log(f"[DBus] ✓ Connected to MPRIS: {mpris_name}")
-                    log("[DBus] ✓ Multi-instance control enabled (MPRIS)")
-                    log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous, Seek)")
-                    mpris_connected = True
+                    log("[DBus] ✓ Seeking enabled via MPRIS")
 
                 except dbus.exceptions.DBusException as e:
                     log(f"[DBus] MPRIS connection failed: {e}")
-                    log("[DBus] Falling back to native D-Bus interface...")
+                    log("[DBus] ℹ Seeking disabled (MPRIS not available)")
+                    self.mpris_interface = None
 
-                # FALLBACK: Native D-Bus interface (instance 1 only)
-                if not mpris_connected:
-                    try:
-                        shairport = self.bus.get_object(DBUS_SERVICE_NAME, '/org/gnome/ShairportSync')
-                        self.dbus_interface = dbus.Interface(shairport, DBUS_INTERFACE_NAME)
-                        self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
-                        self.mpris_interface = None  # Native interface doesn't support MPRIS
-
-                        log(f"[DBus] ✓ Connected to native D-Bus: {DBUS_SERVICE_NAME}")
-                        log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous)")
-                        if instance_id != "1":
-                            log("[DBus] ⚠ WARNING: Multi-instance control NOT available (MPRIS not enabled)")
-                            log("[DBus] ⚠ Commands may go to wrong instance")
-                    except dbus.exceptions.DBusException as e:
-                        raise  # Re-raise to trigger retry logic
+                log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous)")
+                if self.mpris_interface:
+                    log("[DBus] ✓ Seek method available (MPRIS)")
+                if instance_id != "1":
+                    log("[DBus] ⚠ Note: Only instance 1 has true multi-instance control (shairport-sync limitation)")
 
                 # Set initial state to paused (will update when metadata arrives)
                 self.store.update(playback_status="paused")
