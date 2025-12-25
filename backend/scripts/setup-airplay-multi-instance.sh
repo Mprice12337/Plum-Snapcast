@@ -71,17 +71,16 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     PORT=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['port'])")
     UDP_BASE=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['udpPortBase'])")
 
-    # Enable D-Bus for all instances
-    # MPRIS provides multi-instance seeking support, but play/pause/next/previous
-    # require native D-Bus RemoteControl to send DACP commands to source device
+    # Enable D-Bus for all instances with MPRIS support
+    # MPRIS provides multi-instance support via automatic PID-based service names:
+    # - Instance 1: org.mpris.MediaPlayer2.ShairportSync (base name)
+    # - Instance 2+: org.mpris.MediaPlayer2.ShairportSync.i[PID] (PID suffix)
     #
-    # LIMITATION: Only instance 1 has working remote control
-    # - All instances register MPRIS with unique names (org.mpris.MediaPlayer2.ShairportSync.i[PID])
-    # - But only instance 1 owns native D-Bus name (org.gnome.ShairportSync)
-    # - Remote control (play/pause/next/prev) requires native D-Bus to send DACP to iOS/Mac
-    # - Instance 2+ control scripts connect to instance 1's D-Bus → commands go to wrong instance
+    # This solves the shairport-sync 4.3.7 limitation where native D-Bus only
+    # supports a single instance (all try to register as "org.gnome.ShairportSync")
     #
-    # This is a shairport-sync limitation, not fixable without MQTT implementation
+    # MPRIS is enabled via --with-mpris-interface build flag in Dockerfile
+    # Control script detects instance PID and connects to correct MPRIS service
     DBUS="yes"
 
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
