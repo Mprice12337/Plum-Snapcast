@@ -21,7 +21,7 @@ command=/usr/local/bin/shairport-sync --configfile=/app/config/shairport-sync-{i
 user=root
 directory=/app
 environment=HOME="/app"
-priority=40
+priority={priority}
 autostart={autostart}
 autorestart=true
 startsecs=5
@@ -98,11 +98,16 @@ def main():
             description = f"{device_name} - port {port}, {dbus_note}"
             autostart = "true" if enabled else "false"
 
+            # Calculate priority to ensure sequential startup (avoid MPRIS name race condition)
+            # Instance 1 must start first to claim base MPRIS name before instance 2+ try
+            priority = 40 + (int(instance_id) - 1) * 10
+
             # Add program section
             section = PROGRAM_TEMPLATE.format(
                 instance_id=instance_id,
                 description=description,
-                autostart=autostart
+                autostart=autostart,
+                priority=priority
             )
             config_lines.append(section)
 
