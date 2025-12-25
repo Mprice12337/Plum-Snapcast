@@ -71,24 +71,12 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
     PORT=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['port'])")
     UDP_BASE=$(echo "$ENDPOINT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['udpPortBase'])")
 
-    # Enable D-Bus for all instances with MPRIS support
-    # MPRIS provides multi-instance support via automatic PID-based service names:
-    # - Instance 1: org.mpris.MediaPlayer2.ShairportSync (base name)
-    # - Instance 2+: org.mpris.MediaPlayer2.ShairportSync.i[PID] (PID suffix)
-    #
-    # This solves the shairport-sync 4.3.7 limitation where native D-Bus only
-    # supports a single instance (all try to register as "org.gnome.ShairportSync")
-    #
-    # MPRIS is enabled via --with-mpris-interface build flag in Dockerfile
-    # Control script detects instance PID and connects to correct MPRIS service
-    DBUS="yes"
-
     if [ "$ENABLED" = "False" ] || [ "$ENABLED" = "false" ]; then
         echo "  - Instance ${INSTANCE_ID}: DISABLED"
         continue
     fi
 
-    echo "  - Instance ${INSTANCE_ID}: ${NAME} (port ${PORT}, UDP ${UDP_BASE}-$((UDP_BASE+9)), D-Bus=${DBUS})"
+    echo "  - Instance ${INSTANCE_ID}: ${NAME} (port ${PORT}, UDP ${UDP_BASE}-$((UDP_BASE+9)), MQTT enabled)"
 
     # Create config file from template
     CONFIG_FILE="/app/config/shairport-sync-${INSTANCE_ID}.conf"
@@ -96,7 +84,6 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
         -e "s/AIRPLAY_PORT/${PORT}/g" \
         -e "s/AIRPLAY_UDP_BASE/${UDP_BASE}/g" \
         -e "s/INSTANCE_ID/${INSTANCE_ID}/g" \
-        -e "s/DBUS_ENABLED/${DBUS}/g" \
         /app/config/shairport-sync.conf.template > "${CONFIG_FILE}"
 
     # Ensure config file is owned by snapcast user (for dynamic updates via API)

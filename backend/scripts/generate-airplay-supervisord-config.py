@@ -90,16 +90,12 @@ def main():
             port = endpoint.get("port", 5050)
 
             # Determine description
-            if instance_id == "1":
-                dbus_note = "D-Bus enabled for control"
-            else:
-                dbus_note = "D-Bus disabled"
-
-            description = f"{device_name} - port {port}, {dbus_note}"
+            mqtt_note = "MQTT metadata + D-Bus control"
+            description = f"{device_name} - port {port}, {mqtt_note}"
             autostart = "true" if enabled else "false"
 
-            # Calculate priority to ensure sequential startup (avoid MPRIS name race condition)
-            # Instance 1 must start first to claim base MPRIS name before instance 2+ try
+            # Sequential startup to prevent MPRIS name race condition
+            # Instance 1 must start first to claim base MPRIS name
             priority = 40 + (int(instance_id) - 1) * 10
 
             # Add program section

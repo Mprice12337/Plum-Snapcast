@@ -32,11 +32,14 @@ RUN apk add --no-cache \
     ffmpeg-libs \
     python3 \
     py3-pip \
+    py3-paho-mqtt \
     py3-dbus \
     py3-gobject3 \
     py3-requests \
     py3-flask \
     py3-flask-cors \
+    mosquitto \
+    mosquitto-clients \
     bluez \
     bluez-alsa \
     util-linux \
@@ -84,6 +87,7 @@ RUN apk add --no-cache --virtual .build-deps \
     soxr-dev \
     libgcrypt-dev \
     ffmpeg-dev \
+    mosquitto-dev \
     # DLNA/UPnP build dependencies
     gstreamer-dev \
     gst-plugins-base-dev \
@@ -100,7 +104,7 @@ RUN git clone --depth 1 https://github.com/mikebrady/alac.git && \
     cd .. && \
     rm -rf alac
 
-# Build shairport-sync with metadata and AirPlay support
+# Build shairport-sync with metadata, MQTT, D-Bus/MPRIS, and AirPlay support
 RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-sync.git && \
     cd shairport-sync && \
     autoreconf -fi && \
@@ -110,6 +114,7 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
         --with-avahi \
         --with-ssl=openssl \
         --with-metadata \
+        --with-mqtt-client \
         --with-dbus-interface \
         --with-mpris-interface \
         --with-stdout \
@@ -172,7 +177,9 @@ RUN deluser snapcast 2>/dev/null || true && \
     adduser -D -u 1000 -G snapcast -h /app snapcast && \
     addgroup snapcast audio && \
     addgroup -S messagebus 2>/dev/null || true && \
-    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true
+    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true && \
+    addgroup -S mosquitto 2>/dev/null || true && \
+    adduser -S -G mosquitto -H -s /sbin/nologin mosquitto 2>/dev/null || true
 
 # Configure sudo for snapcast user (needed for API to manage endpoints)
 # Allow snapcast to run setup script and supervisorctl without password
@@ -203,10 +210,14 @@ COPY config/plum-snapcast.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/shairport-sync.conf.template /app/config/
 COPY config/spotifyd.conf /app/config/
+COPY config/mosquitto.conf /app/config/
 
 # Make avahi config writable by snapcast user (for hostname updates via settings API)
 RUN chown snapcast:snapcast /etc/avahi/avahi-daemon.conf && \
     chmod 644 /etc/avahi/avahi-daemon.conf
+
+# Make mosquitto config readable by mosquitto user
+RUN chmod 644 /app/config/mosquitto.conf
 
 
 # Create required directories

@@ -31,7 +31,18 @@ pipe = {
   audio_backend_buffer_desired_length_in_seconds = 0.2;
 };
 
+mqtt = {
+    enabled = "yes";
+    hostname = "127.0.0.1";
+    port = 1883;
+    topic = "plum-snapcast/airplay/INSTANCE_ID";
+    publish_raw = "no";
+    publish_parsed = "yes";
+    publish_cover = "yes";
+    enable_remote = "no";  // Remote control via D-Bus/MPRIS instead
+};
+
 dbus = {
-    enabled = "DBUS_ENABLED";
+    enabled = "yes";
     bus = "system";
 };
