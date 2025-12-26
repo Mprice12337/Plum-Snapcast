@@ -5,7 +5,7 @@ A comprehensive multi-room audio streaming solution combining Snapcast with a mo
 ## Features
 
 - **Multi-room Audio Synchronization**: Sample-accurate synchronized playback across multiple devices
-- **AirPlay Support**: Stream audio from iOS, macOS, and iTunes
+- **Multi-Instance AirPlay**: Up to 10 simultaneous AirPlay endpoints with independent device names
 - **Spotify Connect**: Direct streaming from the Spotify app with metadata and album artwork
 - **DLNA/UPnP Support**: Stream from any DLNA/UPnP controller (phones, tablets, media servers)
 - **Bluetooth Support**: Pair and stream from Bluetooth devices (A2DP)
@@ -14,6 +14,7 @@ A comprehensive multi-room audio streaming solution combining Snapcast with a mo
 - **Web-based Settings**: Configure integrations, enable/disable services, and customize device names from the browser
 - **mDNS Hostname Support**: Access via customizable hostname.local addresses on your local network
 - **Metadata Display**: Real-time track information and album artwork for all sources
+- **Real-time Playback Position**: Smooth, stutter-free position tracking with server-side interpolation
 - **Theme Customization**: Dark/light/system modes with multiple accent color options
 - **Dynamic Favicon**: Browser icon updates to match your chosen accent color
 
@@ -126,7 +127,9 @@ After deployment:
   - http://raspberrypi.local:3000 (host's mDNS name)
   - http://<pi-ip-address>:3000
   - The hostname is configurable in Settings → About
-- **AirPlay Device**: Look for "Plum Audio" in AirPlay devices on iOS/macOS
+- **AirPlay Devices**: Look for "Plum Audio" (or your custom names) in AirPlay devices on iOS/macOS
+  - Manage multiple AirPlay endpoints in Settings → Integrations → AirPlay
+  - Each endpoint appears as a separate AirPlay device with its own name
 - **Spotify Connect**: Look for "Plum Audio" in Spotify's device list (enable in Settings → Integrations)
 - **DLNA/UPnP Renderer**: Look for "Plum Audio" in your DLNA controller app (enable in Settings → Integrations)
 - **Bluetooth Device**: Look for "Plum Audio" in Bluetooth settings on your phone/device (enable in Settings → Integrations)
@@ -141,12 +144,16 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 
 Expected output:
 ```
-avahi              RUNNING
-gmrender           RUNNING (if DLNA enabled)
-spotifyd           RUNNING (if Spotify enabled)
-shairport-sync     RUNNING
-snapclient         RUNNING
-snapserver         RUNNING
+avahi                          RUNNING
+gmrender                       RUNNING (if DLNA enabled)
+mosquitto                      RUNNING
+spotifyd                       RUNNING (if Spotify enabled)
+shairport-sync-1               RUNNING (AirPlay endpoint 1)
+shairport-sync-2               RUNNING (if additional endpoints configured)
+airplay-1-lifecycle-manager    RUNNING
+airplay-1-fifo-keeper          RUNNING
+snapclient                     RUNNING
+snapserver                     RUNNING
 ```
 
 ### Configuration
@@ -184,6 +191,7 @@ Once deployed, you can configure most settings through the web interface without
    - **Integrations Tab**: Enable/disable and configure AirPlay, Bluetooth, Spotify Connect, and DLNA services
      - Toggle services on/off without restarting the container
      - Update device names in real-time
+     - **AirPlay**: Manage up to 10 simultaneous endpoints, each with independent device names
      - Configure Bluetooth discoverability and pairing options
      - Set Spotify bitrate (96, 160, or 320 kbps)
    - **Snapcast Tab**: Manage Snapcast server settings and federation
