@@ -602,29 +602,35 @@ class StreamLifecycleManager:
             # Wait anyway to be safe
             time.sleep(5)
 
-        # CRITICAL: Restart snapserver to close orphaned FIFO file handles
+        # CRITICAL: Restart snapserver to close orphaned FIFO file handles (SINGLE-INSTANCE ONLY)
         # Snapserver has a bug where Stream.RemoveStream doesn't actually close
         # the FIFO file handle. This causes snapserver to accumulate FDs over time.
-        # When a new stream is added, snapserver opens a NEW handle but keeps the old
-        # one, causing multiple readers on the FIFO → choppy audio
-        log("Restarting snapserver to close orphaned FIFO file handles (snapserver bug workaround)...")
-        try:
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            log("snapserver restarted")
-            # Wait for snapserver to fully restart and WebSocket to reconnect
-            time.sleep(5)
-            log("snapserver restart complete")
-        except subprocess.TimeoutExpired as e:
-            log(f"WARNING: snapserver restart timed out: {e}")
-            time.sleep(10)
-        except Exception as e:
-            log(f"WARNING: Failed to restart snapserver: {e}")
-            time.sleep(5)
+        # In multi-instance mode, restarting snapserver disrupts ALL active streams
+        # and can cause race conditions if multiple instances restart simultaneously.
+        # Each instance has its own FIFO, and shairport-sync restart + FIFO keeper
+        # should handle cleanup without needing snapserver restart.
+        # Only restart snapserver in legacy single-instance mode.
+        if not self.instance_id:
+            log("Restarting snapserver to close orphaned FIFO file handles (snapserver bug workaround)...")
+            try:
+                subprocess.run(
+                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                log("snapserver restarted")
+                # Wait for snapserver to fully restart and WebSocket to reconnect
+                time.sleep(5)
+                log("snapserver restart complete")
+            except subprocess.TimeoutExpired as e:
+                log(f"WARNING: snapserver restart timed out: {e}")
+                time.sleep(10)
+            except Exception as e:
+                log(f"WARNING: Failed to restart snapserver: {e}")
+                time.sleep(5)
+        else:
+            log(f"Multi-instance mode: Skipping snapserver restart (instance {self.instance_id} FIFO cleanup handled independently)")
 
         # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again (SINGLE-INSTANCE ONLY)
         # In multi-instance mode, shairport-sync re-registers itself with Avahi automatically
@@ -714,14 +720,17 @@ class StreamLifecycleManager:
             else:
                 keeper_name = "airplay-fifo-keeper"
 
+            # Increased timeout to 15s - FIFO keeper might wait during high supervisord load
             subprocess.run(
                 ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', keeper_name],
                 capture_output=True,
-                timeout=5
+                timeout=15
             )
-            log(f"FIFO keeper started: {keeper_name}")
+            log(f"✓ FIFO keeper started: {keeper_name}")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: FIFO keeper start timed out (may still be starting): {e}")
         except Exception as e:
-            log(f"Failed to start FIFO keeper: {e}")
+            log(f"WARNING: Failed to start FIFO keeper: {e}")
 
     def _remove_none_stream(self):
         """Remove the none stream if it exists
