@@ -361,6 +361,31 @@ class StreamLifecycleManager:
             elif self.state == StreamState.TIMEOUT:
                 log("Event: Stream END (pend) - State: TIMEOUT (already waiting)")
 
+    def on_stream_disconnect(self):
+        """Handle true client disconnect (from MQTT active_end via signal file)
+
+        This is called when the control script detects MQTT active_end event,
+        indicating the client has truly disconnected (not just paused).
+        Remove stream immediately without timeout.
+        """
+        with self.state_lock:
+            if self.state == StreamState.ACTIVE:
+                # True disconnect - immediate removal (no timeout)
+                log("Event: Stream DISCONNECT (active_end) - State: ACTIVE → IDLE (immediate removal)")
+                self._remove_stream()
+                self.state = StreamState.IDLE
+                self.consecutive_idle_count = 0
+
+            elif self.state == StreamState.TIMEOUT:
+                # Already in timeout state, trigger immediate removal
+                log("Event: Stream DISCONNECT (active_end) - State: TIMEOUT → IDLE (immediate removal)")
+                self._cancel_timeout()
+                self._remove_stream()
+                self.state = StreamState.IDLE
+
+            elif self.state == StreamState.IDLE:
+                log("Event: Stream DISCONNECT (active_end) - State: IDLE (no stream to remove)")
+
     def on_status_idle(self):
         """Handle Snapcast status change to 'idle'
 
@@ -770,19 +795,19 @@ class StreamLifecycleManager:
             log(f"Failed to cleanup control scripts: {e}")
 
     def _check_signal_file(self):
-        """Check if control script has signaled stream end via signal file
+        """Check if control script has signaled stream disconnect via signal file
 
         The control script has exclusive access to the metadata pipe and writes
-        to this signal file when it detects a 'pend' event. This allows the
-        lifecycle manager to know when to start the stream removal timeout.
+        to this signal file when it detects MQTT 'active_end' event (true disconnect).
+        This triggers immediate stream removal without timeout.
         """
         try:
             if Path(STREAM_END_SIGNAL_FILE).exists():
                 mtime = Path(STREAM_END_SIGNAL_FILE).stat().st_mtime
                 if mtime > self.last_signal_time:
-                    log(f"Signal: Control script signaled stream end (mtime: {mtime})")
+                    log(f"Signal: Control script signaled disconnect (active_end) (mtime: {mtime})")
                     self.last_signal_time = mtime
-                    self.on_stream_end()
+                    self.on_stream_disconnect()  # Immediate removal
         except Exception as e:
             # Only log real errors, not missing file (expected when no signal yet)
             if Path(STREAM_END_SIGNAL_FILE).exists():
