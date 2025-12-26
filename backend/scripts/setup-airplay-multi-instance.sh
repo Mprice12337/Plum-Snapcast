@@ -15,6 +15,17 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Disable old single-instance AirPlay services (migration from v1 to multi-instance)
+echo "Disabling legacy single-instance AirPlay services..."
+for old_config in /app/supervisord/fifo-keeper.ini /app/supervisord/stream-lifecycle-manager.ini; do
+    if [ -f "$old_config" ]; then
+        if grep -q "autostart=true" "$old_config"; then
+            echo "  - Disabling $(basename $old_config)"
+            sed -i 's/autostart=true/autostart=false/' "$old_config"
+        fi
+    fi
+done
+
 # Parse endpoints JSON from environment variable OR directly from settings.json
 # AIRPLAY_ENDPOINTS_JSON is set by get-settings.py during container startup
 # If not set (e.g., when called by API), read directly from settings.json
