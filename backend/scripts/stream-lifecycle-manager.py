@@ -527,25 +527,29 @@ class StreamLifecycleManager:
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
-        # CRITICAL: Stop Avahi BEFORE cleanup to prevent race conditions
-        # If Avahi keeps advertising during cleanup, clients can try to reconnect
-        # while shairport-sync is stopped/restarting, causing orphaned FIFO handles
-        log("Stopping Avahi to hide AirPlay endpoint during cleanup (prevent reconnection race)...")
-        try:
-            result = subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'avahi'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                log("Avahi stopped - endpoint hidden from network")
-            else:
-                log(f"WARNING: Avahi stop returned code {result.returncode}: {result.stderr.strip()}")
-        except subprocess.TimeoutExpired:
-            log("WARNING: Avahi stop timed out (may already be stopped)")
-        except Exception as e:
-            log(f"WARNING: Failed to stop Avahi: {e}")
+        # CRITICAL: Stop Avahi BEFORE cleanup to prevent race conditions (SINGLE-INSTANCE ONLY)
+        # In multi-instance mode, each shairport-sync instance manages its own Avahi registration
+        # Stopping Avahi globally would hide ALL endpoints, not just the disconnecting one
+        # Only stop Avahi in legacy single-instance mode
+        if not self.instance_id:
+            log("Stopping Avahi to hide AirPlay endpoint during cleanup (prevent reconnection race)...")
+            try:
+                result = subprocess.run(
+                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'avahi'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    log("Avahi stopped - endpoint hidden from network")
+                else:
+                    log(f"WARNING: Avahi stop returned code {result.returncode}: {result.stderr.strip()}")
+            except subprocess.TimeoutExpired:
+                log("WARNING: Avahi stop timed out (may already be stopped)")
+            except Exception as e:
+                log(f"WARNING: Failed to stop Avahi: {e}")
+        else:
+            log(f"Multi-instance mode: Skipping Avahi stop (instance {self.instance_id} will re-register independently)")
 
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
@@ -622,29 +626,32 @@ class StreamLifecycleManager:
             log(f"WARNING: Failed to restart snapserver: {e}")
             time.sleep(5)
 
-        # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again
-        # Now that cleanup is complete, it's safe for clients to reconnect
-        # Use restart instead of start in case supervisord already auto-restarted it
-        log("Restarting Avahi to make AirPlay endpoint discoverable again...")
-        try:
-            result = subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'avahi'],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-            if result.returncode == 0:
-                log("Avahi restarted - endpoint visible on network again")
-            else:
-                log(f"WARNING: Avahi restart returned code {result.returncode}: {result.stderr.strip()}")
-            # Give Avahi time to register the service
-            time.sleep(2)
-        except subprocess.TimeoutExpired:
-            log("WARNING: Avahi restart timed out (may still be starting)")
-            time.sleep(2)
-        except Exception as e:
-            log(f"WARNING: Failed to restart Avahi: {e}")
-            time.sleep(2)
+        # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again (SINGLE-INSTANCE ONLY)
+        # In multi-instance mode, shairport-sync re-registers itself with Avahi automatically
+        # Only restart Avahi in legacy single-instance mode
+        if not self.instance_id:
+            log("Restarting Avahi to make AirPlay endpoint discoverable again...")
+            try:
+                result = subprocess.run(
+                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'avahi'],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if result.returncode == 0:
+                    log("Avahi restarted - endpoint visible on network again")
+                else:
+                    log(f"WARNING: Avahi restart returned code {result.returncode}: {result.stderr.strip()}")
+                # Give Avahi time to register the service
+                time.sleep(2)
+            except subprocess.TimeoutExpired:
+                log("WARNING: Avahi restart timed out (may still be starting)")
+                time.sleep(2)
+            except Exception as e:
+                log(f"WARNING: Failed to restart Avahi: {e}")
+                time.sleep(2)
+        else:
+            log(f"Multi-instance mode: Skipping Avahi restart (instance {self.instance_id} re-registered automatically)")
 
         # Notify metadata monitor to resume monitoring (if callback set)
         if self.on_stream_removed:
