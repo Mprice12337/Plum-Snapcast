@@ -927,7 +927,8 @@ class MQTTControl:
 
             elif subtopic == "active_end":
                 self.store.update(playback_status="stopped")
-                log("[MQTT] Session ended")
+                log("[MQTT] Session ended (active_end) - signaling immediate stream removal")
+                signal_stream_end()  # Trigger immediate cleanup
                 if self.on_state_change:
                     self.on_state_change()
 

@@ -26,6 +26,7 @@ This eliminates metadata pipe conflicts between lifecycle manager and control sc
 import argparse
 import base64
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -914,7 +915,11 @@ def main():
     parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, or 3)')
     parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
     parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
-    parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
+
+    # Read timeout from environment variable (applies to all endpoints)
+    default_timeout = int(os.getenv('AIRPLAY_IDLE_TIMEOUT', '300'))
+    parser.add_argument('--idle-timeout', type=int, default=default_timeout,
+                        help=f'Idle timeout in seconds (default: {default_timeout} from AIRPLAY_IDLE_TIMEOUT env or 300)')
 
     args = parser.parse_args()
 
