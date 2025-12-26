@@ -1002,6 +1002,51 @@ def main():
     )
     monitor.manager = lifecycle  # Set the lifecycle manager reference
 
+    # Check for existing stream with mismatched name (endpoint rename scenario)
+    # If found, remove it so it will be recreated with the new name on next activity
+    if args.instance_id:
+        try:
+            status = snapserver.get_status()
+            if status:
+                expected_stream_id = AIRPLAY_STREAM_ID
+                streams = status.get("server", {}).get("streams", [])
+
+                # Look for any AirPlay stream with this instance's FIFO path but different name
+                for stream in streams:
+                    stream_id = stream.get("id", "")
+                    stream_uri = stream.get("uri", {}).get("raw", "")
+                    stream_name = stream.get("uri", {}).get("query", {}).get("name", "")
+                    stream_status = stream.get("status", "unknown")
+
+                    # Check if this stream uses our FIFO but has a different name
+                    if AIRPLAY_FIFO_PATH in stream_uri and stream_name != expected_stream_id:
+                        log(f"[Startup] Found existing stream with mismatched name:")
+                        log(f"           Current: '{stream_name}'")
+                        log(f"           Expected: '{expected_stream_id}'")
+                        log(f"           Status: {stream_status}")
+
+                        # Only remove if stream is idle - don't interrupt active playback
+                        if stream_status == "idle":
+                            log(f"[Startup] Stream is idle - removing to trigger recreation with new name...")
+
+                            # Remove the stream - it will be recreated with new name on next activity
+                            # NOTE: We don't restart snapserver here because:
+                            # 1. Stream removal doesn't leak FDs - only re-adding does
+                            # 2. Normal stream lifecycle cleanup handles the restart when needed
+                            # 3. Restarting here causes race conditions with port binding
+                            if snapserver.remove_stream(stream_id):
+                                log(f"[Startup] Stream removed - will be recreated with new name on next playback")
+                            else:
+                                log(f"[Startup] WARNING: Failed to remove stream with old name")
+                        else:
+                            log(f"[Startup] Stream is {stream_status} - will NOT remove during active playback")
+                            log(f"[Startup] Stream name will update after current session ends")
+                        break
+                else:
+                    log(f"[Startup] No existing stream found or name matches - ready for stream creation")
+        except Exception as e:
+            log(f"[Startup] WARNING: Could not check for existing streams: {e}")
+
     # Create and start WebSocket monitor (runs in background thread)
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
     ws_monitor.start()

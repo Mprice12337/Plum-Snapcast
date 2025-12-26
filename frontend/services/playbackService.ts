@@ -55,14 +55,12 @@ export async function getStreamPlayback(streamId: string): Promise<PlaybackData 
     const encodedStreamId = encodeURIComponent(streamId);
     const response = await fetch(`${PLAYBACK_API_URL}/${encodedStreamId}`);
     if (!response.ok) {
-      if (response.status === 404) {
-        // No playback data for this stream - this is normal for idle streams
-        return null;
-      }
       console.warn('[PlaybackService] Failed to fetch stream playback:', response.status);
       return null;
     }
     const data: SinglePlaybackResponse = await response.json();
+    // API now returns 200 with success: false when no data available (instead of 404)
+    // This prevents browser console spam from 404 errors
     return data.success ? data : null;
   } catch (error) {
     console.warn('[PlaybackService] Error fetching stream playback:', error);

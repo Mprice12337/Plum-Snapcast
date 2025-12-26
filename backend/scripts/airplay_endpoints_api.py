@@ -28,6 +28,8 @@ class AirPlayEndpointsManager:
 
     def _apply_endpoint_changes(self, affected_endpoint_ids: List[str] = None) -> Dict[str, Any]:
         """Apply endpoint changes by running setup script and restarting services"""
+        import time
+
         try:
             # Run setup script to create configs, FIFOs, etc.
             logger.info("Running setup-airplay-multi-instance.sh to apply endpoint changes")
@@ -35,7 +37,7 @@ class AirPlayEndpointsManager:
                 ['sudo', 'bash', '/app/scripts/setup-airplay-multi-instance.sh'],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60  # Increased from 30s - script needs time to generate configs and restart services
             )
 
             # Log setup script output for debugging
@@ -53,20 +55,29 @@ class AirPlayEndpointsManager:
 
             # Reload supervisord config to pick up any changes
             logger.info("Reloading supervisord configuration")
-            subprocess.run(
+            reread_result = subprocess.run(
                 self.supervisorctl_cmd + ['reread'],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
-            subprocess.run(
+            if reread_result.returncode != 0:
+                logger.warning(f"supervisorctl reread warning: {reread_result.stderr}")
+
+            update_result = subprocess.run(
                 self.supervisorctl_cmd + ['update'],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
+            if update_result.returncode != 0:
+                logger.warning(f"supervisorctl update warning: {update_result.stderr}")
+
+            # Give supervisord time to process changes
+            time.sleep(2)
 
             # Start or restart affected endpoint services
+            service_errors = []
             if affected_endpoint_ids:
                 for endpoint_id in affected_endpoint_ids:
                     services = [
@@ -76,35 +87,58 @@ class AirPlayEndpointsManager:
                     ]
 
                     for service in services:
-                        # Check if service is running to decide between start vs restart
-                        status_result = subprocess.run(
-                            self.supervisorctl_cmd + ['status', service],
-                            capture_output=True,
-                            text=True,
-                            timeout=10
-                        )
+                        try:
+                            # Check if service is running to decide between start vs restart
+                            status_result = subprocess.run(
+                                self.supervisorctl_cmd + ['status', service],
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
 
-                        # If service exists and is not FATAL, restart it. Otherwise start it.
-                        if status_result.returncode == 0 and 'FATAL' not in status_result.stdout:
-                            logger.info(f"Restarting service: {service}")
-                            subprocess.run(
-                                self.supervisorctl_cmd + ['restart', service],
-                                capture_output=True,
-                                text=True,
-                                timeout=10
-                            )
-                        else:
-                            logger.info(f"Starting service: {service}")
-                            subprocess.run(
-                                self.supervisorctl_cmd + ['start', service],
-                                capture_output=True,
-                                text=True,
-                                timeout=10
-                            )
+                            # If service exists and is not FATAL, restart it. Otherwise start it.
+                            if status_result.returncode == 0 and 'FATAL' not in status_result.stdout:
+                                logger.info(f"Restarting service: {service}")
+                                restart_result = subprocess.run(
+                                    self.supervisorctl_cmd + ['restart', service],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15
+                                )
+                                if restart_result.returncode != 0:
+                                    logger.warning(f"Service {service} restart had issues: {restart_result.stderr}")
+                                    service_errors.append(f"{service}: {restart_result.stderr}")
+                            else:
+                                logger.info(f"Starting service: {service}")
+                                start_result = subprocess.run(
+                                    self.supervisorctl_cmd + ['start', service],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15
+                                )
+                                if start_result.returncode != 0:
+                                    logger.warning(f"Service {service} start had issues: {start_result.stderr}")
+                                    service_errors.append(f"{service}: {start_result.stderr}")
+                        except subprocess.TimeoutExpired:
+                            logger.warning(f"Timeout while managing service: {service}")
+                            service_errors.append(f"{service}: timeout")
+                        except Exception as e:
+                            logger.warning(f"Error managing service {service}: {e}")
+                            service_errors.append(f"{service}: {str(e)}")
+
+                    # Small delay between endpoint service groups
+                    time.sleep(1)
+
+            # Return success even if some services had warnings (they may auto-restart)
+            message = "Endpoint changes applied successfully"
+            if service_errors:
+                message += f" (some services had warnings: {', '.join(service_errors[:3])})"
+                logger.warning(f"Service warnings during apply: {service_errors}")
 
             return {
                 "success": True,
-                "message": "Endpoint changes applied successfully"
+                "message": message,
+                "warnings": service_errors if service_errors else None
             }
 
         except subprocess.TimeoutExpired:

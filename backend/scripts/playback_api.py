@@ -179,10 +179,12 @@ def create_playback_blueprint() -> Blueprint:
                     **data
                 })
             else:
+                # Return 200 with success: false instead of 404 to avoid console spam
+                # The frontend handles missing data gracefully by checking success flag
                 return jsonify({
                     "success": False,
-                    "error": f"No playback data for stream: {stream_id}"
-                }), 404
+                    "message": "No playback data available"
+                }), 200
         except Exception as e:
             logger.error(f"Failed to get playback data for {stream_id}: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
