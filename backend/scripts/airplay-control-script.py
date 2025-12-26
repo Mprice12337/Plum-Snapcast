@@ -1006,6 +1006,9 @@ class DBusControl:
     """
     D-Bus/MPRIS control for shairport-sync (playback control only).
     Uses MPRIS for multi-instance support via PID-based service names.
+
+    Instance 1: org.mpris.MediaPlayer2.ShairportSync
+    Instances 2+: org.mpris.MediaPlayer2.ShairportSync.i{PID}
     """
 
     def __init__(self, instance_id: str):

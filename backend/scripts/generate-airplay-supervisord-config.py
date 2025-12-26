@@ -24,7 +24,7 @@ environment=HOME="/app"
 priority={priority}
 autostart={autostart}
 autorestart=true
-startsecs=5
+startsecs=10
 startretries=3
 stopasgroup=true
 killasgroup=true
@@ -96,7 +96,8 @@ def main():
 
             # Sequential startup to prevent MPRIS name race condition
             # Instance 1 must start first to claim base MPRIS name
-            priority = 40 + (int(instance_id) - 1) * 10
+            # Large gap (30 points) ensures full D-Bus registration before next instance starts
+            priority = 40 + (int(instance_id) - 1) * 30
 
             # Add program section
             section = PROGRAM_TEMPLATE.format(

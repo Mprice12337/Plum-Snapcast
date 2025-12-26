@@ -122,6 +122,7 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
         --with-apple-alac && \
     make -j$(nproc) && \
     make install && \
+    rm -f /etc/dbus-1/system.d/shairport-sync-mpris.conf && \
     cd .. && \
     rm -rf shairport-sync
 

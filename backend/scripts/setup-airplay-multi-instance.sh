@@ -76,7 +76,7 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
         continue
     fi
 
-    echo "  - Instance ${INSTANCE_ID}: ${NAME} (port ${PORT}, UDP ${UDP_BASE}-$((UDP_BASE+9)), MQTT enabled)"
+    echo "  - Instance ${INSTANCE_ID}: ${NAME} (port ${PORT}, UDP ${UDP_BASE}-$((UDP_BASE+9)), MQTT + D-Bus/MPRIS)"
 
     # Create config file from template
     CONFIG_FILE="/app/config/shairport-sync-${INSTANCE_ID}.conf"
