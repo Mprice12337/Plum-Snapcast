@@ -378,8 +378,15 @@ export class SnapcastService {
         try {
             const serverStatus = await this.getServerStatus();
             const stream = serverStatus.server?.streams?.find((s: any) => s.id === streamId);
+
+            if (!stream) {
+                // Stream not found - this is expected when a stream is removed
+                console.debug(`Stream ${streamId} not found in server status (may have been removed)`);
+            }
+
             return stream || null;
         } catch (error) {
+            // Actual WebSocket/network error
             console.error(`Failed to get stream status for ${streamId}:`, error);
             return null;
         }
