@@ -1038,45 +1038,36 @@ class MQTTControl:
             elif subtopic == "play_end":
                 self.store.update(playback_status="paused")
                 log("[MQTT] Playback ended")
-                self._stop_mqtt_activity_monitor()
+                # DON'T stop activity monitor yet - let it detect if MQTT stops (disconnect)
+                # or continues (graceful pause with metadata/volume updates)
+                # Monitor will be stopped on active_end when we determine it's graceful
                 if self.on_state_change:
                     self.on_state_change()
 
             elif subtopic == "active_end":
-                # Distinguish between graceful pause/stop and network disconnect
-                # Graceful pause (GUI): active_end arrives within 60s of pause command from GUI
-                # Graceful pause (source): active_end arrives within 60s of pend event (stream end)
-                # Network disconnect: active_end arrives with no recent pause/pend events
-                # Note: 60s window handles pause→resume→pause sequences
-                self._stop_mqtt_activity_monitor()
+                # Active session ended - could be pause, disconnect, or network loss
+                # Strategy: Let MQTT activity monitor determine if connection is truly gone
+                # - If MQTT continues (metadata/volume): graceful pause, monitor will timeout safely
+                # - If MQTT stops: disconnect/network loss, monitor detects after 20s
+                #
+                # Exception: GUI pause gets immediate keep-alive (user initiated)
                 state_data = self.store.get_all()
                 last_gui_pause_time = state_data.get("last_gui_pause_time")
-                last_pend_time = state_data.get("last_pend_time")
 
-                # Check for recent GUI pause
+                # Check for recent GUI pause - always keep stream alive
                 if last_gui_pause_time:
                     time_since_gui_pause = time.time() - last_gui_pause_time
 
                     if time_since_gui_pause < 60:
-                        # active_end arrived shortly after GUI pause - keep stream alive
-                        log(f"[MQTT] active_end after GUI pause ({time_since_gui_pause:.1f}s ago) - ignoring (stream kept alive)")
+                        # GUI pause - user initiated, keep stream alive immediately
+                        log(f"[MQTT] active_end after GUI pause ({time_since_gui_pause:.1f}s ago) - keeping stream alive")
+                        self._stop_mqtt_activity_monitor()
                         return
 
-                # Check for recent pend event (graceful stream end from source)
-                if last_pend_time:
-                    time_since_pend = time.time() - last_pend_time
-
-                    if time_since_pend < 60:
-                        # active_end arrived shortly after pend - this is graceful pause from source
-                        log(f"[MQTT] active_end after pend ({time_since_pend:.1f}s ago) - graceful pause, keeping stream alive")
-                        return
-
-                # No recent pause/pend events - this is a network disconnect
-                log("[MQTT] Session ended (active_end without recent pause/pend) - network disconnect detected")
-                self.store.update(playback_status="stopped")
-                signal_stream_end()
-                if self.on_state_change:
-                    self.on_state_change()
+                # For source-initiated events (pause/disconnect), let activity monitor decide
+                # If MQTT continues flowing: graceful pause, monitor stays quiet
+                # If MQTT stops: disconnect, monitor triggers removal after 20s
+                log("[MQTT] active_end received - letting activity monitor detect if connection alive")
 
             elif subtopic == "client_name":
                 log(f"[MQTT] Client connected: {payload}")
