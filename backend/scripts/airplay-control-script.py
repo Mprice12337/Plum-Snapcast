@@ -797,11 +797,13 @@ class MQTTControl:
         self._connection_complete = threading.Event()
         self._connected = False
 
-        # Frame position monitoring for disconnect detection
-        self.last_frame_position_time = None
-        self.frame_position_monitor_active = False
-        self.frame_position_monitor_thread = None
-        self.frame_position_lock = threading.Lock()
+        # MQTT activity monitoring for disconnect detection
+        # Tracks ALL MQTT messages, not just frame positions
+        # This distinguishes pause (no frames but other messages) from disconnect (no messages at all)
+        self.last_mqtt_activity_time = None
+        self.mqtt_activity_monitor_active = False
+        self.mqtt_activity_monitor_thread = None
+        self.mqtt_activity_lock = threading.Lock()
 
         if not MQTT_AVAILABLE:
             log("[MQTT] paho-mqtt not available - controls disabled")
@@ -880,45 +882,51 @@ class MQTTControl:
         if rc != 0:
             log(f"[MQTT] Disconnected unexpectedly (code: {rc}) - auto-reconnecting")
 
-    def _start_frame_position_monitor(self):
-        """Start monitoring frame_position_and_time messages for network disconnect detection"""
-        with self.frame_position_lock:
-            if not self.frame_position_monitor_active:
-                self.frame_position_monitor_active = True
-                self.last_frame_position_time = time.time()
-                self.frame_position_monitor_thread = threading.Thread(
-                    target=self._frame_position_monitor_loop,
+    def _start_mqtt_activity_monitor(self):
+        """Start monitoring all MQTT activity for network disconnect detection"""
+        with self.mqtt_activity_lock:
+            if not self.mqtt_activity_monitor_active:
+                self.mqtt_activity_monitor_active = True
+                self.last_mqtt_activity_time = time.time()
+                self.mqtt_activity_monitor_thread = threading.Thread(
+                    target=self._mqtt_activity_monitor_loop,
                     daemon=True
                 )
-                self.frame_position_monitor_thread.start()
-                log("[MQTT] Frame position monitor started (disconnect detection: 15s timeout)")
+                self.mqtt_activity_monitor_thread.start()
+                log("[MQTT] Activity monitor started (disconnect detection: 20s timeout)")
 
-    def _stop_frame_position_monitor(self):
-        """Stop monitoring frame_position_and_time messages"""
-        with self.frame_position_lock:
-            if self.frame_position_monitor_active:
-                self.frame_position_monitor_active = False
-                self.last_frame_position_time = None
-                log("[MQTT] Frame position monitor stopped")
+    def _stop_mqtt_activity_monitor(self):
+        """Stop monitoring MQTT activity"""
+        with self.mqtt_activity_lock:
+            if self.mqtt_activity_monitor_active:
+                self.mqtt_activity_monitor_active = False
+                self.last_mqtt_activity_time = None
+                log("[MQTT] Activity monitor stopped")
 
-    def _frame_position_monitor_loop(self):
-        """Monitor loop - check for stale frame positions every 5 seconds"""
-        TIMEOUT_THRESHOLD = 15  # Signal disconnect if no frame position for 15 seconds
+    def _mqtt_activity_monitor_loop(self):
+        """Monitor loop - check for ANY MQTT activity every 5 seconds
+
+        Tracks ALL MQTT messages (metadata, volume, frame positions, etc).
+        Only signals disconnect if NO messages received for 20 seconds.
+        This distinguishes pause (no frames but metadata/volume updates) from disconnect.
+        """
+        TIMEOUT_THRESHOLD = 20  # Signal disconnect if no MQTT activity for 20 seconds
         CHECK_INTERVAL = 5  # Check every 5 seconds
 
         while True:
-            with self.frame_position_lock:
-                if not self.frame_position_monitor_active:
+            with self.mqtt_activity_lock:
+                if not self.mqtt_activity_monitor_active:
                     return
 
-                if self.last_frame_position_time is not None:
-                    time_since_last_frame = time.time() - self.last_frame_position_time
+                if self.last_mqtt_activity_time is not None:
+                    time_since_last_activity = time.time() - self.last_mqtt_activity_time
 
-                    if time_since_last_frame >= TIMEOUT_THRESHOLD:
-                        log(f"[MQTT] No frame position updates for {time_since_last_frame:.1f}s - network disconnect detected")
+                    if time_since_last_activity >= TIMEOUT_THRESHOLD:
+                        # No MQTT activity at all - network disconnect
+                        log(f"[MQTT] No MQTT activity for {time_since_last_activity:.1f}s - network disconnect detected")
                         log("[MQTT] Signaling stream removal (timeout)")
-                        self.frame_position_monitor_active = False
-                        self.last_frame_position_time = None
+                        self.mqtt_activity_monitor_active = False
+                        self.last_mqtt_activity_time = None
 
                         # Signal stream removal
                         self.store.update(playback_status="stopped")
@@ -941,13 +949,16 @@ class MQTTControl:
 
             subtopic = topic[len(self.topic_prefix) + 1:]
 
-            # Handle frame position updates (for disconnect detection)
+            # Update activity timestamp for ALL messages (disconnect detection)
+            # Tracks any MQTT activity: metadata, volume, frame positions, etc.
+            # This distinguishes pause (no frames but other activity) from disconnect (no activity)
+            with self.mqtt_activity_lock:
+                if self.mqtt_activity_monitor_active:
+                    self.last_mqtt_activity_time = time.time()
+
+            # Skip logging for noisy frame position updates
             if subtopic == "frame_position_and_time":
-                # Update timestamp for disconnect detection
-                with self.frame_position_lock:
-                    if self.frame_position_monitor_active:
-                        self.last_frame_position_time = time.time()
-                return  # Don't log every frame position update (too noisy)
+                return
 
             # Handle metadata topics
             if subtopic == "artist":
@@ -997,14 +1008,14 @@ class MQTTControl:
                     last_gui_pause_time=None
                 )
                 log("[MQTT] Playback started")
-                self._start_frame_position_monitor()
+                self._start_mqtt_activity_monitor()
                 if self.on_state_change:
                     self.on_state_change()
 
             elif subtopic == "play_flush":
                 self.store.update(playback_status="paused")
                 log("[MQTT] Playback flushed (pause/skip)")
-                self._stop_frame_position_monitor()
+                self._stop_mqtt_activity_monitor()
                 if self.on_state_change:
                     self.on_state_change()
 
@@ -1016,14 +1027,14 @@ class MQTTControl:
                     position_timestamp=time.time()
                 )
                 log("[MQTT] Playback resumed")
-                self._start_frame_position_monitor()
+                self._start_mqtt_activity_monitor()
                 if self.on_state_change:
                     self.on_state_change()
 
             elif subtopic == "play_end":
                 self.store.update(playback_status="paused")
                 log("[MQTT] Playback ended")
-                self._stop_frame_position_monitor()
+                self._stop_mqtt_activity_monitor()
                 if self.on_state_change:
                     self.on_state_change()
 
@@ -1032,7 +1043,7 @@ class MQTTControl:
                 # GUI pause: active_end arrives within 60s of pause command from GUI
                 # Real disconnect: No recent pause command, or pause was from source device
                 # Note: 60s window handles pause→resume→pause sequences from GUI
-                self._stop_frame_position_monitor()
+                self._stop_mqtt_activity_monitor()
                 state_data = self.store.get_all()
                 last_gui_pause_time = state_data.get("last_gui_pause_time")
 
