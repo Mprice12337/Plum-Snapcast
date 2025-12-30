@@ -209,13 +209,14 @@ class SnapserverClient:
 class SnapcastWebSocketMonitor:
     """Monitor Snapcast WebSocket for stream status updates"""
 
-    def __init__(self, lifecycle_manager: 'StreamLifecycleManager', host: str, port: int):
+    def __init__(self, lifecycle_manager: 'StreamLifecycleManager', host: str, port: int, on_websocket_connect=None):
         self.manager = lifecycle_manager
         self.host = host
         self.port = port
         self.ws = None
         self.ws_thread = None
         self.running = False
+        self.on_websocket_connect = on_websocket_connect
 
     def start(self):
         """Start WebSocket monitor in background thread"""
@@ -277,6 +278,14 @@ class SnapcastWebSocketMonitor:
         """Handle WebSocket open"""
         log("WebSocket connected to Snapcast")
 
+        # Verify stream existence after reconnect (if callback is set)
+        # This handles cases where snapserver was restarted externally
+        if hasattr(self, 'on_websocket_connect') and self.on_websocket_connect:
+            try:
+                self.on_websocket_connect()
+            except Exception as e:
+                log(f"Error in websocket connect callback: {e}")
+
     def _connect(self):
         """Connect to Snapcast WebSocket"""
         url = f"ws://{self.host}:{self.port}/jsonrpc"
@@ -322,6 +331,50 @@ class StreamLifecycleManager:
         self.last_signal_time = time.time()
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
+
+    def verify_stream_exists_on_reconnect(self):
+        """Verify stream still exists after WebSocket reconnect
+
+        This handles cases where snapserver was restarted externally or the stream
+        was removed by another process. If we think we're in ACTIVE/TIMEOUT but the
+        stream doesn't exist, reset to IDLE so we can recreate it on next connection.
+        """
+        with self.state_lock:
+            # Only check if we think a stream should exist
+            if self.state not in [StreamState.ACTIVE, StreamState.TIMEOUT]:
+                return
+
+            try:
+                status = self.client.get_status()
+                if not status or 'server' not in status:
+                    log("WARNING: Could not get server status during stream verification")
+                    return
+
+                # Check if our stream still exists
+                stream_exists = False
+                if 'streams' in status['server']:
+                    for stream in status['server']['streams']:
+                        if stream['id'] == AIRPLAY_STREAM_ID:
+                            stream_exists = True
+                            log(f"✓ Stream verification: '{AIRPLAY_STREAM_ID}' still exists (state={self.state.value})")
+                            break
+
+                if not stream_exists:
+                    log(f"✗ Stream verification: '{AIRPLAY_STREAM_ID}' MISSING (expected state={self.state.value})")
+                    log("Stream was removed externally - resetting to IDLE state")
+
+                    # Cancel any pending timers
+                    self._cancel_timeout()
+                    if hasattr(self, 'idle_check_timer') and self.idle_check_timer:
+                        self.idle_check_timer.cancel()
+                        self.idle_check_timer = None
+
+                    # Reset to IDLE so we can recreate stream on next connection
+                    self.state = StreamState.IDLE
+                    log("State: ACTIVE/TIMEOUT → IDLE (stream removed externally)")
+
+            except Exception as e:
+                log(f"ERROR during stream verification: {e}")
 
     def on_stream_begin(self):
         """Handle pbeg (play stream begin) event"""
@@ -514,6 +567,32 @@ class StreamLifecycleManager:
 
     def _remove_stream(self):
         """Remove AirPlay stream from Snapserver"""
+        # CRITICAL: Stop shairport-sync FIRST to hide endpoint from network during cleanup
+        # This prevents race conditions where users reconnect during cleanup, which could
+        # cause duplicate control scripts, orphaned FIFO handles, and choppy audio
+        # Use instance-specific service name if in multi-instance mode
+        if self.instance_id:
+            shairport_service = f"shairport-sync-{self.instance_id}"
+        else:
+            shairport_service = "shairport-sync"
+
+        log(f"Stopping {shairport_service} to hide endpoint during cleanup...")
+        try:
+            subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', shairport_service],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            log(f"{shairport_service} stopped - endpoint hidden from network")
+        except subprocess.TimeoutExpired as e:
+            log(f"WARNING: {shairport_service} stop timed out: {e}")
+        except Exception as e:
+            log(f"WARNING: Failed to stop {shairport_service}: {e}")
+
+        # Wait for shairport-sync to fully stop and release resources
+        time.sleep(2)
+
         # CRITICAL: Move all clients to fallback 'none' stream BEFORE removing this stream
         # This prevents clients from becoming orphaned when the stream disappears
         log(f"Moving clients from '{AIRPLAY_STREAM_ID}' to fallback stream before removal...")
@@ -524,140 +603,113 @@ class StreamLifecycleManager:
         if not success:
             log("ERROR: Failed to remove stream")
 
+        # CRITICAL: Wait for snapserver to close FIFO file handles
+        # Snapserver has a bug where it doesn't immediately close FIFO handles on Stream.RemoveStream
+        # If we add a new stream before handles are closed, we get duplicate readers → choppy audio
+        log("Waiting 2s for snapserver to close FIFO file handles...")
+        time.sleep(2)
+
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
-
-        # CRITICAL: Stop Avahi BEFORE cleanup to prevent race conditions (SINGLE-INSTANCE ONLY)
-        # In multi-instance mode, each shairport-sync instance manages its own Avahi registration
-        # Stopping Avahi globally would hide ALL endpoints, not just the disconnecting one
-        # Only stop Avahi in legacy single-instance mode
-        if not self.instance_id:
-            log("Stopping Avahi to hide AirPlay endpoint during cleanup (prevent reconnection race)...")
-            try:
-                result = subprocess.run(
-                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'avahi'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    log("Avahi stopped - endpoint hidden from network")
-                else:
-                    log(f"WARNING: Avahi stop returned code {result.returncode}: {result.stderr.strip()}")
-            except subprocess.TimeoutExpired:
-                log("WARNING: Avahi stop timed out (may already be stopped)")
-            except Exception as e:
-                log(f"WARNING: Failed to stop Avahi: {e}")
-        else:
-            log(f"Multi-instance mode: Skipping Avahi stop (instance {self.instance_id} will re-register independently)")
 
         # Restart FIFO keeper after removing stream (keeps pipe open for shairport-sync)
         self._start_fifo_keeper()
 
-        # CRITICAL: Restart shairport-sync AFTER stream removal to close orphaned FIFO handles
-        # This prevents choppy audio on reconnection caused by shairport-sync accumulating
-        # multiple file descriptors to /tmp/snapfifo over time
-        # By restarting here (during IDLE state), we ensure clean state before next pbeg
-        # Use instance-specific service name if in multi-instance mode
-        if self.instance_id:
-            shairport_service = f"shairport-sync-{self.instance_id}"
-        else:
-            shairport_service = "shairport-sync"
-
-        log(f"Restarting {shairport_service} after stream removal to ensure clean FIFO state for next connection...")
+        # CRITICAL: Start shairport-sync LAST to ensure all cleanup is complete before endpoint becomes discoverable
+        # We already stopped it at the beginning of cleanup, now we just need to start it
+        # This ensures the endpoint is hidden from the network during the entire cleanup process
+        log(f"Starting {shairport_service} after cleanup complete - endpoint will now be discoverable...")
         try:
-            # Use supervisorctl stop + start (NOT pkill) for controlled restart
-            # supervisorctl stop prevents autorestart even with autorestart=true
-            # This gives us full control over the restart timing
-            subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', shairport_service],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            log(f"{shairport_service} stopped")
-
-            # Wait for clean shutdown and file handles to close
-            time.sleep(2)
-
-            # Start shairport-sync cleanly
             subprocess.run(
                 ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', shairport_service],
                 capture_output=True,
                 text=True,
                 timeout=30
             )
-            log(f"{shairport_service} started")
+            log(f"{shairport_service} started - endpoint now discoverable")
 
-            # Wait for full startup before continuing
-            time.sleep(3)
-            log(f"{shairport_service} restart complete")
+            # Wait for full startup and lifecycle manager to reinitialize before continuing
+            # Longer delay prevents users from connecting before lifecycle manager is ready
+            time.sleep(5)
+            log(f"{shairport_service} startup complete - lifecycle manager ready")
         except subprocess.TimeoutExpired as e:
-            log(f"WARNING: {shairport_service} restart timed out: {e}")
-            log("Waiting additional time for background restart to complete...")
-            # Even if we timeout, wait to ensure the operation completes
+            log(f"WARNING: {shairport_service} start timed out: {e}")
+            log("Waiting additional time for background start to complete...")
             time.sleep(10)
         except Exception as e:
-            log(f"WARNING: Failed to restart {shairport_service}: {e}")
-            # Wait anyway to be safe
+            log(f"WARNING: Failed to start {shairport_service}: {e}")
             time.sleep(5)
 
         # CRITICAL: Restart snapserver to close orphaned FIFO file handles (SINGLE-INSTANCE ONLY)
         # Snapserver has a bug where Stream.RemoveStream doesn't actually close
-        # the FIFO file handle. This causes snapserver to accumulate FDs over time.
-        # In multi-instance mode, restarting snapserver disrupts ALL active streams
-        # and can cause race conditions if multiple instances restart simultaneously.
-        # Each instance has its own FIFO, and shairport-sync restart + FIFO keeper
-        # should handle cleanup without needing snapserver restart.
-        # Only restart snapserver in legacy single-instance mode.
+        # the FIFO file handle. This causes snapserver to accumulate FDs over time,
+        # leading to choppy audio on reconnection ("Chunk too young" errors).
+        #
+        # MULTI-INSTANCE MODE: We CANNOT restart snapserver because it removes ALL
+        # dynamic streams, breaking stream independence. Each instance must manage
+        # its own stream lifecycle without affecting others. We accept the potential
+        # FIFO leak as a tradeoff for maintaining stream independence.
+        #
+        # SINGLE-INSTANCE MODE: Restart is safe and necessary to prevent FIFO leaks.
         if not self.instance_id:
-            log("Restarting snapserver to close orphaned FIFO file handles (snapserver bug workaround)...")
-            try:
-                subprocess.run(
-                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                log("snapserver restarted")
-                # Wait for snapserver to fully restart and WebSocket to reconnect
-                time.sleep(5)
-                log("snapserver restart complete")
-            except subprocess.TimeoutExpired as e:
-                log(f"WARNING: snapserver restart timed out: {e}")
-                time.sleep(10)
-            except Exception as e:
-                log(f"WARNING: Failed to restart snapserver: {e}")
-                time.sleep(5)
-        else:
-            log(f"Multi-instance mode: Skipping snapserver restart (instance {self.instance_id} FIFO cleanup handled independently)")
+            log("Restarting snapserver to close orphaned FIFO file handles (single-instance mode)...")
 
-        # CRITICAL: Restart Avahi to make AirPlay endpoint discoverable again (SINGLE-INSTANCE ONLY)
-        # In multi-instance mode, shairport-sync re-registers itself with Avahi automatically
-        # Only restart Avahi in legacy single-instance mode
-        if not self.instance_id:
-            log("Restarting Avahi to make AirPlay endpoint discoverable again...")
-            try:
-                result = subprocess.run(
-                    ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'avahi'],
-                    capture_output=True,
-                    text=True,
-                    timeout=15
-                )
-                if result.returncode == 0:
-                    log("Avahi restarted - endpoint visible on network again")
-                else:
-                    log(f"WARNING: Avahi restart returned code {result.returncode}: {result.stderr.strip()}")
-                # Give Avahi time to register the service
-                time.sleep(2)
-            except subprocess.TimeoutExpired:
-                log("WARNING: Avahi restart timed out (may still be starting)")
-                time.sleep(2)
-            except Exception as e:
-                log(f"WARNING: Failed to restart Avahi: {e}")
-                time.sleep(2)
+            max_retries = 3
+            retry_delay = 5  # Start with 5 second delay
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    # Restart snapserver
+                    subprocess.run(
+                        ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'snapserver'],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    log(f"snapserver restart command sent (attempt {attempt}/{max_retries})")
+
+                    # Wait for snapserver to start
+                    time.sleep(5)
+
+                    # Verify snapserver is listening on port 1780 (HTTP API)
+                    import socket
+                    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    test_socket.settimeout(2)
+                    try:
+                        test_socket.connect(('127.0.0.1', 1780))
+                        test_socket.close()
+                        log(f"✓ snapserver restart successful (port 1780 listening)")
+                        break  # Success - exit retry loop
+                    except (socket.timeout, ConnectionRefusedError) as e:
+                        test_socket.close()
+                        log(f"✗ snapserver port 1780 not listening (attempt {attempt}/{max_retries}): {e}")
+
+                        if attempt < max_retries:
+                            log(f"Retrying in {retry_delay}s (ports may be in TIME_WAIT state)...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            log("ERROR: snapserver failed to bind to ports after all retries")
+                            log("This is likely due to TIME_WAIT state - frontend may show 'Snapcast disconnected'")
+
+                except subprocess.TimeoutExpired as e:
+                    log(f"WARNING: snapserver restart timed out (attempt {attempt}/{max_retries}): {e}")
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                except Exception as e:
+                    log(f"WARNING: Failed to restart snapserver (attempt {attempt}/{max_retries}): {e}")
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
         else:
-            log(f"Multi-instance mode: Skipping Avahi restart (instance {self.instance_id} re-registered automatically)")
+            log(f"Multi-instance mode: Skipping snapserver restart (instance {self.instance_id})")
+            log("Note: Stream independence requires NOT restarting snapserver")
+            log("Accepting potential FIFO leak as tradeoff for independent stream management")
+
+        # NOTE: No need to manually restart Avahi - shairport-sync automatically re-registers
+        # when it starts (both single-instance and multi-instance modes)
+        log("Endpoint is now discoverable (shairport-sync re-registered with Avahi)")
 
         # Notify metadata monitor to resume monitoring (if callback set)
         if self.on_stream_removed:
@@ -766,13 +818,16 @@ class StreamLifecycleManager:
         """
         import subprocess
         try:
-            # Use pgrep to find airplay-control-script.py processes
-            # In multi-instance mode, filter for instance-specific scripts
+            # Use pgrep to find airplay-control-script processes
+            # Wrapper scripts exec the main script with --instance-id parameter
+            # So actual running process is: airplay-control-script.py --instance-id N
             if self.instance_id:
                 search_pattern = f'airplay-control-script.py.*--instance-id {self.instance_id}'
             else:
+                # Single-instance mode: match main script without instance-id
                 search_pattern = 'airplay-control-script.py'
 
+            log(f"Searching for orphaned control scripts: '{search_pattern}'")
             result = subprocess.run(
                 ['pgrep', '-f', search_pattern],
                 capture_output=True,
@@ -785,22 +840,27 @@ class StreamLifecycleManager:
                 pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
                 killed_count = 0
 
+                log(f"Found {len(pids)} orphaned control script(s) - terminating...")
                 for pid_str in pids:
                     try:
                         pid = int(pid_str)
-                        subprocess.run(['kill', str(pid)], timeout=2)
+                        # Use SIGKILL (-9) for immediate termination
+                        subprocess.run(['kill', '-9', str(pid)], timeout=2)
                         killed_count += 1
                         if self.instance_id:
-                            log(f"Killed orphaned control script for instance {self.instance_id}: PID {pid}")
+                            log(f"✓ Killed orphaned control script for instance {self.instance_id}: PID {pid}")
                         else:
-                            log(f"Killed orphaned control script: PID {pid}")
+                            log(f"✓ Killed orphaned control script: PID {pid}")
                     except (ValueError, subprocess.TimeoutExpired) as e:
-                        log(f"Failed to kill PID {pid_str}: {e}")
+                        log(f"✗ Failed to kill PID {pid_str}: {e}")
 
                 if self.instance_id:
                     log(f"Cleaned up {killed_count} orphaned control script(s) for instance {self.instance_id}")
                 else:
                     log(f"Cleaned up {killed_count} orphaned control script(s)")
+
+                # Wait for processes to fully terminate
+                time.sleep(0.5)
             else:
                 if self.instance_id:
                     log(f"No orphaned control scripts found for instance {self.instance_id}")
@@ -1094,7 +1154,13 @@ def main():
             log(f"[Startup] WARNING: Could not check for existing streams: {e}")
 
     # Create and start WebSocket monitor (runs in background thread)
-    ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
+    # Pass verification callback to detect if stream was removed externally
+    ws_monitor = SnapcastWebSocketMonitor(
+        lifecycle,
+        snapserver_host,
+        snapserver_port,
+        on_websocket_connect=lifecycle.verify_stream_exists_on_reconnect
+    )
     ws_monitor.start()
 
     # Run initial metadata monitor (blocks until pbeg detected)

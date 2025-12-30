@@ -2,6 +2,37 @@ import {snapcastService} from './snapcastService';
 import {getStreamPlayback} from './playbackService';
 import type {Client, Stream, Track} from '../types';
 
+// Helper function to validate album art URLs
+// Detects corrupted data URLs containing binary data instead of proper base64
+function isValidAlbumArtUrl(url: string | undefined | null): boolean {
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+        return false;
+    }
+
+    // For data URLs, check if they contain binary characters (null bytes, control chars)
+    if (url.startsWith('data:image')) {
+        // Check for null bytes or other control characters (except newlines)
+        // These indicate binary data was incorrectly placed in a string
+        for (let i = 0; i < Math.min(url.length, 200); i++) {
+            const code = url.charCodeAt(i);
+            // Null bytes, or control chars < 32 (except \n=10, \r=13, \t=9)
+            if (code === 0 || (code < 32 && code !== 10 && code !== 13 && code !== 9)) {
+                console.error(`[ArtValidation] ❌ Corrupted data URL detected at char ${i}: byte=${code} (${url.substring(0, 100)}...)`);
+                return false;
+            }
+        }
+
+        // Valid base64 should only contain A-Z, a-z, 0-9, +, /, =, and whitespace
+        const base64Part = url.substring(url.indexOf(',') + 1);
+        if (base64Part && !/^[A-Za-z0-9+/=\s]+$/.test(base64Part.substring(0, 100))) {
+            console.error(`[ArtValidation] ❌ Invalid base64 characters detected: ${base64Part.substring(0, 100)}...`);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Default fallback data for when no metadata is available
 const createDefaultTrack = (): Track => ({
     id: 'unknown',
@@ -122,16 +153,26 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
     let albumArtUrl = createDefaultTrack().albumArtUrl;
 
     if (metadata.artUrl) {
+        let resolvedUrl = metadata.artUrl;
+
         // Check if it's a data URL (embedded image)
         if (metadata.artUrl.startsWith('data:')) {
             // Data URL - use directly
-            albumArtUrl = metadata.artUrl;
+            resolvedUrl = metadata.artUrl;
         } else if (metadata.artUrl.startsWith('/')) {
             // Relative path - prepend Snapcast HTTP server URL
-            albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            resolvedUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
         } else {
             // Absolute URL - use directly
-            albumArtUrl = metadata.artUrl;
+            resolvedUrl = metadata.artUrl;
+        }
+
+        // Validate before using
+        if (isValidAlbumArtUrl(resolvedUrl)) {
+            albumArtUrl = resolvedUrl;
+        } else {
+            console.error(`[DataService] ❌ Invalid artwork URL detected - using placeholder instead`);
+            // Keep default placeholder
         }
     }
 

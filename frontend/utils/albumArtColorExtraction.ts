@@ -48,9 +48,22 @@ export async function extractDualColorsFromAlbumArt(
   fallbackAccent: string
 ): Promise<DualColorExtractionResult | null> {
   try {
+    // Validate URL
+    if (!imageUrl || typeof imageUrl !== 'string' || imageUrl.trim() === '') {
+      throw new Error('Invalid or empty image URL');
+    }
+
     // Skip if placeholder/default artwork (SVG data URLs)
     if (imageUrl.startsWith('data:image/svg+xml')) {
       throw new Error('Placeholder artwork - skipping extraction');
+    }
+
+    // Validate data URLs (common issue with corrupted metadata)
+    if (imageUrl.startsWith('data:')) {
+      const dataUrlRegex = /^data:image\/(jpeg|jpg|png|gif|webp);base64,([A-Za-z0-9+/=]+)$/;
+      if (!dataUrlRegex.test(imageUrl)) {
+        throw new Error('Malformed data URL - skipping extraction');
+      }
     }
 
     // Load image
@@ -124,14 +137,28 @@ export async function extractDualColorsFromAlbumArt(
 }
 
 /**
- * Load image from URL with CORS support
+ * Load image from URL with CORS support and validation
  */
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'Anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load image'));
+
+    img.onload = () => {
+      // Verify image loaded successfully
+      if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+        reject(new Error('Image loaded but has zero dimensions'));
+        return;
+      }
+      resolve(img);
+    };
+
+    img.onerror = (error) => {
+      console.warn('[AlbumArtColor] Image load error:', error);
+      reject(new Error('Failed to load image'));
+    };
+
+    // Set source last to trigger load
     img.src = url;
   });
 }

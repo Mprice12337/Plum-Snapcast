@@ -27,6 +27,37 @@ const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNoteP
 
 const VOLUME_STEP = 5;
 
+// Helper function to validate album art URLs
+// Detects corrupted data URLs containing binary data instead of proper base64
+function isValidAlbumArtUrl(url: string | undefined | null): boolean {
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+        return false;
+    }
+
+    // For data URLs, check if they contain binary characters (null bytes, control chars)
+    if (url.startsWith('data:image')) {
+        // Check for null bytes or other control characters (except newlines)
+        // These indicate binary data was incorrectly placed in a string
+        for (let i = 0; i < Math.min(url.length, 200); i++) {
+            const code = url.charCodeAt(i);
+            // Null bytes, or control chars < 32 (except \n=10, \r=13, \t=9)
+            if (code === 0 || (code < 32 && code !== 10 && code !== 13 && code !== 9)) {
+                console.error(`[ArtValidation] ❌ Corrupted data URL detected at char ${i}: byte=${code} (${url.substring(0, 100)}...)`);
+                return false;
+            }
+        }
+
+        // Valid base64 should only contain A-Z, a-z, 0-9, +, /, =, and whitespace
+        const base64Part = url.substring(url.indexOf(',') + 1);
+        if (base64Part && !/^[A-Za-z0-9+/=\s]+$/.test(base64Part.substring(0, 100))) {
+            console.error(`[ArtValidation] ❌ Invalid base64 characters detected: ${base64Part.substring(0, 100)}...`);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
@@ -704,8 +735,15 @@ const App: React.FC = () => {
                             if (metadata.artUrl.startsWith('/')) {
                                 resolvedArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
                             }
-                            console.log(`[Metadata] ✓ Using provided artwork (${resolvedArtUrl.length} chars)`);
-                            updatedTrack.albumArtUrl = resolvedArtUrl;
+
+                            // Validate artwork URL before using it
+                            if (isValidAlbumArtUrl(resolvedArtUrl)) {
+                                console.log(`[Metadata] ✓ Using provided artwork (${resolvedArtUrl.length} chars)`);
+                                updatedTrack.albumArtUrl = resolvedArtUrl;
+                            } else {
+                                console.error(`[Metadata] ❌ Invalid artwork URL detected - using placeholder instead`);
+                                updatedTrack.albumArtUrl = musicNotePlaceholder;
+                            }
                         } else if (isNewTrack) {
                             console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
                             updatedTrack.albumArtUrl = musicNotePlaceholder;
@@ -1044,7 +1082,13 @@ const App: React.FC = () => {
 
                                     // Handle artwork: use provided, default for new track, or keep current
                                     if (updatedMetadata.albumArtUrl && updatedMetadata.albumArtUrl.trim() !== '') {
-                                        updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                        // Validate artwork URL before using it
+                                        if (isValidAlbumArtUrl(updatedMetadata.albumArtUrl)) {
+                                            updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                        } else {
+                                            console.error(`[Polling] ❌ Invalid artwork URL detected - using placeholder instead`);
+                                            updatedStream.currentTrack.albumArtUrl = musicNotePlaceholder;
+                                        }
                                     } else if (isNewTrack) {
                                         updatedStream.currentTrack.albumArtUrl = musicNotePlaceholder;
                                     } else {

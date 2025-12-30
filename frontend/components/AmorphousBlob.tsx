@@ -639,7 +639,7 @@ function drawCircularBars(
 }
 
 // Draw circular album art
-const albumArtCache = new Map<string, HTMLImageElement>();
+const albumArtCache = new Map<string, HTMLImageElement | null>();
 
 function drawCircularAlbumArt(
     ctx: CanvasRenderingContext2D,
@@ -648,42 +648,80 @@ function drawCircularAlbumArt(
     centerY: number,
     radius: number
 ) {
+    // Validate URL before attempting to load
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+        return;
+    }
+
+    // Check for malformed data URLs (common issue with corrupted metadata)
+    if (url.startsWith('data:')) {
+        // Validate data URL structure
+        const dataUrlRegex = /^data:image\/(jpeg|jpg|png|gif|webp);base64,([A-Za-z0-9+/=]+)$/;
+        if (!dataUrlRegex.test(url)) {
+            console.warn('[AmorphousBlob] Invalid data URL detected, skipping album art');
+            albumArtCache.set(url, null); // Cache the failure to avoid retrying
+            return;
+        }
+    }
+
     let img = albumArtCache.get(url);
+
+    // If we've cached a null (failed load), don't retry
+    if (img === null) {
+        return;
+    }
 
     if (!img) {
         img = new Image();
         img.crossOrigin = 'anonymous';
-        img.src = url;
-        albumArtCache.set(url, img);
 
         img.onload = () => {
             // Image will be drawn on next frame
         };
 
+        img.onerror = (error) => {
+            console.warn('[AmorphousBlob] Failed to load album art:', error);
+            // Cache null to prevent retrying this URL
+            albumArtCache.set(url, null);
+        };
+
+        img.src = url;
+        albumArtCache.set(url, img);
+
         return; // Skip this frame, wait for load
     }
 
-    if (!img.complete) return;
+    // Check if image loaded successfully before drawing
+    if (!img.complete || img.naturalWidth === 0) {
+        return;
+    }
 
-    // Create circular clip path
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.clip();
+    try {
+        // Create circular clip path
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
 
-    // Draw image centered and cropped to fill circle
-    const imgSize = radius * 2;
-    ctx.drawImage(img, centerX - radius, centerY - radius, imgSize, imgSize);
+        // Draw image centered and cropped to fill circle
+        const imgSize = radius * 2;
+        ctx.drawImage(img, centerX - radius, centerY - radius, imgSize, imgSize);
 
-    ctx.restore();
+        ctx.restore();
 
-    // Draw circle outline
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+        // Draw circle outline
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    } catch (error) {
+        console.error('[AmorphousBlob] Error drawing album art:', error);
+        // Remove from cache so it can be retried
+        albumArtCache.delete(url);
+        ctx.restore(); // Ensure we restore context state even on error
+    }
 }
 
 // Draw traditional frequency bars visualization

@@ -176,6 +176,7 @@ class MetadataStore:
             "duration": 0,  # Track duration in milliseconds
             "position": 0,  # Last known position from D-Bus (milliseconds)
             "position_timestamp": None,  # When position was last updated (for interpolation)
+            "last_gui_pause_time": None,  # Track when pause command was sent from GUI
         }
 
     def update(self, **kwargs):
@@ -247,8 +248,12 @@ class MetadataStore:
             if self.data.get("album"):
                 meta["album"] = self.data["album"]
 
-            if self.data.get("artwork_url"):
-                meta["artUrl"] = self.data["artwork_url"]
+            # Only include artwork if we have a valid, non-empty URL
+            artwork_url = self.data.get("artwork_url")
+            if artwork_url and isinstance(artwork_url, str) and len(artwork_url) > 50:
+                # Valid artwork URLs are data URLs (minimum ~50 chars) or http URLs
+                # Skip empty strings, None, and corrupted short data URLs
+                meta["artUrl"] = artwork_url
 
             # Duration in SECONDS per Snapcast API (convert from internal milliseconds)
             # Internal storage is in ms, but Snapcast expects seconds (like position)
@@ -416,7 +421,7 @@ class MetadataParser:
 
                 # ===== PLAYBACK STATE EVENTS (ssnc) =====
                 elif code == "pbeg":
-                    # Play stream begin
+                    # Play stream begin - clear GUI pause timestamp (new session)
                     log(f"[Session] Play stream BEGIN")
                     current_state = self.store.get_all().get("playback_status", "stopped")
                     if current_state != "playing":
@@ -424,8 +429,14 @@ class MetadataParser:
                         position_ms = 0
                         duration_ms = 0
 
-                        # Start interpolation immediately
-                        self.store.update(playback_status="playing", position=position_ms, duration=duration_ms, position_timestamp=time.time())
+                        # Start interpolation immediately and clear old GUI pause timestamp
+                        self.store.update(
+                            playback_status="playing",
+                            position=position_ms,
+                            duration=duration_ms,
+                            position_timestamp=time.time(),
+                            last_gui_pause_time=None
+                        )
 
                         # Send immediate Snapcast notification
                         if self.on_state_change:
@@ -885,20 +896,42 @@ class MQTTControl:
             elif subtopic == "cover" and payload:
                 # Cover art is base64 encoded JPEG
                 # Shairport-sync sends "--" as placeholder for no/cleared cover art
+                # IMPORTANT: Don't clear artwork on pause - keep it visible
+                # Only clear on track change (handled by track_id change detection)
                 if payload == "--":
-                    self.store.update(artwork_url="")
-                    log("[MQTT] Cover art cleared (placeholder received)")
+                    log("[MQTT] Ignoring cover art clear signal (--) - keeping artwork during pause")
+                    # Don't clear - artwork should stay visible when paused
                 elif len(payload) > 100:  # Valid base64 should be much longer
-                    data_url = f"data:image/jpeg;base64,{payload}"
-                    self.store.update(artwork_url=data_url)
-                    log(f"[MQTT] Received cover art: {len(payload)} bytes")
+                    # Validate base64 data before creating data URL
+                    # Check for empty/whitespace-only payload
+                    if not payload.strip():
+                        log("[MQTT] Ignoring empty/whitespace artwork payload")
+                    else:
+                        try:
+                            # Try to decode base64 to validate it
+                            decoded = base64.b64decode(payload, validate=True)
+
+                            # Check for null bytes (corrupted data)
+                            if b'\x00' in decoded[:100]:  # Check first 100 bytes
+                                log(f"[MQTT] Rejecting corrupted artwork (null bytes detected)")
+                            elif len(decoded) < 100:  # Too small to be a valid image
+                                log(f"[MQTT] Rejecting artwork (too small: {len(decoded)} bytes)")
+                            else:
+                                # Valid artwork - update store
+                                data_url = f"data:image/jpeg;base64,{payload}"
+                                self.store.update(artwork_url=data_url)
+                                log(f"[MQTT] Received valid cover art: {len(payload)} chars, {len(decoded)} bytes")
+                        except Exception as e:
+                            log(f"[MQTT] Rejecting invalid base64 artwork: {e}")
 
             # Handle playback event topics
             elif subtopic == "play_start":
+                # Clear GUI pause timestamp when new playback session starts
                 self.store.update(
                     playback_status="playing",
                     position=0,
-                    position_timestamp=time.time()
+                    position_timestamp=time.time(),
+                    last_gui_pause_time=None
                 )
                 log("[MQTT] Playback started")
                 if self.on_state_change:
@@ -911,6 +944,8 @@ class MQTTControl:
                     self.on_state_change()
 
             elif subtopic == "play_resume":
+                # Don't clear GUI pause timestamp - let it age naturally
+                # This handles pause → resume → pause sequences from GUI
                 self.store.update(
                     playback_status="playing",
                     position_timestamp=time.time()
@@ -926,11 +961,34 @@ class MQTTControl:
                     self.on_state_change()
 
             elif subtopic == "active_end":
-                self.store.update(playback_status="stopped")
-                log("[MQTT] Session ended (active_end) - signaling immediate stream removal")
-                signal_stream_end()  # Trigger immediate cleanup
-                if self.on_state_change:
-                    self.on_state_change()
+                # Distinguish between GUI pause and real disconnect
+                # GUI pause: active_end arrives within 60s of pause command from GUI
+                # Real disconnect: No recent pause command, or pause was from source device
+                # Note: 60s window handles pause→resume→pause sequences from GUI
+                state_data = self.store.get_all()
+                last_gui_pause_time = state_data.get("last_gui_pause_time")
+
+                if last_gui_pause_time:
+                    time_since_gui_pause = time.time() - last_gui_pause_time
+
+                    if time_since_gui_pause < 60:
+                        # active_end arrived shortly after GUI pause - keep stream alive
+                        log(f"[MQTT] active_end after GUI pause ({time_since_gui_pause:.1f}s ago) - ignoring (stream kept alive)")
+                        # Don't signal stream removal
+                    else:
+                        # active_end arrived long after GUI pause - real disconnect
+                        log(f"[MQTT] Session ended (active_end {time_since_gui_pause:.1f}s after GUI pause) - signaling stream removal")
+                        self.store.update(playback_status="stopped")
+                        signal_stream_end()
+                        if self.on_state_change:
+                            self.on_state_change()
+                else:
+                    # No recent GUI pause - this is a source disconnect or source pause
+                    log("[MQTT] Session ended (active_end, no GUI pause) - signaling immediate stream removal")
+                    self.store.update(playback_status="stopped")
+                    signal_stream_end()
+                    if self.on_state_change:
+                        self.on_state_change()
 
             elif subtopic == "client_name":
                 log(f"[MQTT] Client connected: {payload}")
@@ -1161,6 +1219,8 @@ class SnapcastControlScript:
             on_state_change=self.send_playback_state_update
         )
         self.last_metadata_update_time = 0  # For debouncing metadata updates
+        self.last_playback_state_update_time = 0  # For debouncing playback state updates
+        self.last_playback_state = None  # Track last state to detect actual changes
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
@@ -1186,6 +1246,16 @@ class SnapcastControlScript:
         """Send playback state update to Snapcast (called when MQTT state changes)"""
         playback_status = self.store.get_all().get("playback_status", "stopped")
         can_control = self.dbus_control.is_available()
+        current_time = time.time()
+
+        # Debounce: Only send update if state actually changed OR at least 1 second has passed
+        # This prevents rapid play/idle thrashing from overwhelming the lifecycle manager
+        state_changed = playback_status != self.last_playback_state
+        time_elapsed = current_time - self.last_playback_state_update_time
+
+        if not state_changed and time_elapsed < 1.0:
+            # State didn't change and it's been less than 1 second - skip this update
+            return
 
         params = {
             "playbackStatus": playback_status,
@@ -1197,6 +1267,10 @@ class SnapcastControlScript:
         }
         self.send_notification("Plugin.Stream.Player.Properties", params)
         log(f"[Snapcast] Playback state → {playback_status} (stream={self.stream_id})")
+
+        # Update tracking
+        self.last_playback_state = playback_status
+        self.last_playback_state_update_time = current_time
 
     def send_metadata_update(self):
         """
@@ -1312,12 +1386,16 @@ class SnapcastControlScript:
 
                 # Execute command via D-Bus/MPRIS
                 if command == "play":
+                    # Don't clear GUI pause timestamp - let it age naturally
+                    # This handles cases where user pauses, resumes, then pauses again quickly
                     self.dbus_control.play()
                     log("[Command] Play command sent via D-Bus")
 
                 elif command == "pause":
+                    # Record GUI pause time to distinguish from source disconnect
+                    self.store.update(last_gui_pause_time=time.time())
                     self.dbus_control.pause()
-                    log("[Command] Pause command sent via D-Bus")
+                    log("[Command] Pause command sent via D-Bus (GUI-initiated)")
 
                 elif command == "playPause":
                     self.dbus_control.play_pause()
