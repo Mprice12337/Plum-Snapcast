@@ -576,6 +576,27 @@ class StreamLifecycleManager:
         else:
             shairport_service = "shairport-sync"
 
+        # CRITICAL: Kill shairport-sync process FIRST to disconnect AirPlay clients
+        # supervisorctl stop does a graceful shutdown that may preserve the connection
+        # Killing the process ensures the client is fully disconnected
+        log(f"Killing {shairport_service} process to disconnect AirPlay clients...")
+        try:
+            # Get PID from supervisorctl
+            result = subprocess.run(
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'pid', shairport_service],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip().isdigit():
+                pid = result.stdout.strip()
+                # Send SIGTERM to disconnect clients gracefully
+                subprocess.run(['kill', '-TERM', pid], timeout=5)
+                log(f"Sent SIGTERM to {shairport_service} (PID {pid}) - clients disconnected")
+                time.sleep(1)  # Give it time to disconnect
+        except Exception as e:
+            log(f"WARNING: Failed to kill {shairport_service} process: {e}")
+
         log(f"Stopping {shairport_service} to hide endpoint during cleanup...")
         try:
             subprocess.run(
