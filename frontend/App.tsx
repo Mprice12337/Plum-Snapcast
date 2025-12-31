@@ -11,6 +11,7 @@ import {getSnapcastData} from './services/snapcastDataService';
 import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
+import {getStreamPlayback} from './services/playbackService';
 import type {Client, Server, Settings, Stream, VisualizerPreset} from './types';
 import {DEFAULT_VISUALIZER_SETTINGS, BUILT_IN_PRESETS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
@@ -25,6 +26,37 @@ import musicNotePlaceholderRaw from './src/assets/icons/music-note-placeholder.s
 const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNotePlaceholderRaw)}`;
 
 const VOLUME_STEP = 5;
+
+// Helper function to validate album art URLs
+// Detects corrupted data URLs containing binary data instead of proper base64
+function isValidAlbumArtUrl(url: string | undefined | null): boolean {
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+        return false;
+    }
+
+    // For data URLs, check if they contain binary characters (null bytes, control chars)
+    if (url.startsWith('data:image')) {
+        // Check for null bytes or other control characters (except newlines)
+        // These indicate binary data was incorrectly placed in a string
+        for (let i = 0; i < Math.min(url.length, 200); i++) {
+            const code = url.charCodeAt(i);
+            // Null bytes, or control chars < 32 (except \n=10, \r=13, \t=9)
+            if (code === 0 || (code < 32 && code !== 10 && code !== 13 && code !== 9)) {
+                console.error(`[ArtValidation] ❌ Corrupted data URL detected at char ${i}: byte=${code} (${url.substring(0, 100)}...)`);
+                return false;
+            }
+        }
+
+        // Valid base64 should only contain A-Z, a-z, 0-9, +, /, =, and whitespace
+        const base64Part = url.substring(url.indexOf(',') + 1);
+        if (base64Part && !/^[A-Za-z0-9+/=\s]+$/.test(base64Part.substring(0, 100))) {
+            console.error(`[ArtValidation] ❌ Invalid base64 characters detected: ${base64Part.substring(0, 100)}...`);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 const App: React.FC = () => {
     const [streams, setStreams] = useState<Stream[]>([]);
@@ -685,8 +717,8 @@ const App: React.FC = () => {
                             title: metadata.title || stream.currentTrack.title,
                             artist: metadata.artist || stream.currentTrack.artist,
                             album: metadata.album || stream.currentTrack.album,
-                            // Update duration when it changes (convert from ms to seconds)
-                            duration: metadata.duration ? Math.floor(metadata.duration / 1000) : stream.currentTrack.duration,
+                            // Update duration when it changes (backend sends in seconds, already converted)
+                            duration: metadata.duration ? Math.floor(metadata.duration) : stream.currentTrack.duration,
                         };
 
                         // Handle artwork updates:
@@ -703,8 +735,15 @@ const App: React.FC = () => {
                             if (metadata.artUrl.startsWith('/')) {
                                 resolvedArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
                             }
-                            console.log(`[Metadata] ✓ Using provided artwork (${resolvedArtUrl.length} chars)`);
-                            updatedTrack.albumArtUrl = resolvedArtUrl;
+
+                            // Validate artwork URL before using it
+                            if (isValidAlbumArtUrl(resolvedArtUrl)) {
+                                console.log(`[Metadata] ✓ Using provided artwork (${resolvedArtUrl.length} chars)`);
+                                updatedTrack.albumArtUrl = resolvedArtUrl;
+                            } else {
+                                console.error(`[Metadata] ❌ Invalid artwork URL detected - using placeholder instead`);
+                                updatedTrack.albumArtUrl = musicNotePlaceholder;
+                            }
                         } else if (isNewTrack) {
                             console.log(`[Metadata] ⚠ New track without artwork - using placeholder`);
                             updatedTrack.albumArtUrl = musicNotePlaceholder;
@@ -713,29 +752,16 @@ const App: React.FC = () => {
                         }
                         // else: keep stream.currentTrack.albumArtUrl (already in updatedTrack from spread)
 
-                        // When we receive metadata, the stream is actively playing
-                        // This gives us instant state feedback instead of waiting for stream.status
-                        const wasPlaying = stream.isPlaying;
-                        const nowPlaying = true; // Metadata = audio is flowing = playing
-
-                        // Check if there's a recent user-initiated pause (grace period)
-                        const now = Date.now();
-                        const gracePeriod = 8000;
-                        const hasRecentPause = recentPlaybackChange &&
-                            recentPlaybackChange.streamId === streamId &&
-                            (now - recentPlaybackChange.timestamp) < gracePeriod;
-
-                        // If user just paused, don't override with metadata-based playing state
-                        const finalPlayingState = hasRecentPause ? stream.isPlaying : nowPlaying;
-
-                        if (!wasPlaying && finalPlayingState && !hasRecentPause) {
-                            console.log(`[Metadata] Stream ${streamId} started playing (metadata received)`);
-                        }
+                        // Metadata updates should NOT change playback state
+                        // The playbackStateUpdate handler is the single source of truth for play/pause state
+                        // Metadata can arrive while paused (some sources send metadata independent of playback)
+                        // Metadata can arrive after a pause command but before backend confirmation
+                        // Let the playbackStateUpdate handler manage isPlaying state exclusively
 
                         return {
                             ...stream,
                             currentTrack: updatedTrack,
-                            isPlaying: finalPlayingState,
+                            // DO NOT change isPlaying - keep current state
                             // Reset progress to 0 when new track starts
                             progress: isNewTrack ? 0 : stream.progress
                         };
@@ -785,8 +811,21 @@ const App: React.FC = () => {
                                 const serverStream = serverStatus.server.streams.find((s: any) => s.id === localStreamId);
                                 if (serverStream) {
                                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
+
+                                    // Check if there's a recent user-initiated playback change
+                                    const now = Date.now();
+                                    const gracePeriod = 8000;
+                                    const hasRecentChange = recentPlaybackChange &&
+                                        recentPlaybackChange.streamId === stream.id &&
+                                        (now - recentPlaybackChange.timestamp) < gracePeriod;
+
                                     if (stream.isPlaying !== isPlaying) {
-                                        console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                        if (hasRecentChange) {
+                                            console.log(`[PlaybackState] REFRESH - Ignoring state change during grace period`);
+                                            return stream; // Keep current state
+                                        } else {
+                                            console.log(`[PlaybackState] Stream ${stream.id} updated: ${stream.isPlaying} → ${isPlaying}`);
+                                        }
                                     }
                                     return {
                                         ...stream,
@@ -825,8 +864,21 @@ const App: React.FC = () => {
                     const isMatch = stream.id === federatedStreamId;
 
                     if (isMatch) {
+                        // Check if there's a recent user-initiated playback change
+                        const now = Date.now();
+                        const gracePeriod = 8000; // 8 seconds grace period
+                        const hasRecentChange = recentPlaybackChange &&
+                            recentPlaybackChange.streamId === stream.id &&
+                            (now - recentPlaybackChange.timestamp) < gracePeriod;
+
+                        // Only update if no recent user change or state matches expectation
                         if (stream.isPlaying !== isPlaying) {
-                            console.log(`[WebSocket] Stream ${streamId} playback state: ${stream.isPlaying ? 'Playing' : 'Paused'} → ${isPlaying ? 'Playing' : 'Paused'}`);
+                            if (hasRecentChange) {
+                                console.log(`[WebSocket] Ignoring playback state change during grace period (${Math.round((gracePeriod - (now - recentPlaybackChange.timestamp!)) / 1000)}s remaining)`);
+                                return stream; // Keep current state
+                            } else {
+                                console.log(`[WebSocket] Stream ${streamId} playback state: ${stream.isPlaying ? 'Playing' : 'Paused'} → ${isPlaying ? 'Playing' : 'Paused'}`);
+                            }
                         }
                         return {
                             ...stream,
@@ -840,15 +892,15 @@ const App: React.FC = () => {
 
         return () => unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [settings.federation.enabled, servers]);
+    }, [recentPlaybackChange, settings.federation.enabled, servers]);
 
     // Listen for real-time position updates from Snapcast (for sources that support it)
     useEffect(() => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
-            // Position and duration come in milliseconds from backend, convert to seconds
-            const progressInSeconds = Math.floor(position / 1000);
+            // Position and duration come in SECONDS from backend (already converted by control script)
+            const progressInSeconds = Math.floor(position);
             console.log(`[App] Position update received: stream=${streamId}, progress=${progressInSeconds}s, federationEnabled=${settings.federation.enabled}`);
 
             // Map local WebSocket stream ID to federated stream ID
@@ -944,14 +996,30 @@ const App: React.FC = () => {
 
         const syncStreamState = async () => {
             try {
-                const serverStream = await snapcastService.getStreamStatus(currentStream.id);
+                // Fetch both Snapcast stream data and our playback API data in parallel
+                // Skip playback API for "none-snapserver" stream (it doesn't have position data)
+                const [serverStream, playbackData] = await Promise.all([
+                    snapcastService.getStreamStatus(currentStream.id),
+                    currentStream.id === 'none-snapserver' ? Promise.resolve(null) : getStreamPlayback(currentStream.id)
+                ]);
+
                 if (serverStream) {
                     const isPlaying = snapcastService.isStreamPlaying(serverStream);
 
-                    // Extract position from stream properties (convert ms to seconds)
-                    const positionSeconds = serverStream.properties?.position
-                        ? Math.floor(serverStream.properties.position / 1000)
-                        : 0;
+                    // Prefer playback API for position, fall back to Snapcast properties
+                    let positionSeconds = 0;
+                    let durationSeconds = 0;
+
+                    if (playbackData && !playbackData.is_stale) {
+                        // Use playback API (includes server-side interpolation)
+                        positionSeconds = Math.floor(playbackData.interpolated_position / 1000);
+                        durationSeconds = Math.floor(playbackData.duration / 1000);
+                    } else {
+                        // Fall back to Snapcast properties
+                        positionSeconds = serverStream.properties?.position
+                            ? Math.floor(serverStream.properties.position)
+                            : 0;
+                    }
 
                     // Extract metadata from stream properties (simple field names)
                     let updatedMetadata = null;
@@ -978,18 +1046,8 @@ const App: React.FC = () => {
                             artist: Array.isArray(meta.artist) ? meta.artist.join(', ') : meta.artist,
                             album: meta.album,
                             albumArtUrl: albumArtUrl,
-                            // Convert duration from milliseconds to seconds
-                            duration: meta.duration ? Math.floor(meta.duration / 1000) : undefined
+                            duration: durationSeconds > 0 ? durationSeconds : (meta.duration ? Math.floor(meta.duration) : undefined)
                         };
-
-                        // Debug: Log what we got from server
-                        console.log(`[Polling] Server metadata:`, {
-                            hasTitle: !!updatedMetadata.title,
-                            hasArtist: !!updatedMetadata.artist,
-                            hasAlbum: !!updatedMetadata.album,
-                            hasArtUrl: updatedMetadata.albumArtUrl !== undefined,
-                            artUrlPreview: updatedMetadata.albumArtUrl ? updatedMetadata.albumArtUrl.substring(0, 50) + '...' : 'none'
-                        });
                     }
 
                     // Update stream with latest state AND metadata
@@ -998,83 +1056,42 @@ const App: React.FC = () => {
                             if (s.id === currentStream.id) {
                                 const updatedStream = { ...s };
 
-                                // Check if there's a recent user-initiated playback change
-                                const now = Date.now();
-                                const gracePeriod = 8000; // 8 seconds grace period
-                                const hasRecentChange = recentPlaybackChange &&
-                                    recentPlaybackChange.streamId === s.id &&
-                                    (now - recentPlaybackChange.timestamp) < gracePeriod;
-
-                                // Update playback state if changed (but respect grace period)
+                                // NEVER update playback state from polling - WebSocket events are the source of truth
+                                // Polling reads from Snapcast server state which may be stale/cached
+                                // WebSocket events (onPlaybackStateUpdate) provide real-time state changes
+                                // User clicks pause → optimistic update → wait for WebSocket confirmation
+                                // If polling overrides before WebSocket arrives, button flickers
+                                //
+                                // Only log state differences for debugging, don't apply them
                                 if (s.isPlaying !== isPlaying) {
-                                    if (hasRecentChange) {
-                                        console.log(`[Polling] Ignoring state change during grace period (${Math.round((gracePeriod - (now - recentPlaybackChange.timestamp!)) / 1000)}s remaining)`);
-                                    } else {
-                                        console.log(`[Polling] Stream ${s.id} playback state changed: ${s.isPlaying} → ${isPlaying}`);
-                                        updatedStream.isPlaying = isPlaying;
-
-                                        // If transitioning from paused to playing and artwork is placeholder, immediately refresh
-                                        // This handles the case where user skips while paused and artwork doesn't arrive until playback resumes
-                                        if (!s.isPlaying && isPlaying) {
-                                            const isDefaultArtwork = s.currentTrack.albumArtUrl === musicNotePlaceholder;
-                                            if (isDefaultArtwork) {
-                                                console.log(`[Polling] Playback resumed with placeholder artwork - fetching fresh metadata`);
-                                                // Immediately fetch fresh metadata to get artwork that may have arrived when playback resumed
-                                                setTimeout(() => {
-                                                    snapcastService.getStreamStatus(s.id).then(freshStream => {
-                                                        const artUrl = freshStream?.properties?.metadata?.artUrl;
-                                                        if (artUrl && artUrl.trim() !== '') {
-                                                            console.log(`[Resume] Found artwork after resume - applying`);
-                                                            setStreams(prev => prev.map(st =>
-                                                                st.id === s.id
-                                                                    ? {...st, currentTrack: {...st.currentTrack, albumArtUrl: artUrl}}
-                                                                    : st
-                                                            ));
-                                                        }
-                                                    });
-                                                }, 500); // Small delay to let backend process resume
-                                            }
-                                        }
-                                    }
+                                    console.log(`[Polling] ℹ Playback state mismatch (UI: ${s.isPlaying}, Server: ${isPlaying}) - waiting for WebSocket update`);
                                 }
+
 
                                 // Update metadata if we got new data
                                 if (updatedMetadata) {
-                                    // Detect if this is a new track (title changed)
                                     const isNewTrack = updatedMetadata.title && updatedMetadata.title !== s.currentTrack.title;
-
-                                    console.log(`[Polling] Track analysis:`, {
-                                        isNewTrack,
-                                        oldTitle: s.currentTrack.title,
-                                        newTitle: updatedMetadata.title,
-                                        currentArtUrl: s.currentTrack.albumArtUrl?.substring(0, 50) + '...'
-                                    });
 
                                     updatedStream.currentTrack = {
                                         ...s.currentTrack,
                                         title: updatedMetadata.title || s.currentTrack.title,
                                         artist: updatedMetadata.artist || s.currentTrack.artist,
                                         album: updatedMetadata.album || s.currentTrack.album,
-                                        // Update duration when it changes (already in seconds from metadata extraction)
                                         duration: updatedMetadata.duration !== undefined ? updatedMetadata.duration : s.currentTrack.duration,
                                     };
 
-                                    // Handle artwork updates:
-                                    // - If artwork explicitly provided and valid → use it
-                                    // - If new track but no artwork yet → clear to default
-                                    // - Otherwise → keep current artwork (for partial metadata updates)
-                                    const artUrlType = updatedMetadata.albumArtUrl === undefined ? 'undefined' : updatedMetadata.albumArtUrl === null ? 'null' : updatedMetadata.albumArtUrl === '' ? 'empty' : 'valid';
-                                    const artUrlPreview = updatedMetadata.albumArtUrl ? `${updatedMetadata.albumArtUrl.substring(0, 50)}...` : String(updatedMetadata.albumArtUrl);
-                                    console.log(`[Polling] artUrl from server: type=${artUrlType}, preview=${artUrlPreview}`);
-
+                                    // Handle artwork: use provided, default for new track, or keep current
                                     if (updatedMetadata.albumArtUrl && updatedMetadata.albumArtUrl.trim() !== '') {
-                                        console.log(`[Polling] ✓ Using provided artwork (${updatedMetadata.albumArtUrl.length} chars)`);
-                                        updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                        // Validate artwork URL before using it
+                                        if (isValidAlbumArtUrl(updatedMetadata.albumArtUrl)) {
+                                            updatedStream.currentTrack.albumArtUrl = updatedMetadata.albumArtUrl;
+                                        } else {
+                                            console.error(`[Polling] ❌ Invalid artwork URL detected - using placeholder instead`);
+                                            updatedStream.currentTrack.albumArtUrl = musicNotePlaceholder;
+                                        }
                                     } else if (isNewTrack) {
-                                        console.log(`[Polling] ⚠ New track without artwork - using placeholder`);
                                         updatedStream.currentTrack.albumArtUrl = musicNotePlaceholder;
                                     } else {
-                                        console.log(`[Polling] Keeping existing artwork`);
                                         updatedStream.currentTrack.albumArtUrl = s.currentTrack.albumArtUrl;
                                     }
 
@@ -1084,12 +1101,13 @@ const App: React.FC = () => {
                                     }
                                 }
 
-                                // Only sync position from polling on initial load (when current progress is 0)
-                                // After that, let useAudioSync handle client-side interpolation
-                                // WebSocket notifications will handle seeks/track changes
-                                if (isPlaying && positionSeconds > 0 && s.progress === 0) {
-                                    console.log(`[Polling] Initial position sync: ${positionSeconds}s`);
-                                    updatedStream.progress = positionSeconds;
+                                // Sync position from playback API (server-side interpolation)
+                                if (isPlaying && positionSeconds > 0 && playbackData && !playbackData.is_stale) {
+                                    // Update if position changed significantly (>2s) or initial load
+                                    const positionDiff = Math.abs(positionSeconds - s.progress);
+                                    if (positionDiff > 2 || s.progress === 0) {
+                                        updatedStream.progress = positionSeconds;
+                                    }
                                 }
 
                                 return updatedStream;
@@ -1294,10 +1312,10 @@ const App: React.FC = () => {
                         artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
                         album: metadata.album || 'Unknown Album',
                         albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
-                        duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0
+                        duration: metadata.duration ? Math.floor(metadata.duration) : 0  // Already in seconds
                     },
                     isPlaying: properties.playbackStatus === 'playing',
-                    progress: properties.position ? Math.floor(properties.position / 1000) : 0
+                    progress: properties.position ? Math.floor(properties.position) : 0  // Already in seconds
                 };
             };
 
@@ -1790,6 +1808,27 @@ const App: React.FC = () => {
                         setRecentPlaybackChange({streamId: currentStream.id, timestamp});
                         setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
                         await snapcastService.pauseStream(localStreamId);
+
+                        // Safety fallback: If no WebSocket confirmation arrives within 15s, query actual state
+                        setTimeout(async () => {
+                            const current = streamsRef.current.find(s => s.id === currentStream.id);
+                            if (current && !current.isPlaying) {
+                                // Still showing paused - verify with backend
+                                const serverStatus = await snapcastService.getServerStatus();
+                                const serverStream = serverStatus?.server?.streams?.find((s: any) =>
+                                    s.id === getLocalStreamId(currentStream.id)
+                                );
+                                if (serverStream) {
+                                    const actualIsPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (actualIsPlaying !== current.isPlaying) {
+                                        console.log(`[Fallback] Pause command never confirmed - reverting to actual state: ${actualIsPlaying}`);
+                                        setStreams(prev => prev.map(s =>
+                                            s.id === currentStream.id ? {...s, isPlaying: actualIsPlaying} : s
+                                        ));
+                                    }
+                                }
+                            }
+                        }, 15000);
                     } else {
                         console.warn(`Stream ${currentStream.id} does not support pause`);
                     }
@@ -1805,6 +1844,27 @@ const App: React.FC = () => {
                         setRecentPlaybackChange({streamId: currentStream.id, timestamp});
                         setRecentUserChanges({type: 'playback', timestamp, data: {streamId: currentStream.id}});
                         await snapcastService.playStream(localStreamId);
+
+                        // Safety fallback: If no WebSocket confirmation arrives within 15s, query actual state
+                        setTimeout(async () => {
+                            const current = streamsRef.current.find(s => s.id === currentStream.id);
+                            if (current && current.isPlaying) {
+                                // Still showing playing - verify with backend
+                                const serverStatus = await snapcastService.getServerStatus();
+                                const serverStream = serverStatus?.server?.streams?.find((s: any) =>
+                                    s.id === getLocalStreamId(currentStream.id)
+                                );
+                                if (serverStream) {
+                                    const actualIsPlaying = snapcastService.isStreamPlaying(serverStream);
+                                    if (actualIsPlaying !== current.isPlaying) {
+                                        console.log(`[Fallback] Play command never confirmed - reverting to actual state: ${actualIsPlaying}`);
+                                        setStreams(prev => prev.map(s =>
+                                            s.id === currentStream.id ? {...s, isPlaying: actualIsPlaying} : s
+                                        ));
+                                    }
+                                }
+                            }
+                        }, 15000);
                     } else {
                         console.warn(`Stream ${currentStream.id} does not support play`);
                     }

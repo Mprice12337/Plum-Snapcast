@@ -3,6 +3,14 @@ set -e
 
 echo "Starting Plum Snapcast Server setup..."
 
+# Ensure settings file exists (run migration if needed)
+if [ ! -f /app/data/settings.json ]; then
+    echo "Settings file not found. Running migration to create default settings..."
+    if [ -f /app/scripts/migrate-env-to-settings.py ]; then
+        python3 /app/scripts/migrate-env-to-settings.py 2>&1 | grep -v "^=" || true
+    fi
+fi
+
 # Load settings from settings API/file
 # This will set environment variables based on stored settings
 # Falls back to existing env vars if settings file doesn't exist
@@ -161,12 +169,28 @@ if [ "${HTTPS_ENABLED}" = "1" ] && [ "${SKIP_CERT_GENERATION}" != "1" ]; then
     fi
 fi
 
-# Update shairport-sync device name and copy config to /etc
-if [ -n "${AIRPLAY_DEVICE_NAME}" ]; then
-    sed -i "/^general = {/,/^}/{s/name = \".*\";/name = \"${AIRPLAY_DEVICE_NAME}\";/}" /app/config/shairport-sync.conf
+# Ensure snapcast user owns config directory for dynamic endpoint management
+# (API needs to write configs when endpoints are added/updated)
+chown -R snapcast:snapcast /app/config
+chmod -R u+w /app/config
+
+# AirPlay Endpoint Configuration (always use multi-instance approach)
+# Endpoints are configured via settings.json and parsed by get-settings.py
+echo "Setting up AirPlay endpoints..."
+bash /app/scripts/setup-airplay-multi-instance.sh
+
+# Disable old single-instance AirPlay components (if they exist)
+# Need to disable in BOTH snapcast.ini and snapclient.ini since both define the service
+if [ -f /app/supervisord/snapcast.ini ]; then
+    sed -i '/^\[program:shairport-sync\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapcast.ini 2>/dev/null || true
+    sed -i '/^\[program:stream-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapcast.ini 2>/dev/null || true
+    echo "Disabled old single-instance AirPlay services in snapcast.ini"
 fi
-# Copy shairport-sync config to /etc (even if name wasn't updated)
-cp /app/config/shairport-sync.conf /etc/shairport-sync.conf
+if [ -f /app/supervisord/snapclient.ini ]; then
+    sed -i '/^\[program:shairport-sync\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapclient.ini 2>/dev/null || true
+    sed -i '/^\[program:stream-lifecycle-manager\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/snapclient.ini 2>/dev/null || true
+    echo "Disabled old single-instance AirPlay services in snapclient.ini"
+fi
 
 # Note: Federation API server always runs to provide Settings API
 # Federation features (multi-server control) are enabled/disabled via settings

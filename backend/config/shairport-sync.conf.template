@@ -1,0 +1,48 @@
+general = {
+    name = "AIRPLAY_NAME";
+    output_backend = "pipe";
+    mdns_backend = "avahi";
+    port = AIRPLAY_PORT;
+    udp_port_base = AIRPLAY_UDP_BASE;
+    udp_port_range = 10;
+    drift_tolerance_in_seconds = 0.002;
+    resync_threshold_in_seconds = 0.050;
+    log_verbosity = 1;
+};
+
+sessioncontrol = {
+    session_timeout = 20;
+    allow_session_interruption = "yes";
+    wait_for_completion = "no";
+};
+
+metadata = {
+    enabled = "yes";
+    include_cover_art = "yes";
+    cover_art_cache_directory = "/tmp/shairport-sync-INSTANCE_ID/.cache/coverart";
+    pipe_name = "/tmp/airplay-INSTANCE_ID-metadata";
+    pipe_timeout = 5000;
+    progress_interval = 1.0;
+};
+
+pipe = {
+  name = "/tmp/airplay-INSTANCE_ID-fifo";
+  audio_backend_latency_offset_in_seconds = 0.0;
+  audio_backend_buffer_desired_length_in_seconds = 0.2;
+};
+
+mqtt = {
+    enabled = "yes";
+    hostname = "127.0.0.1";
+    port = 1883;
+    topic = "plum-snapcast/airplay/INSTANCE_ID";
+    publish_raw = "no";
+    publish_parsed = "yes";
+    publish_cover = "yes";
+    enable_remote = "no";  // Remote control via D-Bus/MPRIS instead
+};
+
+dbus = {
+    enabled = "yes";
+    bus = "system";
+};

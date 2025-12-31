@@ -1,5 +1,37 @@
 import {snapcastService} from './snapcastService';
+import {getStreamPlayback} from './playbackService';
 import type {Client, Stream, Track} from '../types';
+
+// Helper function to validate album art URLs
+// Detects corrupted data URLs containing binary data instead of proper base64
+function isValidAlbumArtUrl(url: string | undefined | null): boolean {
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+        return false;
+    }
+
+    // For data URLs, check if they contain binary characters (null bytes, control chars)
+    if (url.startsWith('data:image')) {
+        // Check for null bytes or other control characters (except newlines)
+        // These indicate binary data was incorrectly placed in a string
+        for (let i = 0; i < Math.min(url.length, 200); i++) {
+            const code = url.charCodeAt(i);
+            // Null bytes, or control chars < 32 (except \n=10, \r=13, \t=9)
+            if (code === 0 || (code < 32 && code !== 10 && code !== 13 && code !== 9)) {
+                console.error(`[ArtValidation] ❌ Corrupted data URL detected at char ${i}: byte=${code} (${url.substring(0, 100)}...)`);
+                return false;
+            }
+        }
+
+        // Valid base64 should only contain A-Z, a-z, 0-9, +, /, =, and whitespace
+        const base64Part = url.substring(url.indexOf(',') + 1);
+        if (base64Part && !/^[A-Za-z0-9+/=\s]+$/.test(base64Part.substring(0, 100))) {
+            console.error(`[ArtValidation] ❌ Invalid base64 characters detected: ${base64Part.substring(0, 100)}...`);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 // Default fallback data for when no metadata is available
 const createDefaultTrack = (): Track => ({
@@ -121,16 +153,26 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
     let albumArtUrl = createDefaultTrack().albumArtUrl;
 
     if (metadata.artUrl) {
+        let resolvedUrl = metadata.artUrl;
+
         // Check if it's a data URL (embedded image)
         if (metadata.artUrl.startsWith('data:')) {
             // Data URL - use directly
-            albumArtUrl = metadata.artUrl;
+            resolvedUrl = metadata.artUrl;
         } else if (metadata.artUrl.startsWith('/')) {
             // Relative path - prepend Snapcast HTTP server URL
-            albumArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            resolvedUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
         } else {
             // Absolute URL - use directly
-            albumArtUrl = metadata.artUrl;
+            resolvedUrl = metadata.artUrl;
+        }
+
+        // Validate before using
+        if (isValidAlbumArtUrl(resolvedUrl)) {
+            albumArtUrl = resolvedUrl;
+        } else {
+            console.error(`[DataService] ❌ Invalid artwork URL detected - using placeholder instead`);
+            // Keep default placeholder
         }
     }
 
@@ -140,8 +182,8 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         artist: formatArtist(metadata.artist),
         album: metadata.album || 'Unknown Album',
         albumArtUrl: albumArtUrl,
-        // Duration comes from backend in milliseconds, convert to seconds
-        duration: metadata.duration ? Math.floor(metadata.duration / 1000) : 0,
+        // Duration comes from backend in seconds (per Snapcast API)
+        duration: metadata.duration ? Math.floor(metadata.duration) : 0,
     };
 
     // Determine if stream is playing - check properties.playbackStatus first, then fall back to status
@@ -154,17 +196,50 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         isPlaying = snapStream.status === 'playing';
     }
 
-    // Extract position from properties (comes from backend in milliseconds, convert to seconds)
+    // Extract position - prefer playback API for real-time interpolation
     let progress = 0;
-    if (snapStream.properties?.position !== undefined && snapStream.properties.position !== null) {
-        progress = Math.floor(snapStream.properties.position / 1000);
+    let duration = track.duration;
+
+    // Helper to extract position from Snapcast stream properties
+    const getPositionFromProperties = (): number => {
+        if (snapStream.properties?.position !== undefined && snapStream.properties.position !== null) {
+            return Math.floor(snapStream.properties.position);  // Already in seconds
+        }
+        return 0;
+    };
+
+    // Try to get position from playback API (server-side interpolation)
+    // This ensures page refreshes show correct position immediately
+    if (isPlaying && snapStream.id !== 'none-snapserver') {
+        try {
+            const playbackData = await getStreamPlayback(snapStream.id);
+            if (playbackData && !playbackData.is_stale) {
+                // Use interpolated position from playback API
+                progress = Math.floor(playbackData.interpolated_position / 1000);
+                duration = Math.floor(playbackData.duration / 1000);
+                console.log(`[DataService] Loaded initial position from playback API: ${progress}s / ${duration}s for stream ${snapStream.id}`);
+            } else {
+                // Fall back to stream properties
+                progress = getPositionFromProperties();
+            }
+        } catch (error) {
+            console.warn(`[DataService] Failed to fetch playback data for ${snapStream.id}:`, error);
+            // Fall back to stream properties
+            progress = getPositionFromProperties();
+        }
+    } else {
+        // Not playing or none-snapserver stream - use stream properties
+        progress = getPositionFromProperties();
     }
 
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
         sourceDevice: getSourceDevice(snapStream),
-        currentTrack: track,
+        currentTrack: {
+            ...track,
+            duration: duration  // Update duration from playback API if available
+        },
         isPlaying: isPlaying,
         progress: progress,
     };

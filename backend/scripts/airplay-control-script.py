@@ -8,15 +8,19 @@ Based on proven pattern from metadata-debug-server.py:
 - mdst/mden bundle pattern with pending state
 - Independent artwork handling
 - Only send complete, consistent updates to Snapcast
-- D-Bus integration for playback state and remote control
+- MQTT integration for playback state and remote control
 """
 
 import argparse
 import base64
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,6 +30,11 @@ METADATA_PIPE = "/tmp/shairport-sync-metadata"
 COVER_ART_CACHE_DIR = "/tmp/shairport-sync/.cache/coverart"
 LOG_FILE = "/tmp/airplay-control-script.log"
 STREAM_END_SIGNAL_FILE = "/tmp/airplay-stream-end.signal"
+
+# Playback API configuration (for real-time position tracking independent of Snapcast)
+# This API runs on the federation service port (default 5000)
+PLAYBACK_API_PORT = int(os.getenv("FEDERATION_API_PORT", "5000"))
+PLAYBACK_API_URL = f"http://localhost:{PLAYBACK_API_PORT}/api/playback"
 
 # Set up logging to file
 def log(message: str):
@@ -50,6 +59,59 @@ def signal_stream_end():
     except Exception as e:
         log(f"[Signal] Failed to write signal file: {e}")
 
+
+def post_playback_position(stream_id: str, position_ms: int, duration_ms: int,
+                           playback_status: str = "playing", **extra):
+    """
+    POST position update to playback API (non-blocking).
+
+    Sends position data to our API instead of Snapcast notifications to avoid audio stuttering.
+    """
+    def _post():
+        try:
+            # URL-encode the stream_id for the path
+            encoded_stream_id = urllib.request.quote(stream_id, safe='')
+            url = f"{PLAYBACK_API_URL}/{encoded_stream_id}"
+
+            data = {
+                "position": position_ms,
+                "duration": duration_ms,
+                "playback_status": playback_status,
+                **extra
+            }
+
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=2) as response:
+                if response.status == 200:
+                    log(f"[PlaybackAPI] Posted position: {position_ms}ms / {duration_ms}ms ({playback_status})")
+                else:
+                    log(f"[PlaybackAPI] Unexpected status: {response.status}")
+
+        except urllib.error.URLError as e:
+            # API might not be ready yet - this is expected during startup
+            log(f"[PlaybackAPI] Failed to post (API may not be ready): {e.reason}")
+        except Exception as e:
+            log(f"[PlaybackAPI] Error posting position: {e}")
+
+    # Run in background thread to avoid blocking metadata processing
+    thread = threading.Thread(target=_post, daemon=True)
+    thread.start()
+
+
+# Try to import MQTT - graceful fallback if not available
+try:
+    import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
+except ImportError:
+    MQTT_AVAILABLE = False
+    log("[Warning] MQTT not available - metadata disabled")
+
 # Try to import D-Bus - graceful fallback if not available
 try:
     import dbus
@@ -60,11 +122,45 @@ except ImportError:
     DBUS_AVAILABLE = False
     log("[Warning] D-Bus not available - playback controls disabled")
 
+# MQTT broker configuration (localhost-only)
+MQTT_BROKER = "127.0.0.1"
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
+
+
+def get_shairport_pid(instance_id: str) -> Optional[str]:
+    """
+    Get PID of shairport-sync process for specific instance.
+    Used for MPRIS service name detection (org.mpris.MediaPlayer2.ShairportSync.i[PID])
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"shairport-sync.*shairport-sync-{instance_id}.conf"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pid = result.stdout.strip().split('\n')[0]
+            log(f"[DBus] Found shairport-sync instance {instance_id} PID: {pid}")
+            return pid
+        else:
+            log(f"[DBus] Could not find PID for instance {instance_id}")
+            return None
+    except Exception as e:
+        log(f"[DBus] Error getting PID: {e}")
+        return None
+
 
 class MetadataStore:
     """
     Thread-safe storage for current metadata and playback state.
-    This ensures atomic reads/writes and consistency.
+
+    Position Interpolation:
+    - Stores position and timestamp when D-Bus ProgressString updates
+    - get_current_position() calculates current position by adding elapsed time
+    - Provides smooth progress tracking between D-Bus updates (which only occur
+      on track change/seek, not continuously during playback)
     """
 
     def __init__(self):
@@ -76,9 +172,12 @@ class MetadataStore:
             "track_id": None,
             "artwork_url": None,
             "last_updated": None,
-            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
-            "duration": None,  # Track duration in milliseconds
-            "position": 0,  # Current position in milliseconds
+            "playback_status": "stopped",  # "playing", "paused", or "stopped"
+            "duration": 0,  # Track duration in milliseconds
+            "position": 0,  # Last known position from D-Bus (milliseconds)
+            "position_timestamp": None,  # When position was last updated (for interpolation)
+            "last_gui_pause_time": None,  # Track when pause command was sent from GUI
+            "last_pend_time": None,  # Track when stream ended gracefully (pend event)
         }
 
     def update(self, **kwargs):
@@ -86,12 +185,41 @@ class MetadataStore:
         with self.lock:
             self.data.update(kwargs)
             self.data["last_updated"] = time.time()
+            # Record timestamp when position is updated for interpolation
+            if "position" in kwargs:
+                self.data["position_timestamp"] = time.time()
             log(f"[Store] Updated: {list(kwargs.keys())}")
 
     def get_all(self) -> Dict:
         """Get all metadata (returns a copy)"""
         with self.lock:
             return self.data.copy()
+
+    def get_current_position(self) -> int:
+        """
+        Get current playback position with client-side interpolation.
+        If playing, calculates position based on elapsed time since last update.
+        Returns position in milliseconds.
+        """
+        with self.lock:
+            stored_position = self.data.get("position", 0)
+            playback_status = self.data.get("playback_status", "stopped")
+            position_timestamp = self.data.get("position_timestamp")
+            duration = self.data.get("duration")
+
+            # If not playing or no timestamp, return stored position
+            if playback_status != "playing" or position_timestamp is None:
+                return stored_position
+
+            # Calculate elapsed time and interpolate
+            elapsed_ms = int((time.time() - position_timestamp) * 1000)
+            interpolated_position = stored_position + elapsed_ms
+
+            # Clamp to duration if available
+            if duration and interpolated_position > duration:
+                return duration
+
+            return interpolated_position
 
     def get_metadata_for_snapcast(self) -> Optional[Dict]:
         """
@@ -102,31 +230,42 @@ class MetadataStore:
         - artist (array of strings)
         - album (string)
         - artUrl (string)
+        - duration (float, seconds)
+
+        Returns partial metadata if available - duration from prgr events
+        can arrive before title/artist metadata.
         """
         with self.lock:
-            # Only return if we have at least a title
+            meta = {}
+
+            # Snapcast metadata fields (simple names, not MPRIS)
             if self.data.get("title"):
-                meta = {}
+                meta["title"] = self.data["title"]
 
-                # Snapcast metadata fields (simple names, not MPRIS)
-                if self.data.get("title"):
-                    meta["title"] = self.data["title"]
+            if self.data.get("artist"):
+                # Snapcast expects artist as an array
+                meta["artist"] = [self.data["artist"]]
 
-                if self.data.get("artist"):
-                    # Snapcast expects artist as an array
-                    meta["artist"] = [self.data["artist"]]
+            if self.data.get("album"):
+                meta["album"] = self.data["album"]
 
-                if self.data.get("album"):
-                    meta["album"] = self.data["album"]
+            # Only include artwork if we have a valid, non-empty URL
+            artwork_url = self.data.get("artwork_url")
+            if artwork_url and isinstance(artwork_url, str) and len(artwork_url) > 50:
+                # Valid artwork URLs are data URLs (minimum ~50 chars) or http URLs
+                # Skip empty strings, None, and corrupted short data URLs
+                meta["artUrl"] = artwork_url
 
-                if self.data.get("artwork_url"):
-                    meta["artUrl"] = self.data["artwork_url"]
+            # Duration in SECONDS per Snapcast API (convert from internal milliseconds)
+            # Internal storage is in ms, but Snapcast expects seconds (like position)
+            # CRITICAL: Include duration even without title! prgr events provide duration
+            # before metadata events arrive, allowing frontend to display progress immediately.
+            if self.data.get("duration"):
+                meta["duration"] = self.data["duration"] / 1000.0
 
-                if self.data.get("duration"):
-                    meta["duration"] = self.data["duration"]
-
-                return meta
-            return None
+            # Return metadata if we have ANY fields (duration, title, etc.)
+            # Don't wait for complete metadata - partial updates are valuable
+            return meta if meta else None
 
 
 class MetadataParser:
@@ -139,8 +278,11 @@ class MetadataParser:
     - Handle artwork independently
     """
 
-    def __init__(self, store: MetadataStore):
+    def __init__(self, store: MetadataStore, on_position_update=None, mqtt_control=None, on_state_change=None):
         self.store = store
+        self.on_position_update = on_position_update  # Callback for position updates
+        self.mqtt_control = mqtt_control  # MQTT control for playback commands
+        self.on_state_change = on_state_change  # Callback for playback state changes (sends Snapcast notification)
 
         # Current state (what's been applied)
         self.current = {
@@ -167,6 +309,10 @@ class MetadataParser:
         # Bundle state flags
         self.in_metadata_bundle = False
         self.in_artwork_bundle = False
+
+        # Track change flag - prevents stale prgr events from overwriting position reset
+        self.waiting_for_fresh_prgr = False
+        self.expected_new_duration = None  # Duration from metadata bundle
 
     def parse_item(self, item_xml: str) -> bool:
         """
@@ -218,6 +364,17 @@ class MetadataParser:
 
                     updated = False
 
+                    # Detect track change by checking if title changed
+                    track_changed = False
+                    if self.pending_metadata["title"]:
+                        old_title = self.current.get("title")
+                        new_title = self.pending_metadata["title"]
+                        # Track changed if title changed AND old title wasn't placeholder/empty
+                        # (Don't treat initial connection as track change - preserves mid-track position)
+                        if old_title != new_title and old_title and old_title not in ["Unknown Track", "N/A"]:
+                            track_changed = True
+                            log(f"[Bundle] Track changed: '{old_title}' → '{new_title}'")
+
                     # Apply all pending metadata at once to both current and store
                     if self.pending_metadata["title"]:
                         self.current["title"] = self.pending_metadata["title"]
@@ -237,12 +394,18 @@ class MetadataParser:
                         log(f"[Bundle] Applied album: {self.pending_metadata['album']}")
                         updated = True
 
-                    # When we receive metadata, the stream is playing
-                    # Update playback state to "Playing"
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (metadata received)")
+                    # CRITICAL: Do NOT set playback status based on metadata!
+                    # Metadata arrives even when paused (AirPlay sends metadata updates).
+                    # Only pbeg, pfls, paus, prsm, prgr events and control commands should update status.
+
+                    # CRITICAL: Reset position when track changes to prevent interpolation from previous track
+                    if track_changed:
+                        log(f"[Bundle] Resetting position for new track")
+                        self.store.update(position=0, duration=0, position_timestamp=None)
+                        # Flag to reject stale prgr events until we get fresh data from new track
+                        self.waiting_for_fresh_prgr = True
+                        self.expected_new_duration = None
+                        log(f"[Bundle] Waiting for fresh prgr data from new track")
                         updated = True
 
                     # Check for cached artwork (in case track changed but artwork is from same album)
@@ -259,34 +422,67 @@ class MetadataParser:
 
                 # ===== PLAYBACK STATE EVENTS (ssnc) =====
                 elif code == "pbeg":
-                    # Play stream begin
+                    # Play stream begin - clear GUI pause timestamp (new session)
                     log(f"[Session] Play stream BEGIN")
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (stream begin)")
-                        return True  # Signal update
+                    current_state = self.store.get_all().get("playback_status", "stopped")
+                    if current_state != "playing":
+                        # MQTT: Position from metadata pipe only (no query API)
+                        position_ms = 0
+                        duration_ms = 0
+
+                        # Start interpolation immediately and clear old GUI pause timestamp
+                        self.store.update(
+                            playback_status="playing",
+                            position=position_ms,
+                            duration=duration_ms,
+                            position_timestamp=time.time(),
+                            last_gui_pause_time=None,
+                            last_pend_time=None
+                        )
+
+                        # Send immediate Snapcast notification
+                        if self.on_state_change:
+                            self.on_state_change()
+
+                        # Update playback API immediately with starting position
+                        if self.on_position_update:
+                            self.on_position_update(position_ms, duration_ms, "playing")
+
+                        log(f"[State] Playback state → playing (stream begin, position={position_ms}ms) - notified")
+                        return False  # Don't trigger duplicate notification
                     return False
 
                 elif code == "pend":
-                    # Play stream end - NOTE: This happens frequently during normal playback
-                    # (between tracks, during buffering, etc.). DO NOT signal stream end here.
-                    # The lifecycle manager will detect actual stream end via idle timeout.
-                    log(f"[Session] Play stream END (pend) - NOT signaling removal")
-                    current_state = self.store.get_all().get("playback_status", "Stopped")
-                    if current_state != "Stopped":
-                        # Don't change playback status to Stopped - this is likely just a track change
-                        # The stream is still active even if we get pend events
-                        log(f"[State] Ignoring pend - stream still active")
-                        return False
-                    return False
+                    # Play stream end - Can indicate pause from source device or track end
+                    # NOTE: Also happens during track changes, but in that case pbeg will follow
+                    log(f"[Session] Play stream END (pend)")
+                    current_state = self.store.get_all().get("playback_status", "stopped")
+
+                    # Treat pend as pause - stream goes idle
+                    # Always update playback API and notify (frontend needs this for source device pause)
+                    # CRITICAL: Track pend time so active_end can distinguish graceful pause from network disconnect
+                    self.store.update(playback_status="paused", last_pend_time=time.time())
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Always send immediate Snapcast notification for pause from source
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused (stream ended) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification from pipe monitor
 
                 elif code == "prgr":
-                    # Progress information: "start_rtp/current_rtp/end_rtp"
-                    # RTP timestamps at 44.1kHz sample rate
+                    # Progress information: "start_rtp/current_rtp/end_rtp" (RTP timestamps at 44.1kHz)
+                    # Position updates POST to playback API (not Snapcast) to avoid audio stuttering
                     if data_text:
                         try:
-                            parts = data_text.split("/")
+                            decoded = base64.b64decode(data_text).decode('utf-8')
+                            parts = decoded.split("/")
                             if len(parts) == 3:
                                 start_rtp = int(parts[0])
                                 current_rtp = int(parts[1])
@@ -296,43 +492,134 @@ class MetadataParser:
                                 duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
                                 position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
 
-                                # Update store with position and duration
-                                self.store.update(duration=duration_ms, position=position_ms)
-                                # Don't log every progress update (too verbose)
-                                return True  # Signal update
-                        except (ValueError, ZeroDivisionError) as e:
+                                # Get current state for comparison
+                                state_data = self.store.get_all()
+                                old_position = state_data.get("position", 0)
+                                old_duration = state_data.get("duration", 0)
+
+                                # CRITICAL: If waiting for fresh prgr after track change, validate this data
+                                fresh_prgr_accepted = False
+                                if self.waiting_for_fresh_prgr:
+                                    # Accept prgr if position is near start (< 10s) - this is the new track
+                                    if position_ms < 10000:
+                                        log(f"[Progress] Accepting fresh prgr (position={position_ms}ms < 10s) after track change")
+                                        self.waiting_for_fresh_prgr = False
+                                        self.expected_new_duration = duration_ms
+                                        fresh_prgr_accepted = True
+                                    # Also accept if duration changed significantly AND position is reasonable
+                                    elif old_duration > 0 and abs(duration_ms - old_duration) > 10000 and position_ms < duration_ms * 0.2:
+                                        log(f"[Progress] Accepting fresh prgr (duration changed: {old_duration}ms → {duration_ms}ms, position={position_ms}ms) after track change")
+                                        self.waiting_for_fresh_prgr = False
+                                        self.expected_new_duration = duration_ms
+                                        fresh_prgr_accepted = True
+                                    else:
+                                        # Reject stale prgr data - position too high or same duration
+                                        log(f"[Progress] REJECTING stale prgr (position={position_ms}ms, duration={duration_ms}ms) - waiting for fresh data from new track")
+                                        return False
+
+                                # Detect track changes by position jumping backwards significantly
+                                # This can happen when prgr arrives before metadata bundle completes
+                                # BUT: Don't re-flag if we just accepted a fresh prgr above (prevents infinite rejection)
+                                track_likely_changed = (
+                                    not fresh_prgr_accepted and
+                                    (
+                                        (old_position > 5000 and position_ms < old_position - 5000) or
+                                        (old_duration > 0 and abs(duration_ms - old_duration) > 10000)
+                                    )
+                                )
+
+                                if track_likely_changed:
+                                    log(f"[Progress] Track change detected (position: {old_position}ms → {position_ms}ms, duration: {old_duration}ms → {duration_ms}ms)")
+                                    # Reset position and flag to wait for confirmation
+                                    self.waiting_for_fresh_prgr = True
+                                    self.expected_new_duration = duration_ms
+
+                                current_state = state_data.get("playback_status", "stopped")
+                                if current_state != "playing":
+                                    # State change to playing - notify Snapcast
+                                    self.store.update(playback_status="playing", duration=duration_ms, position=position_ms, position_timestamp=time.time())
+                                    if self.on_position_update:
+                                        self.on_position_update(position_ms, duration_ms, "playing")
+                                    return True  # Notify on state change
+                                else:
+                                    # Position update only - no Snapcast notification (avoid stuttering)
+                                    self.store.update(duration=duration_ms, position=position_ms, position_timestamp=time.time())
+                                    if self.on_position_update:
+                                        self.on_position_update(position_ms, duration_ms, "playing")
+                                    return False  # No notification for position-only updates
+                        except (ValueError, ZeroDivisionError, UnicodeDecodeError) as e:
                             log(f"[Progress] Failed to parse prgr: {data_text} - {e}")
                     return False
 
                 elif code == "paus":
                     # Pause (older shairport-sync versions)
                     log(f"[Session] PAUSE")
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    if current_state != "Paused":
-                        self.store.update(playback_status="Paused")
-                        log(f"[State] Playback state → Paused")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "paused")
+
+                    # Always update playback API and send notification
+                    # (Frontend needs notification even if state unchanged to sync UI)
+                    self.store.update(playback_status="paused")
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "pfls":
                     # Play stream flush (pause/stop)
                     log(f"[Session] Play stream FLUSH (pause)")
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    if current_state != "Paused":
-                        self.store.update(playback_status="Paused")
-                        log(f"[State] Playback state → Paused (stream flushed)")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "paused")
+
+                    # Always update playback API and send notification
+                    # (Frontend needs notification even if state unchanged to sync UI)
+                    self.store.update(playback_status="paused")
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "paused"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → paused (stream flushed) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "prsm":
                     # Play stream resume
                     log(f"[Session] Play stream RESUME")
-                    current_state = self.store.get_all().get("playback_status", "Playing")
-                    if current_state != "Playing":
-                        self.store.update(playback_status="Playing")
-                        log(f"[State] Playback state → Playing (stream resumed)")
-                        return True  # Signal update
-                    return False
+                    current_state = self.store.get_all().get("playback_status", "playing")
+
+                    # Get actual position from D-Bus before resuming (for accuracy)
+                    # MQTT: Position from metadata pipe only (no query API)
+                    # Resume from last known position
+                    self.store.update(playback_status="playing", position_timestamp=time.time())
+                    log(f"[State] Playback state → playing (stream resumed)")
+
+                    # Always notify playback API and frontend (even if already playing)
+                    state_data = self.store.get_all()
+                    if self.on_position_update:
+                        self.on_position_update(
+                            state_data.get("position", 0),
+                            state_data.get("duration", 0),
+                            "playing"
+                        )
+
+                    # Send immediate Snapcast notification
+                    if self.on_state_change:
+                        self.on_state_change()
+                    log(f"[State] Playback state → playing (resumed) - Snapcast notified")
+                    return False  # Don't trigger duplicate notification
 
                 elif code == "pvol":
                     # Volume change (informational, we don't track volume from source)
@@ -498,24 +785,33 @@ class MetadataParser:
             return None
 
 
-class DBusMonitor:
+class MQTTControl:
     """
-    Monitor ShairportSync D-Bus interface for playback state changes.
-    Provides remote control capabilities (play, pause, next, previous).
+    MQTT-based control for Shairport-Sync multi-instance support.
+    Subscribes to shairport-sync MQTT topics for metadata and publishes remote control commands.
     """
 
-    def __init__(self, store: MetadataStore, on_state_change_callback, on_metadata_update_callback=None):
+    def __init__(self, store: MetadataStore, instance_id: str, on_state_change_callback):
         self.store = store
+        self.instance_id = instance_id
         self.on_state_change = on_state_change_callback
-        self.on_metadata_update = on_metadata_update_callback
-        self.dbus_interface = None
-        self.dbus_properties = None
-        self.mpris_interface = None  # MPRIS interface for seeking
-        self.bus = None
+        self.mqtt_client = None
+        self.topic_prefix = f"plum-snapcast/airplay/{instance_id}"
+        self._connection_complete = threading.Event()
+        self._connected = False
 
-        if not DBUS_AVAILABLE:
-            log("[DBus] D-Bus Python bindings not available - control disabled")
-            log("[DBus] Install py3-dbus and py3-gobject3 to enable controls")
+        # MQTT activity monitoring for disconnect detection
+        # Tracks ALL MQTT messages, not just frame positions
+        # This distinguishes pause (no frames but other messages) from disconnect (no messages at all)
+        self.last_mqtt_activity_time = None
+        self.mqtt_activity_monitor_active = False
+        self.mqtt_activity_monitor_thread = None
+        self.mqtt_activity_lock = threading.Lock()
+
+        if not MQTT_AVAILABLE:
+            log("[MQTT] paho-mqtt not available - controls disabled")
+            log("[MQTT] Install py3-paho-mqtt to enable controls")
+            self._connection_complete.set()
             return
 
         # Start connection in background thread to avoid blocking
@@ -523,253 +819,458 @@ class DBusMonitor:
         connect_thread.start()
 
     def _connect_with_retry(self):
-        """Try to connect to ShairportSync D-Bus with retries"""
+        """Connect to MQTT broker with retries"""
         max_retries = 10
-        retry_delay = 2  # seconds
+        retry_delay = 2
 
         for attempt in range(max_retries):
             try:
-                # Initialize D-Bus main loop on first attempt
-                if attempt == 0:
-                    DBusGMainLoop(set_as_default=True)
+                # Create MQTT client
+                self.mqtt_client = mqtt.Client(
+                    client_id=f"airplay-control-{self.instance_id}",
+                    clean_session=True
+                )
 
-                # Connect to system bus
-                self.bus = dbus.SystemBus()
+                # Set callbacks
+                self.mqtt_client.on_connect = self._on_connect
+                self.mqtt_client.on_message = self._on_message
+                self.mqtt_client.on_disconnect = self._on_disconnect
 
-                # Get ShairportSync RemoteControl interface
-                shairport = self.bus.get_object('org.gnome.ShairportSync', '/org/gnome/ShairportSync')
-                self.dbus_interface = dbus.Interface(shairport, 'org.gnome.ShairportSync.RemoteControl')
-                self.dbus_properties = dbus.Interface(shairport, 'org.freedesktop.DBus.Properties')
+                # Connect to broker
+                log(f"[MQTT] Attempting connection to {MQTT_BROKER}:{MQTT_PORT}")
+                self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
 
-                # Try to get MPRIS interface for seeking (may not be available)
-                try:
-                    mpris_obj = self.bus.get_object('org.mpris.MediaPlayer2.ShairportSync', '/org/mpris/MediaPlayer2')
-                    self.mpris_interface = dbus.Interface(mpris_obj, 'org.mpris.MediaPlayer2.Player')
-                    log("[DBus] ✓ MPRIS interface available - seeking enabled")
-                except dbus.exceptions.DBusException:
-                    log("[DBus] ℹ MPRIS interface not available - seeking disabled")
-                    log("[DBus] (To enable: rebuild shairport-sync with --with-mpris-interface)")
-                    self.mpris_interface = None
+                # Start network loop in background
+                self.mqtt_client.loop_start()
 
-                # Note: ShairportSync doesn't expose playback state via D-Bus
-                # We'll track state based on metadata events instead
-                log("[DBus] ✓ Connected to ShairportSync D-Bus interface")
-                log("[DBus] ✓ Control methods available (Play, Pause, Next, Previous)")
-                log("[DBus] Note: Playback state tracked via metadata events")
+                # Wait for connection to complete
+                if self._connection_complete.wait(timeout=5.0) and self._connected:
+                    log(f"[MQTT] ✓ Connected: {self.topic_prefix}")
+                    log("[MQTT] ✓ Control methods available (Play, Pause, Next, Previous)")
+                    return
 
-                # Set initial state to Paused (will update when metadata arrives)
-                self.store.update(playback_status="Paused")
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log(f"[MQTT] Connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                    log(f"[MQTT] Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    log(f"[MQTT] ✗ Failed to connect after {max_retries} attempts: {e}")
+                    log("[MQTT] Control features disabled - check that Mosquitto is running")
+                    self._connection_complete.set()
 
-                # Notify parent that we're ready
+    def _on_connect(self, client, userdata, flags, rc):
+        """Handle MQTT connection"""
+        if rc == 0:
+            self._connected = True
+            # Subscribe to all topics for this instance
+            client.subscribe(f"{self.topic_prefix}/#")
+            log(f"[MQTT] Subscribed to: {self.topic_prefix}/#")
+
+            # Set initial state
+            self.store.update(playback_status="stopped")
+
+            # Notify parent
+            if self.on_state_change:
+                self.on_state_change()
+
+            self._connection_complete.set()
+        else:
+            log(f"[MQTT] Connection failed with code: {rc}")
+            self._connection_complete.set()
+
+    def _on_disconnect(self, client, userdata, rc):
+        """Handle MQTT disconnection"""
+        self._connected = False
+        if rc != 0:
+            log(f"[MQTT] Disconnected unexpectedly (code: {rc}) - auto-reconnecting")
+
+    def _start_mqtt_activity_monitor(self):
+        """Start monitoring all MQTT activity for network disconnect detection"""
+        with self.mqtt_activity_lock:
+            if not self.mqtt_activity_monitor_active:
+                self.mqtt_activity_monitor_active = True
+                self.last_mqtt_activity_time = time.time()
+                self.mqtt_activity_monitor_thread = threading.Thread(
+                    target=self._mqtt_activity_monitor_loop,
+                    daemon=True
+                )
+                self.mqtt_activity_monitor_thread.start()
+                log("[MQTT] Activity monitor started (disconnect detection: 20s timeout)")
+
+    def _stop_mqtt_activity_monitor(self):
+        """Stop monitoring MQTT activity"""
+        with self.mqtt_activity_lock:
+            if self.mqtt_activity_monitor_active:
+                self.mqtt_activity_monitor_active = False
+                self.last_mqtt_activity_time = None
+                log("[MQTT] Activity monitor stopped")
+
+    def _mqtt_activity_monitor_loop(self):
+        """Monitor loop - check for ANY MQTT activity every 5 seconds
+
+        Tracks ALL MQTT messages (metadata, volume, frame positions, etc).
+        Only signals disconnect if NO messages received for 20 seconds.
+        This distinguishes pause (no frames but metadata/volume updates) from disconnect.
+        """
+        TIMEOUT_THRESHOLD = 20  # Signal disconnect if no MQTT activity for 20 seconds
+        CHECK_INTERVAL = 5  # Check every 5 seconds
+
+        while True:
+            with self.mqtt_activity_lock:
+                if not self.mqtt_activity_monitor_active:
+                    return
+
+                if self.last_mqtt_activity_time is not None:
+                    time_since_last_activity = time.time() - self.last_mqtt_activity_time
+
+                    if time_since_last_activity >= TIMEOUT_THRESHOLD:
+                        # No MQTT activity at all - network disconnect
+                        log(f"[MQTT] No MQTT activity for {time_since_last_activity:.1f}s - network disconnect detected")
+                        log("[MQTT] Signaling stream removal (timeout)")
+                        self.mqtt_activity_monitor_active = False
+                        self.last_mqtt_activity_time = None
+
+                        # Signal stream removal
+                        self.store.update(playback_status="stopped")
+                        signal_stream_end()
+                        if self.on_state_change:
+                            self.on_state_change()
+                        return
+
+            time.sleep(CHECK_INTERVAL)
+
+    def _on_message(self, client, userdata, msg):
+        """Process incoming MQTT messages from shairport-sync"""
+        try:
+            topic = msg.topic
+            payload = msg.payload.decode('utf-8', errors='ignore')
+
+            # Extract subtopic (everything after topic_prefix/)
+            if not topic.startswith(self.topic_prefix + '/'):
+                return
+
+            subtopic = topic[len(self.topic_prefix) + 1:]
+
+            # Update activity timestamp for ALL messages (disconnect detection)
+            # Tracks any MQTT activity: metadata, volume, frame positions, etc.
+            # This distinguishes pause (no frames but other activity) from disconnect (no activity)
+            with self.mqtt_activity_lock:
+                if self.mqtt_activity_monitor_active:
+                    self.last_mqtt_activity_time = time.time()
+
+            # Skip logging for noisy frame position updates
+            if subtopic == "frame_position_and_time":
+                return
+
+            # Handle metadata topics
+            if subtopic == "artist":
+                self.store.update(artist=payload)
+            elif subtopic == "album":
+                self.store.update(album=payload)
+            elif subtopic == "title":
+                self.store.update(title=payload)
+            elif subtopic == "cover" and payload:
+                # Cover art is base64 encoded JPEG
+                # Shairport-sync sends "--" as placeholder for no/cleared cover art
+                # IMPORTANT: Don't clear artwork on pause - keep it visible
+                # Only clear on track change (handled by track_id change detection)
+                if payload == "--":
+                    log("[MQTT] Ignoring cover art clear signal (--) - keeping artwork during pause")
+                    # Don't clear - artwork should stay visible when paused
+                elif len(payload) > 100:  # Valid base64 should be much longer
+                    # Validate base64 data before creating data URL
+                    # Check for empty/whitespace-only payload
+                    if not payload.strip():
+                        log("[MQTT] Ignoring empty/whitespace artwork payload")
+                    else:
+                        try:
+                            # Try to decode base64 to validate it
+                            decoded = base64.b64decode(payload, validate=True)
+
+                            # Check for null bytes (corrupted data)
+                            if b'\x00' in decoded[:100]:  # Check first 100 bytes
+                                log(f"[MQTT] Rejecting corrupted artwork (null bytes detected)")
+                            elif len(decoded) < 100:  # Too small to be a valid image
+                                log(f"[MQTT] Rejecting artwork (too small: {len(decoded)} bytes)")
+                            else:
+                                # Valid artwork - update store
+                                data_url = f"data:image/jpeg;base64,{payload}"
+                                self.store.update(artwork_url=data_url)
+                                log(f"[MQTT] Received valid cover art: {len(payload)} chars, {len(decoded)} bytes")
+                        except Exception as e:
+                            log(f"[MQTT] Rejecting invalid base64 artwork: {e}")
+
+            # Handle playback event topics
+            elif subtopic == "play_start":
+                # Clear pause timestamps when new playback session starts
+                self.store.update(
+                    playback_status="playing",
+                    position=0,
+                    position_timestamp=time.time(),
+                    last_gui_pause_time=None,
+                    last_pend_time=None
+                )
+                log("[MQTT] Playback started")
+                self._start_mqtt_activity_monitor()
                 if self.on_state_change:
                     self.on_state_change()
 
-                # Start progress polling thread
-                self.start_progress_polling()
+            elif subtopic == "play_flush":
+                self.store.update(playback_status="paused")
+                log("[MQTT] Playback flushed (pause/skip)")
+                self._stop_mqtt_activity_monitor()
+                if self.on_state_change:
+                    self.on_state_change()
 
-                return  # Success!
+            elif subtopic == "play_resume":
+                # Don't clear GUI pause timestamp - let it age naturally
+                # This handles pause → resume → pause sequences from GUI
+                self.store.update(
+                    playback_status="playing",
+                    position_timestamp=time.time()
+                )
+                log("[MQTT] Playback resumed")
+                self._start_mqtt_activity_monitor()
+                if self.on_state_change:
+                    self.on_state_change()
 
-            except dbus.exceptions.DBusException as e:
-                if attempt < max_retries - 1:
-                    log(f"[DBus] Connection attempt {attempt + 1}/{max_retries} failed: {e}")
-                    log(f"[DBus] Retrying in {retry_delay}s (ShairportSync may not be ready yet)...")
-                    time.sleep(retry_delay)
-                else:
-                    log(f"[DBus] ✗ Failed to connect after {max_retries} attempts: {e}")
-                    log("[DBus] Control features disabled - check that ShairportSync is running")
-                    self.dbus_interface = None
-            except Exception as e:
-                log(f"[DBus] ✗ Unexpected error during connection: {e}")
-                self.dbus_interface = None
-                break
+            elif subtopic == "play_end":
+                self.store.update(playback_status="paused")
+                log("[MQTT] Playback ended")
+                # DON'T stop activity monitor yet - let it detect if MQTT stops (disconnect)
+                # or continues (graceful pause with metadata/volume updates)
+                # Monitor will be stopped on active_end when we determine it's graceful
+                if self.on_state_change:
+                    self.on_state_change()
 
-    def on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
-        """
-        Handle D-Bus property changes.
-        Note: ShairportSync doesn't emit playback state changes via D-Bus.
-        We track state based on metadata events instead.
-        """
-        # This handler is kept for future compatibility if ShairportSync adds state properties
-        pass
+            elif subtopic == "active_end":
+                # Active session ended - could be pause, disconnect, or network loss
+                # Strategy: Let MQTT activity monitor determine if connection is truly gone
+                # - If MQTT continues (metadata/volume): graceful pause, monitor will timeout safely
+                # - If MQTT stops: disconnect/network loss, monitor detects after 20s
+                #
+                # Exception: GUI pause gets immediate keep-alive (user initiated)
+                state_data = self.store.get_all()
+                last_gui_pause_time = state_data.get("last_gui_pause_time")
+
+                # Check for recent GUI pause - always keep stream alive
+                if last_gui_pause_time:
+                    time_since_gui_pause = time.time() - last_gui_pause_time
+
+                    if time_since_gui_pause < 60:
+                        # GUI pause - user initiated, keep stream alive immediately
+                        log(f"[MQTT] active_end after GUI pause ({time_since_gui_pause:.1f}s ago) - keeping stream alive")
+                        self._stop_mqtt_activity_monitor()
+                        return
+
+                # For source-initiated events (pause/disconnect), let activity monitor decide
+                # If MQTT continues flowing: graceful pause, monitor stays quiet
+                # If MQTT stops: disconnect, monitor triggers removal after 20s
+                log("[MQTT] active_end received - letting activity monitor detect if connection alive")
+
+            elif subtopic == "client_name":
+                log(f"[MQTT] Client connected: {payload}")
+
+        except Exception as e:
+            log(f"[MQTT] Error processing message on {msg.topic}: {e}")
 
     def play(self):
-        """Send play command to ShairportSync"""
-        if self.dbus_interface:
+        """Send play command via MQTT"""
+        if self._connected:
+            topic = f"{self.topic_prefix}/remote"
+            payload = json.dumps({"command": "play"})
+            self.mqtt_client.publish(topic, payload)
+            log("[MQTT] → Play")
+
+    def pause(self):
+        """Send pause command via MQTT"""
+        if self._connected:
+            topic = f"{self.topic_prefix}/remote"
+            payload = json.dumps({"command": "pause"})
+            self.mqtt_client.publish(topic, payload)
+            log("[MQTT] → Pause")
+
+    def play_pause(self):
+        """Toggle play/pause via MQTT"""
+        if self._connected:
+            topic = f"{self.topic_prefix}/remote"
+            payload = json.dumps({"command": "playpause"})
+            self.mqtt_client.publish(topic, payload)
+            log("[MQTT] → PlayPause")
+
+    def next_track(self):
+        """Skip to next track via MQTT"""
+        if self._connected:
+            topic = f"{self.topic_prefix}/remote"
+            payload = json.dumps({"command": "nextitem"})
+            self.mqtt_client.publish(topic, payload)
+            log("[MQTT] → Next")
+
+    def previous_track(self):
+        """Skip to previous track via MQTT"""
+        if self._connected:
+            topic = f"{self.topic_prefix}/remote"
+            payload = json.dumps({"command": "previtem"})
+            self.mqtt_client.publish(topic, payload)
+            log("[MQTT] → Previous")
+
+    def wait_for_connection(self, timeout=5.0):
+        """
+        Wait for MQTT connection attempt to complete.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default: 5s)
+
+        Returns:
+            bool: True if connection succeeded, False if failed or timed out
+        """
+        completed = self._connection_complete.wait(timeout)
+        if not completed:
+            log(f"[MQTT] Connection timeout after {timeout}s - continuing without MQTT")
+            return False
+        return self._connected
+
+    def is_available(self):
+        """Check if MQTT control is available"""
+        return self._connected
+
+    def can_seek(self):
+        """Check if seek is available - MQTT doesn't support seeking"""
+        return False
+
+
+class DBusControl:
+    """
+    D-Bus/MPRIS control for shairport-sync (playback control only).
+    Uses MPRIS for multi-instance support via PID-based service names.
+
+    Instance 1: org.mpris.MediaPlayer2.ShairportSync
+    Instances 2+: org.mpris.MediaPlayer2.ShairportSync.i{PID}
+    """
+
+    def __init__(self, instance_id: str):
+        self.instance_id = instance_id
+        self.mpris_interface = None
+        self.bus = None
+        self._connection_complete = threading.Event()
+        self._connected = False
+
+        if not DBUS_AVAILABLE:
+            log("[DBus] D-Bus not available - controls disabled")
+            self._connection_complete.set()
+            return
+
+        # Connect in background thread
+        connect_thread = threading.Thread(target=self._connect_with_retry, daemon=True)
+        connect_thread.start()
+
+    def _connect_with_retry(self):
+        """Try to connect to MPRIS interface with retries"""
+        for attempt in range(10):
             try:
-                self.dbus_interface.Play()
-                log("[DBus] Sent Play command")
+                if attempt == 0:
+                    DBusGMainLoop(set_as_default=True)
+
+                self.bus = dbus.SystemBus()
+
+                # Try MPRIS with PID-based naming for multi-instance
+                instance_pid = get_shairport_pid(self.instance_id)
+
+                if instance_pid:
+                    # Try PID-based name first (instance 2+)
+                    mpris_name = f"org.mpris.MediaPlayer2.ShairportSync.i{instance_pid}"
+                    if self._try_connect_mpris(mpris_name):
+                        self._connected = True
+                        self._connection_complete.set()
+                        log(f"[DBus] ✓ Connected to MPRIS: {mpris_name}")
+                        return
+
+                # Fallback to base name (instance 1)
+                mpris_name = "org.mpris.MediaPlayer2.ShairportSync"
+                if self._try_connect_mpris(mpris_name):
+                    self._connected = True
+                    self._connection_complete.set()
+                    log(f"[DBus] ✓ Connected to MPRIS: {mpris_name}")
+                    return
+
+                if attempt < 9:
+                    log(f"[DBus] Retry {attempt + 1}/10...")
+                    time.sleep(2)
+
+            except Exception as e:
+                if attempt < 9:
+                    log(f"[DBus] Connection failed: {e}, retrying...")
+                    time.sleep(2)
+
+        log("[DBus] ✗ Failed to connect after 10 attempts")
+        self._connection_complete.set()
+
+    def _try_connect_mpris(self, service_name: str) -> bool:
+        """Try to connect to specific MPRIS service"""
+        try:
+            proxy = self.bus.get_object(service_name, "/org/mpris/MediaPlayer2")
+            self.mpris_interface = dbus.Interface(proxy, "org.mpris.MediaPlayer2.Player")
+            return True
+        except:
+            return False
+
+    def play(self):
+        """Send play command via MPRIS"""
+        if self._connected and self.mpris_interface:
+            try:
+                self.mpris_interface.Play()
+                log("[DBus] → Play")
             except Exception as e:
                 log(f"[DBus] Play failed: {e}")
 
     def pause(self):
-        """Send pause command to ShairportSync"""
-        if self.dbus_interface:
+        """Send pause command via MPRIS"""
+        if self._connected and self.mpris_interface:
             try:
-                self.dbus_interface.Pause()
-                log("[DBus] Sent Pause command")
+                self.mpris_interface.Pause()
+                log("[DBus] → Pause")
             except Exception as e:
                 log(f"[DBus] Pause failed: {e}")
 
     def play_pause(self):
-        """Toggle play/pause"""
-        if self.dbus_interface:
+        """Toggle play/pause via MPRIS"""
+        if self._connected and self.mpris_interface:
             try:
-                self.dbus_interface.PlayPause()
-                log("[DBus] Sent PlayPause command")
+                self.mpris_interface.PlayPause()
+                log("[DBus] → PlayPause")
             except Exception as e:
                 log(f"[DBus] PlayPause failed: {e}")
 
     def next_track(self):
-        """Skip to next track"""
-        if self.dbus_interface:
+        """Skip to next track via MPRIS"""
+        if self._connected and self.mpris_interface:
             try:
-                self.dbus_interface.Next()
-                log("[DBus] Sent Next command")
+                self.mpris_interface.Next()
+                log("[DBus] → Next")
             except Exception as e:
                 log(f"[DBus] Next failed: {e}")
 
     def previous_track(self):
-        """Skip to previous track"""
-        if self.dbus_interface:
+        """Skip to previous track via MPRIS"""
+        if self._connected and self.mpris_interface:
             try:
-                self.dbus_interface.Previous()
-                log("[DBus] Sent Previous command")
+                self.mpris_interface.Previous()
+                log("[DBus] → Previous")
             except Exception as e:
                 log(f"[DBus] Previous failed: {e}")
 
-    def seek(self, position_ms: int):
-        """Seek to specific position via MPRIS interface (if available)"""
-        if self.mpris_interface:
-            try:
-                # MPRIS SetPosition takes track ID and position in microseconds
-                # We'll use Seek with relative offset instead
-                # First get current position from store
-                current_position = self.store.get_all().get("position", 0)
-                offset_ms = position_ms - current_position
-                offset_us = offset_ms * 1000
-
-                self.mpris_interface.Seek(dbus.Int64(offset_us))
-                log(f"[DBus] Seek to {position_ms}ms (offset: {offset_ms}ms)")
-
-                # Update store with new position
-                self.store.update(position=position_ms)
-            except Exception as e:
-                log(f"[DBus] Seek failed: {e}")
-        else:
-            log("[DBus] Seek not available - MPRIS interface not enabled")
-
-    def get_progress(self):
-        """
-        Get progress from D-Bus ProgressString property.
-        Returns (position_ms, duration_ms) tuple or None if not available.
-        """
-        if not self.dbus_properties:
-            return None
-
-        try:
-            # Get ProgressString property from RemoteControl interface
-            # Format: "start_rtp/current_rtp/end_rtp"
-            progress_str = self.dbus_properties.Get(
-                'org.gnome.ShairportSync.RemoteControl',
-                'ProgressString'
-            )
-
-            if progress_str:
-                # Parse RTP timestamps
-                parts = str(progress_str).split("/")
-                if len(parts) == 3:
-                    start_rtp = int(parts[0])
-                    current_rtp = int(parts[1])
-                    end_rtp = int(parts[2])
-
-                    # Convert RTP frames to milliseconds (44.1kHz = 44100 samples/sec)
-                    duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
-                    position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
-
-                    return (position_ms, duration_ms)
-        except Exception as e:
-            # Property may not be available when stream is not playing
-            # This is normal - don't log spam
-            pass
-
-        return None
-
-    def start_progress_polling(self):
-        """Start background thread to poll progress updates from D-Bus
-
-        Note: shairport-sync's ProgressString only updates when metadata changes
-        (track start/end, not continuously during playback). We poll to detect
-        these changes and send updates to frontend, which then uses client-side
-        sync to increment position smoothly.
-        """
-        def poll_progress():
-            log("[DBus] Progress polling thread started")
-            last_progress_string = None
-
-            while self.is_available():
-                try:
-                    # Only poll when playing
-                    playback_status = self.store.get_all().get("playback_status", "Stopped")
-
-                    if playback_status == "Playing":
-                        progress = self.get_progress()
-
-                        if progress:
-                            position_ms, duration_ms = progress
-
-                            # Get the raw ProgressString to detect actual changes
-                            try:
-                                progress_str = self.dbus_properties.Get(
-                                    'org.gnome.ShairportSync.RemoteControl',
-                                    'ProgressString'
-                                )
-                                current_progress_string = str(progress_str)
-                            except:
-                                current_progress_string = None
-
-                            # Only send update if ProgressString actually changed
-                            # This happens on: track change, seek, initial connection
-                            if current_progress_string and current_progress_string != last_progress_string:
-                                # Update store
-                                self.store.update(position=position_ms, duration=duration_ms)
-
-                                # Determine reason for change
-                                if last_progress_string is None:
-                                    reason = "initial"
-                                elif position_ms < 5000:  # Position near start suggests new track
-                                    reason = "track_change"
-                                else:
-                                    reason = "seek"
-
-                                log(f"[DBus] Position changed: {position_ms}ms ({reason})")
-
-                                # Send update to frontend
-                                if self.on_metadata_update:
-                                    self.on_metadata_update()
-
-                                # Track this ProgressString
-                                last_progress_string = current_progress_string
-
-                    # Poll every second
-                    time.sleep(1)
-
-                except Exception as e:
-                    log(f"[DBus] Progress polling error: {e}")
-                    time.sleep(1)
-
-            log("[DBus] Progress polling thread stopped")
-
-        # Start polling in background thread
-        poll_thread = threading.Thread(target=poll_progress, daemon=True)
-        poll_thread.start()
+    def wait_for_connection(self, timeout=5.0):
+        """Wait for connection attempt to complete"""
+        return self._connection_complete.wait(timeout) and self._connected
 
     def is_available(self):
         """Check if D-Bus control is available"""
-        return self.dbus_interface is not None
+        return self._connected
 
     def can_seek(self):
         """Check if seek is available via MPRIS"""
-        return self.mpris_interface is not None
+        return self._connected
 
 
 class SnapcastControlScript:
@@ -778,9 +1279,37 @@ class SnapcastControlScript:
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
         self.store = MetadataStore()
-        self.metadata_parser = MetadataParser(self.store)
-        self.dbus_monitor = DBusMonitor(self.store, self.send_playback_state_update, self.send_metadata_update)
-        log(f"[Init] Initialized for stream: {stream_id}")
+        instance_id = globals().get('INSTANCE_ID', '1')
+
+        # MQTT for metadata only
+        self.mqtt_control = MQTTControl(
+            self.store,
+            instance_id,
+            self.send_playback_state_update
+        )
+
+        # D-Bus/MPRIS for playback control
+        self.dbus_control = DBusControl(instance_id)
+
+        self.metadata_parser = MetadataParser(
+            self.store,
+            on_position_update=self._on_position_update,
+            mqtt_control=self.mqtt_control,
+            on_state_change=self.send_playback_state_update
+        )
+        self.last_metadata_update_time = 0  # For debouncing metadata updates
+        self.last_playback_state_update_time = 0  # For debouncing playback state updates
+        self.last_playback_state = None  # Track last state to detect actual changes
+        log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
+
+    def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
+        """Callback for position updates - posts to our playback API"""
+        post_playback_position(
+            stream_id=self.stream_id,
+            position_ms=position_ms,
+            duration_ms=duration_ms,
+            playback_status=playback_status
+        )
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -793,12 +1322,21 @@ class SnapcastControlScript:
         log(f"[Snapcast] → {method}")
 
     def send_playback_state_update(self):
-        """Send playback state update to Snapcast (called when D-Bus state changes)"""
-        playback_status = self.store.get_all().get("playback_status", "Stopped")
-        can_control = self.dbus_monitor.is_available()
+        """Send playback state update to Snapcast (called when MQTT state changes)"""
+        playback_status = self.store.get_all().get("playback_status", "stopped")
+        can_control = self.dbus_control.is_available()
+        current_time = time.time()
+
+        # Debounce: Only send update if state actually changed OR at least 1 second has passed
+        # This prevents rapid play/idle thrashing from overwhelming the lifecycle manager
+        state_changed = playback_status != self.last_playback_state
+        time_elapsed = current_time - self.last_playback_state_update_time
+
+        if not state_changed and time_elapsed < 1.0:
+            # State didn't change and it's been less than 1 second - skip this update
+            return
 
         params = {
-            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
             "playbackStatus": playback_status,
             "canGoNext": can_control,
             "canGoPrevious": can_control,
@@ -809,21 +1347,24 @@ class SnapcastControlScript:
         self.send_notification("Plugin.Stream.Player.Properties", params)
         log(f"[Snapcast] Playback state → {playback_status} (stream={self.stream_id})")
 
+        # Update tracking
+        self.last_playback_state = playback_status
+        self.last_playback_state_update_time = current_time
+
     def send_metadata_update(self):
-        """Send Plugin.Stream.Player.Properties with current metadata from store"""
-        # Always send update - position/duration is important even without metadata
+        """
+        Send Plugin.Stream.Player.Properties notification to Snapcast.
+
+        Only call on metadata/state changes (NOT position updates to avoid stuttering).
+        Position is excluded from notifications and only provided via GetProperties.
+        """
         meta_obj = self.store.get_metadata_for_snapcast() or {}
-
-        # Get current playback state and position from store
         state_data = self.store.get_all()
-        playback_status = state_data.get("playback_status", "Stopped")
-        position = state_data.get("position", 0)
-        can_control = self.dbus_monitor.is_available()
+        playback_status = state_data.get("playback_status", "stopped")
+        can_control = self.dbus_control.is_available()
 
-        # Notification params: include stream ID and all properties
+        # Build notification params (position excluded - only in GetProperties)
         params = {
-            "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
-
             # Playback state (same fields as GetProperties)
             "playbackStatus": playback_status,
             "loopStatus": "none",
@@ -831,14 +1372,13 @@ class SnapcastControlScript:
             "volume": 100,
             "mute": False,
             "rate": 1.0,
-            "position": position,
 
-            # Control capabilities (enable if D-Bus is available)
+            # Control capabilities
             "canGoNext": can_control,
             "canGoPrevious": can_control,
             "canPlay": can_control,
             "canPause": can_control,
-            "canSeek": self.dbus_monitor.can_seek() if can_control else False,
+            "canSeek": self.dbus_control.can_seek() if can_control else False,
             "canControl": can_control,
 
             # Metadata (simple field names)
@@ -846,15 +1386,11 @@ class SnapcastControlScript:
         }
         self.send_notification("Plugin.Stream.Player.Properties", params)
 
-        # Log what we sent (check simple format keys)
+        # Log notification
         title = meta_obj.get('title', 'N/A')
         artist = meta_obj.get('artist', ['N/A'])
         artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-        duration_from_meta = meta_obj.get('duration', 0) if meta_obj else 0
-        log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
-        log(f"[Snapcast]   Position: {position}ms, Duration: {duration_from_meta}ms")
-        if "artUrl" in meta_obj:
-            log(f"[Snapcast]   Artwork: {len(meta_obj['artUrl'])} chars")
+        log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}]")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -867,31 +1403,33 @@ class SnapcastControlScript:
             log(f"[Command] Received: {method} (id={request_id})")
 
             if method == "Plugin.Stream.Player.GetProperties":
-                # Return COMPLETE properties object (not just metadata)
-                # Snapcast requires all fields: playback state, control capabilities, AND metadata
-                meta_obj = self.store.get_metadata_for_snapcast() or {}
+                # Return complete properties: playback state, control capabilities, metadata, position
                 state_data = self.store.get_all()
-                playback_status = state_data.get("playback_status", "Stopped")
-                position = state_data.get("position", 0)
-                can_control = self.dbus_monitor.is_available()
+                playback_status = state_data.get("playback_status", "stopped")
+                meta_obj = self.store.get_metadata_for_snapcast() or {}
+                can_control = self.dbus_control.is_available()
 
-                # Build complete properties response per Snapcast Stream Plugin API
+                # Get current position with interpolation
+                position = self.store.get_current_position()
+                position_seconds = position / 1000.0 if position is not None else 0.0
+
+                # Build properties response
                 properties = {
-                    # Playback state (from D-Bus if available)
+                    # Playback state (from MQTT)
                     "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
                     "volume": 100,
                     "mute": False,
                     "rate": 1.0,
-                    "position": position,
+                    "position": position_seconds,  # Convert milliseconds to seconds (float) per Snapcast API
 
-                    # Control capabilities (enable if D-Bus available)
+                    # Control capabilities (enable if MQTT available)
                     "canGoNext": can_control,
                     "canGoPrevious": can_control,
                     "canPlay": can_control,
                     "canPause": can_control,
-                    "canSeek": self.dbus_monitor.can_seek() if can_control else False,
+                    "canSeek": self.dbus_control.can_seek() if can_control else False,
                     "canControl": can_control,
 
                     # Metadata (MPRIS format)
@@ -903,15 +1441,16 @@ class SnapcastControlScript:
                     "id": request_id,
                     "result": properties
                 }
+
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, position={position_seconds:.1f}s")
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
                 command = params.get("command", "")
                 log(f"[Control] Received control command: {command} (params={params})")
 
-                if not self.dbus_monitor.is_available():
+                if not self.dbus_control.is_available():
                     # Return error if D-Bus not available
                     error_response = {
                         "jsonrpc": "2.0",
@@ -924,44 +1463,44 @@ class SnapcastControlScript:
                     print(json.dumps(error_response), file=sys.stdout, flush=True)
                     return
 
-                # Execute command via D-Bus and update state
+                # Execute command via D-Bus/MPRIS
                 if command == "play":
-                    self.dbus_monitor.play()
-                    self.store.update(playback_status="Playing")
-                    self.send_playback_state_update()
+                    # Don't clear GUI pause timestamp - let it age naturally
+                    # This handles cases where user pauses, resumes, then pauses again quickly
+                    self.dbus_control.play()
+                    log("[Command] Play command sent via D-Bus")
+
                 elif command == "pause":
-                    self.dbus_monitor.pause()
-                    self.store.update(playback_status="Paused")
-                    self.send_playback_state_update()
+                    # Record GUI pause time to distinguish from source disconnect
+                    self.store.update(last_gui_pause_time=time.time())
+                    self.dbus_control.pause()
+                    log("[Command] Pause command sent via D-Bus (GUI-initiated)")
+
                 elif command == "playPause":
-                    self.dbus_monitor.play_pause()
-                    # Toggle state
-                    current_state = self.store.get_all().get("playback_status", "Paused")
-                    new_state = "Paused" if current_state == "Playing" else "Playing"
-                    self.store.update(playback_status=new_state)
-                    self.send_playback_state_update()
+                    self.dbus_control.play_pause()
+                    log("[Command] PlayPause command sent via D-Bus")
+
                 elif command == "next":
-                    self.dbus_monitor.next_track()
-                    # State remains Playing after skip
-                    self.store.update(playback_status="Playing")
-                    # Reset position to 0 for new track
-                    self.store.update(position=0)
-                    self.send_playback_state_update()
-                    # Note: Don't send metadata update here - wait for new metadata from pipe
+                    self.dbus_control.next_track()
+                    log("[Command] Next track command sent via D-Bus")
+
                 elif command == "previous" or command == "prev":
-                    self.dbus_monitor.previous_track()
-                    # State remains Playing after skip
-                    self.store.update(playback_status="Playing")
-                    # Reset position to 0 for new track
-                    self.store.update(position=0)
-                    self.send_playback_state_update()
-                    # Note: Don't send metadata update here - wait for new metadata from pipe
+                    self.dbus_control.previous_track()
+                    log("[Command] Previous track command sent via D-Bus")
+
                 elif command == "seek":
-                    # Seek to specific position (in milliseconds)
-                    position = params.get("position", 0)
-                    log(f"[Control] Seeking to position: {position}ms")
-                    self.dbus_monitor.seek(position)
-                    self.send_metadata_update()
+                    # Seek not supported via MQTT
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32000,
+                            "message": "Seek not supported via MQTT"
+                        }
+                    }
+                    print(json.dumps(error_response), file=sys.stdout, flush=True)
+                    return
+
                 else:
                     log(f"[Snapcast] Unknown control command: {command}")
 
@@ -1004,6 +1543,37 @@ class SnapcastControlScript:
                     }
                 }
                 print(json.dumps(error_response), file=sys.stdout, flush=True)
+
+    def monitor_position_updates(self):
+        """
+        Background thread for heartbeat updates to prevent playback API staleness.
+
+        Sends periodic heartbeats (10s) that keep data fresh without breaking interpolation.
+        Actual position changes come from prgr events.
+        """
+        log("[Init] Starting position monitor (heartbeat mode)")
+
+        # MQTT: No startup progress check (position from metadata pipe only)
+        # Periodic heartbeat loop - prevent API staleness
+        # API will only reset timestamp if position changed significantly
+        while True:
+            try:
+                time.sleep(10.0)  # Heartbeat every 10 seconds
+
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "unknown")
+
+                # Only send heartbeat if playing (avoid spam when idle)
+                if playback_status == "playing":
+                    position_ms = state_data.get("position", 0)
+                    duration_ms = state_data.get("duration", 0)
+
+                    # Send heartbeat (API won't reset timestamp if position unchanged)
+                    self._on_position_update(position_ms, duration_ms, playback_status)
+
+            except Exception as e:
+                log(f"[Error] Position monitor error: {e}")
+                time.sleep(30.0)
 
     def monitor_metadata_pipe(self):
         """Monitor shairport-sync metadata pipe"""
@@ -1063,20 +1633,36 @@ class SnapcastControlScript:
             import traceback
             log(f"[Error] {traceback.format_exc()}")
 
+
+
     def run(self):
         """Main event loop"""
         log("[Init] AirPlay Control Script starting...")
+
+        # Wait for MQTT connection (metadata)
+        log("[Init] Waiting for MQTT connection (metadata)...")
+        self.mqtt_control.wait_for_connection(timeout=5.0)
+
+        # Wait for D-Bus connection (control)
+        log("[Init] Waiting for D-Bus connection (control)...")
+        self.dbus_control.wait_for_connection(timeout=5.0)
+
+        # Start D-Bus event loop if available
+        if DBUS_AVAILABLE and self.dbus_control.is_available():
+            dbus_loop = GLib.MainLoop()
+            dbus_thread = threading.Thread(target=dbus_loop.run, daemon=True)
+            dbus_thread.start()
+            log("[Init] D-Bus event loop started")
 
         # Start metadata monitor in background
         monitor_thread = threading.Thread(target=self.monitor_metadata_pipe, daemon=True)
         monitor_thread.start()
 
-        # Start D-Bus main loop in background (if available)
-        if DBUS_AVAILABLE and self.dbus_monitor.is_available():
-            dbus_loop = GLib.MainLoop()
-            dbus_thread = threading.Thread(target=dbus_loop.run, daemon=True)
-            dbus_thread.start()
-            log("[Init] D-Bus event loop started")
+        # Start position update monitor in background
+        position_thread = threading.Thread(target=self.monitor_position_updates, daemon=True)
+        position_thread.start()
+
+        log("[Init] Hybrid control ready: MQTT metadata + D-Bus control")
 
         # Send ready notification
         self.send_notification("Plugin.Stream.Ready", {})
@@ -1097,13 +1683,73 @@ class SnapcastControlScript:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='AirPlay metadata control script for Snapcast')
-    parser.add_argument('--stream', required=False, default='Airplay', help='Stream ID')
+    parser.add_argument('--stream', required=False, help='Stream ID (auto-generated from instance-id if not provided)')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, or 3)')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    log(f"[Init] Starting with args: stream={args.stream}")
+    # Multi-instance support: override paths based on instance-id
+    if args.instance_id:
+        instance_id = args.instance_id
 
-    script = SnapcastControlScript(stream_id=args.stream)
+        # Store instance_id globally for DBusMonitor to use
+        globals()['INSTANCE_ID'] = instance_id
+
+        # Get endpoint name from settings.json for stream display name (must match lifecycle manager)
+        endpoint_name = None
+        try:
+            import json
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('airplay', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            print(f"[Init] WARNING: Could not read endpoint name from settings: {e}", file=sys.stderr)
+            endpoint_name = f'Endpoint {instance_id}'
+
+        # Override module-level constants GLOBALLY for this instance
+        # These assignments modify the global variables defined at module level
+        globals()['METADATA_PIPE'] = f"/tmp/airplay-{instance_id}-metadata"
+        globals()['COVER_ART_CACHE_DIR'] = f"/tmp/shairport-sync-{instance_id}/.cache/coverart"
+        globals()['LOG_FILE'] = f"/tmp/airplay-{instance_id}-control-script.log"
+        globals()['STREAM_END_SIGNAL_FILE'] = f"/tmp/airplay-{instance_id}-stream-end.signal"
+
+        # D-Bus service name is NOT instance-specific
+        # shairport-sync 4.3.7 IGNORES the service_name config parameter
+        # All instances attempt to register as "org.gnome.ShairportSync"
+        # Only ONE instance succeeds (whichever starts first)
+        # All control scripts must connect to this shared D-Bus service
+        #
+        # LIMITATION: Only one shairport-sync instance can have D-Bus control
+        # Commands will go to whichever instance owns the D-Bus name
+        # This is a shairport-sync limitation, not our code
+        #
+        # SOLUTION: Implement MQTT for true multi-instance control
+        # (shairport-sync supports MQTT with per-instance topics)
+        globals()['DBUS_SERVICE_NAME'] = "org.gnome.ShairportSync"
+        globals()['DBUS_INTERFACE_NAME'] = "org.gnome.ShairportSync.RemoteControl"
+        log(f"[Init] D-Bus service: {globals()['DBUS_SERVICE_NAME']} (shared across all instances)")
+        log(f"[Init] WARNING: Only one AirPlay instance can have D-Bus control (shairport-sync limitation)")
+
+        # Generate stream ID to match lifecycle manager format: "AirPlay - [device name]"
+        # This MUST match what the lifecycle manager uses when creating the stream
+        stream_id = args.stream if args.stream else (f"AirPlay - {endpoint_name}" if endpoint_name else f"AirPlay-{instance_id}")
+
+        # Log confirmation (using the new global values)
+        print(f"[Init] Multi-instance mode: instance={instance_id}, stream={stream_id}", file=sys.stderr)
+        print(f"[Init] Endpoint name: {endpoint_name}", file=sys.stderr)
+        print(f"[Init] Metadata pipe: {globals()['METADATA_PIPE']}", file=sys.stderr)
+        print(f"[Init] Artwork cache: {globals()['COVER_ART_CACHE_DIR']}", file=sys.stderr)
+    else:
+        # Single-instance mode (original behavior)
+        globals()['INSTANCE_ID'] = "1"  # Default to instance 1 for single-instance mode
+        stream_id = args.stream if args.stream else 'Airplay'
+        print(f"[Init] Single-instance mode: stream={stream_id}", file=sys.stderr)
+
+    script = SnapcastControlScript(stream_id=stream_id)
     script.run()

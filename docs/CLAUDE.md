@@ -1,10 +1,10 @@
 # CLAUDE.md - Plum-Snapcast
 
-> **Purpose**: This file serves as your project's memory for Claude Code. It defines rules, workflows, and preferences that Claude will automatically follow when working on the Plum-Snapcast codebase.
+> **Purpose**: Project memory for Claude Code. Defines rules, workflows, and preferences.
 
 ## Project Overview
 
-**Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with AirPlay, Spotify Connect, DLNA/UPnP, Plexamp, and Bluetooth sources.
+**Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with AirPlay (multi-instance), Spotify Connect, DLNA/UPnP, Plexamp, and Bluetooth sources.
 
 **Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), browser audio client, React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control, full-screen audio visualizer, enhanced theming with album art color extraction
 
@@ -31,10 +31,8 @@
 - **Security**: Rootless container (user: snapcast, UID 1000, GID 29 audio)
 
 ### Frontend
-- React 19.1.1, TypeScript 5.8.2, Vite 6.2.0
+- React 19, TypeScript 5, Vite 6
 - Custom CSS with variables, WebSocket JSON-RPC 2.0
-- Components: NowPlaying, PlayerControls, StreamSelector, ClientManager, Settings, Visualizer
-- Services: snapcastService.ts (WebSocket client), snapcastDataService.ts (data transforms)
 - Dependencies: ColorThief (album art color extraction), react-colorful (custom color picker)
 
 ### Infrastructure
@@ -48,29 +46,25 @@
 ```
 ├── _resources/          # Dev references (NOT in git)
 ├── docs/                # Project documentation
-│   ├── ARCHITECTURE.md
+│   ├── ARCHITECTURE.md  # Detailed architecture & API specs
 │   ├── CLAUDE.md        # This file (symlinked to root)
 │   ├── DEV-SETUP.md
 │   └── QUICK-REFERENCE.md
 ├── backend/
 │   ├── Dockerfile
 │   ├── config/          # shairport-sync.conf, snapserver.conf.template
-│   ├── scripts/         # entrypoint.sh, generate-config.sh, metadata processors
+│   ├── scripts/         # entrypoint.sh, setup scripts, API servers, lifecycle managers
 │   └── supervisord/     # Process configs (.ini files)
 ├── frontend/
 │   ├── src/
-│   │   ├── components/  # NowPlaying, PlayerControls, etc.
+│   │   ├── components/  # NowPlaying, PlayerControls, Settings, Visualizer, etc.
 │   │   ├── services/    # snapcastService, snapcastDataService
-│   │   ├── hooks/       # useAudioSync
+│   │   ├── hooks/       # useAudioSync, useBrowserAudio
 │   │   └── types.ts
-│   ├── vite.config.ts
 │   └── Dockerfile
-├── docker/
-│   ├── docker-compose.yml
-│   ├── .env.example
-│   └── build-and-push.sh
-└── scripts/
-    └── setup-audio.sh
+└── docker/
+    ├── docker-compose.yml
+    └── build-and-push.sh
 ```
 
 **Special Directories**:
@@ -84,53 +78,28 @@
 ### Audio Pipeline
 ```
 Source (AirPlay/Bluetooth/Spotify/DLNA/Plexamp)
-  ↓
-Audio Service (shairport-sync/bluealsa/spotifyd/gmrender/plexamp)
-  ↓
-FIFO Pipe (/tmp/*-fifo)
-  ↓
-Snapserver (distribution + sync)
-  ↓
-Snapclient (integrated, hw:Headphones)
-  ↓
-Speakers (RPi 3.5mm jack)
+  → Audio Service (shairport-sync/bluealsa/spotifyd/gmrender/plexamp)
+  → FIFO Pipe (/tmp/*-fifo)
+  → Snapserver (distribution + sync)
+  → Snapclient (integrated, hw:Headphones)
+  → Speakers (RPi 3.5mm jack)
 ```
 
 All services run in single Alpine container (supervisord). Plexamp runs in optional Debian sidecar (glibc requirement).
 
-### Container Architecture Pattern
+### Key Design Patterns
+- **JSON-RPC 2.0 over WebSocket**: Snapcast control
+- **REST APIs (Flask)**: Settings, integrations, audio config, playback position
+- **FIFO pipes**: Audio transport between services
+- **Dynamic stream lifecycle**: Services run continuously (discoverable), streams created/removed based on activity
+- **Settings persistence**: `/app/data/settings.json` for all configuration
 
-**Hybrid: Alpine Primary + Debian Sidecar (Optional)**
+### Data Flows
+- **Metadata**: Source → Service → JSON/D-Bus → Control script → Snapcast properties → WebSocket → Frontend
+- **Settings**: Frontend → settingsService → settings_api.py → settings.json
+- **Integration Control**: Frontend → integrationsService → integrations_api.py → supervisorctl
 
-1. **Alpine Container (plum-snapcast-server)**: All core services, container D-Bus, container Avahi
-2. **Debian Container (plum-plexamp)**: Optional (only when `PLEXAMP_ENABLED=1`), runs Plexamp headless, shared FIFO volume
-3. **Host**: Docker + audio device access, host Avahi disabled, no D-Bus config needed
-
-**Why**: Preserves Alpine benefits, adds glibc only where needed, optional sidecar
-
-### Design Patterns
-- Single container with supervised processes
-- JSON-RPC 2.0 over WebSocket (Snapcast control)
-- REST APIs for settings and integrations (Flask)
-- FIFO pipes for audio transport
-- React component composition with hooks
-- Client-side audio progress prediction (useAudioSync)
-- Server-side settings persistence (settings.json)
-- Dynamic service control via supervisorctl
-- Dynamic stream lifecycle management (AirPlay)
-
-**Metadata Flow**: Source → Service → JSON files/D-Bus → Control script → Snapcast properties → WebSocket → Frontend
-
-**Settings Flow**: Frontend → settingsService.ts → settings_api.py → /app/data/settings.json
-
-**Integration Control**: Frontend → integrationsService.ts → integrations_api.py → supervisorctl → Service restart
-
-**Dynamic Stream Lifecycle Management** (All Integrations):
-- **Framework**: All audio integrations use dynamic stream lifecycle management
-- **Always Discoverable**: Services run continuously → Integrations visible on network (AirPlay discoverable, Bluetooth pairable, Spotify Connect available, etc.)
-- **Stream Lifecycle**: Lifecycle managers monitor activity → Create Snapcast stream when active → Remove after idle timeout when inactive
-- **FIFO Management**: FIFO keepers prevent audio service blocking when no Snapcast stream exists
-- **Benefits**: Reduces clutter (no empty streams), maintains discoverability, smart idle timeouts, automatic cleanup of control scripts
+> **Detailed API specs**: See `docs/ARCHITECTURE.md`
 
 ---
 
@@ -139,149 +108,48 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 ### Git Strategy
 - **Main Branch**: `main` (protected)
 - **Branch Naming**: `feature/*`, `bugfix/*`, `docs/*`, `refactor/*`
-- **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, `build:`, `ci:`)
+- **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`)
 - **Best Practices**: `git pull --rebase`, atomic commits, never force push to main
 
 ### Code Quality
 - **Linting**: ESLint (TypeScript), shellcheck (shell scripts)
 - **Formatting**: Prettier (TypeScript)
 - **Style**: 2 spaces (TS/JS), 4 spaces (shell), 120 char max
-- **Naming**:
-  - Components: `PascalCase.tsx` (NowPlaying.tsx)
-  - Services: `camelCase.ts` (snapcastService.ts)
-  - Variables/Functions: `camelCase`
-  - Constants/Env Vars: `UPPER_SNAKE_CASE`
+- **Naming**: Components `PascalCase.tsx`, Services `camelCase.ts`, Variables/Functions `camelCase`, Constants `UPPER_SNAKE_CASE`
 
 ---
 
 ## Environment Configuration
 
-### Key Environment Variables
+### Integration Settings (AirPlay, Bluetooth, Spotify, DLNA)
+- **Managed via Web UI**: Settings → Integrations (no env vars needed)
+- **Storage**: `/app/data/settings.json` (Docker volume)
+- **Defaults**: AirPlay enabled ("Plum Audio"), all others disabled
 
-**Integration Settings** (AirPlay, Bluetooth, Spotify, DLNA):
-- **Managed via Web UI**: All integration settings are configured through Settings → Integrations
-- **Defaults** (first start without settings.json): AirPlay enabled ("Plum Audio"), all others disabled
-- **Storage**: Settings stored in `/app/data/settings.json`, persists across container restarts
-- **No env vars needed**: Integration configuration has been removed from environment variables
+### Container-Level Settings (env vars)
+- **Plexamp**: `PLEXAMP_ENABLED`, `PLEXAMP_CLAIM_TOKEN`, `PLEXAMP_SERVER_NAME`
+- **Snapclient**: `SNAPCLIENT_ENABLED`, `SNAPCLIENT_LATENCY`
+- **Network**: `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000)
 
-**Plexamp** (separate container, requires env config):
-- `PLEXAMP_ENABLED`, `PLEXAMP_CLAIM_TOKEN` (from https://plex.tv/claim), `PLEXAMP_SERVER_NAME`
-
-**Snapclient** (hardware-specific):
-- `SNAPCLIENT_ENABLED`, `SNAPCLIENT_LATENCY`
-- ~~`SNAPCLIENT_SOUNDCARD`~~ (deprecated - now configured via GUI Settings → Audio)
-
-**Network/Infrastructure**:
-- `HTTPS_ENABLED` (default: 1), `FRONTEND_PORT` (default: 3000), `FEDERATION_API_PORT` (default: 5001)
-
-**Important Implementation Notes**:
-- **Bluetooth**: No album art (needs BlueZ 5.81+, Alpine has 5.70). SSP only (no PIN codes). Metadata via AVRCP.
-- **Spotify**: Uses spotifyd (not librespot) for D-Bus MPRIS. Patched with-avahi to avoid port conflicts. Album art cached to `/usr/share/snapserver/snapweb/coverart/`
-- **DLNA/UPnP**: gmrender-resurrect, GStreamer pipeline to 44.1kHz/16-bit stereo. Metadata from UPnP AVTransport.
-- **Plexamp**: Separate Debian container (glibc). Monitors PlayQueue.json for metadata. HTTP API for controls at localhost:32500. S16_LE/44.1kHz/stereo conversion via ALSA. Pinned to version 4.11.3 (4.12.x has HTTP server deadlock bug). Start with `docker compose --profile plexamp up -d`
-
-### Network Architecture
-
-**Ports**:
+### Key Ports
 - Snapcast: 1704-1705 (clients), 1780 (HTTP/WS), 1788 (HTTPS/WS)
-- AirPlay: 3689, 5000, 6000-6009/udp, 5353/udp (mDNS), 7000 (AirPlay 2), 319-320/udp (NQPTP)
-- Plexamp: 32500 (HTTP API)
-- Frontend: 3000 (configurable)
+- AirPlay: 5050-5059 (up to 10 endpoints), 5353/udp (mDNS), UDP 6001-6100
+- Internal APIs: 5001-5004 (Federation, Settings, Integrations, Audio)
+- Frontend: 3000
 
-**Requirements**: Layer 2 network for mDNS/Avahi, host networking mode, no VLANs without repeater
+**Requirements**: Layer 2 network for mDNS/Avahi, host networking mode
 
 ---
 
-## API Documentation
+## Integration Notes
 
-### Snapcast JSON-RPC API
-- **Protocol**: WebSocket + JSON-RPC 2.0
-- **Endpoint**: `wss://[host]:1788/jsonrpc` (HTTPS) or `ws://[host]:1780/jsonrpc`
-- **Docs**: https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/
-
-**Key Methods**:
-```typescript
-Server.GetStatus() → { server: { streams: [], groups: [] } }
-Client.SetVolume({ id: string, volume: { percent: number, muted: boolean } })
-Group.SetStream({ id: string, stream_id: string })
-Stream.Control({ id: string, command: "play" | "pause" | "next" | "previous" })
-```
-
-### Settings REST API
-- **Protocol**: HTTP REST (Flask)
-- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/settings`
-- **Implementation**: `backend/scripts/settings_api.py`
-
-**Endpoints**:
-```typescript
-GET  /api/settings → Get current settings
-POST /api/settings → Update settings (partial or full)
-```
-
-### Integrations REST API
-- **Protocol**: HTTP REST (Flask)
-- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/integrations`
-- **Implementation**: `backend/scripts/integrations_api.py`
-
-**Endpoints**:
-```typescript
-POST /api/integrations/airplay/enable
-POST /api/integrations/airplay/disable
-POST /api/integrations/airplay/device-name
-GET  /api/integrations/airplay/status
-
-POST /api/integrations/bluetooth/enable
-POST /api/integrations/bluetooth/disable
-POST /api/integrations/bluetooth/device-name
-POST /api/integrations/bluetooth/settings
-GET  /api/integrations/bluetooth/status
-
-POST /api/integrations/spotify/enable
-POST /api/integrations/spotify/disable
-POST /api/integrations/spotify/device-name
-GET  /api/integrations/spotify/status
-
-POST /api/integrations/dlna/enable
-POST /api/integrations/dlna/disable
-POST /api/integrations/dlna/device-name
-GET  /api/integrations/dlna/status
-```
-
-### Audio Configuration REST API
-- **Protocol**: HTTP REST (Flask)
-- **Base URL**: `http://[host]:[FRONTEND_PORT]/api/audio`
-- **Implementation**: `backend/scripts/audio_api.py`
-
-**Endpoints**:
-```typescript
-// Output Devices
-GET  /api/audio/devices/output → List all ALSA playback devices
-GET  /api/audio/output/current → Get currently configured output device
-POST /api/audio/output/device → Set output device (body: {hw_id: string})
-POST /api/audio/output/test → Test output device (body: {hw_id: string})
-
-// Input Devices
-GET  /api/audio/devices/input → List all ALSA capture devices
-GET  /api/audio/input/devices → Get configured input devices from settings
-POST /api/audio/input/device → Add/update input device (body: {hw_id: string, custom_name?: string, enabled?: boolean})
-DELETE /api/audio/input/device/<hw_id> → Remove input device configuration
-POST /api/audio/input/device/<hw_id>/toggle → Toggle input device enabled state
-```
-
-**Device Object**:
-```typescript
-{
-  card: number,
-  device: number,
-  hw_id: string,              // e.g., "hw:0,0"
-  hw_name: string | null,     // e.g., "hw:Headphones"
-  card_name: string,
-  device_name: string,
-  type: "BUILTIN_HEADPHONES" | "BUILTIN_HDMI" | "USB" | "HAT" | "OTHER",
-  friendly_name: string,      // e.g., "Built-in Headphones (3.5mm Jack)"
-  is_available: boolean
-}
-```
+| Integration | Key Details |
+|-------------|-------------|
+| **AirPlay** | Multi-instance (up to 10 endpoints), MQTT metadata, dynamic stream lifecycle, control script wrapper pattern |
+| **Bluetooth** | No album art (BlueZ 5.70 < 5.81 required), SSP only (no PIN), AVRCP metadata |
+| **Spotify** | spotifyd (not librespot) for D-Bus MPRIS, patched with-avahi |
+| **DLNA/UPnP** | gmrender-resurrect, GStreamer 44.1kHz/16-bit, UPnP AVTransport metadata |
+| **Plexamp** | Separate Debian container, PlayQueue.json metadata, pinned v4.11.3 (4.12.x buggy) |
 
 ---
 
@@ -295,30 +163,24 @@ POST /api/audio/input/device/<hw_id>/toggle → Toggle input device enabled stat
 5. Test on hardware - verify changes on actual Raspberry Pi
 
 ### Project-Specific Rules
-
-1. **D-Bus/Avahi**: Container runs its own (self-contained, no host mounts)
-2. **Audio Group GID**: Always 29 (Raspberry Pi standard)
-3. **Snapclient Integration**: Runs in same container as snapserver
-4. **Attribution**: Maintain CREDITS.md (firefrei/docker-snapcast, badaix/snapcast, mikebrady/shairport-sync)
+- **D-Bus/Avahi**: Container runs its own (self-contained, no host mounts)
+- **Audio Group GID**: Always 29 (Raspberry Pi standard)
+- **Attribution**: Maintain CREDITS.md
+- **WebSocket**: Check `isConnected` before requests, handle failures gracefully
+- **TypeScript**: Use explicit types from `types.ts`, avoid `any`
+- **Icons**: Local SVG icons (not Font Awesome) - add to `frontend/src/assets/icons/`
 
 ### Error Handling
 - **Backend**: Auto-restart via supervisord
 - **Frontend**: Display errors in UI, don't crash
 - **WebSocket**: Auto-reconnect with exponential backoff
-- **Logging**: Use supervisord logs
-
-### Performance
-- Minimize audio latency (no transcoding)
-- Poll server status every 5s max
-- Use React.memo for expensive components (album art)
-- Alpine + multi-stage builds for minimal image size
 
 ---
 
 ## Common Tasks
 
 ### Adding a New Audio Source
-1. Add settings schema to `migrate-env-to-settings.py` (for new integration)
+1. Add settings schema to `migrate-env-to-settings.py`
 2. Update `get-settings.py` to export settings as env vars
 3. Update `backend/scripts/setup.sh` to add Snapcast stream source
 4. Add supervisord config (if service needed)
@@ -326,61 +188,38 @@ POST /api/audio/input/device/<hw_id>/toggle → Toggle input device enabled stat
 6. Update frontend Settings UI
 7. Test: Build → Deploy to RPi → Verify in web UI
 
-**Note**: Only add to `.env.example` if source requires container-level config (like Plexamp). Most integrations are managed via web UI.
-
 ### Debugging
-
-**Logs**:
 ```bash
 docker logs plum-snapcast-server
 docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf tail -f [service]
+docker exec plum-snapcast-server aplay -l
 ```
 
 **Common Issues**:
-- No audio: Check `docker exec plum-snapcast-server aplay -l`
+- No audio: Check `aplay -l` output
 - AirPlay not visible: Verify Avahi running, host Avahi disabled
-- Bluetooth not pairing: Check `bluetoothctl show`, verify discoverable setting in web UI (Settings → Integrations → Bluetooth)
-- D-Bus errors: Ensure host D-Bus socket mounted
-
----
-
-## Deployment
-
-### One-Time Raspberry Pi Setup
-1. Install Docker: `curl -fsSL https://get.docker.com | sh`
-2. Audio permissions: `echo 'SUBSYSTEM=="sound", MODE="0666"' | sudo tee /etc/udev/rules.d/99-audio-permissions.rules`
-3. Disable host Avahi: `sudo systemctl disable avahi-daemon.service avahi-daemon.socket`
-4. Clone, configure .env, deploy: `docker compose pull && docker compose up -d`
-5. Reboot
-
-### Updating
-```bash
-cd ~/Plum-Snapcast/docker
-git pull && docker compose pull && docker compose up -d
-```
+- Bluetooth not pairing: Check `bluetoothctl show`, verify discoverable in UI
+- Stream not found errors: Check lifecycle manager logs for false disconnect triggers
 
 ---
 
 ## Important Development Notes
 
-1. **Attribution**: Built on firefrei/docker-snapcast - maintain CREDITS.md
-2. **Container Architecture**: Self-contained D-Bus/Avahi, works across all host OS versions
-3. **WebSocket**: Check `isConnected` before requests, handle failures gracefully
-4. **Stream Capabilities**: Check `stream.properties` for supported controls
-5. **Volume Control**: No group volume API - adjust all clients individually
-6. **Metadata**: Format varies by source, always provide fallbacks
-7. **TypeScript**: Use explicit types from `types.ts`, avoid `any`
-8. **Audio Device Access**: Privileged mode + udev rule + GID 29 audio group
-9. **Multi-room**: Deploy additional snapclient-only containers, Layer 2 network required
-10. **Bluetooth Album Art**: Not available (needs BlueZ 5.81+, Alpine has 5.70)
-11. **Browser Audio**: Snapweb clients are hidden from UI; browser audio managed through useBrowserAudio hook. Auto-assigns to current stream on click, handles reconnection with stale server state. Always visible when active (ignores offline device filter).
-12. **Settings Persistence**: Integration and federation settings stored in `/app/data/settings.json` (Docker volume), persists across restarts. Managed exclusively via web UI. No environment variables needed for integrations.
-13. **Icon System**: Uses local SVG icons (not Font Awesome). Add new icons to `frontend/src/assets/icons/` and register in `Icon.tsx`.
-14. **Integration Control**: Services can be started/stopped via web UI using supervisorctl. Changes persist to settings.json. Device name updates restart services automatically.
-15. **Dynamic Stream Lifecycle**: All audio integrations (AirPlay, Bluetooth, Spotify, DLNA, Plexamp) use lifecycle managers to dynamically create/remove Snapcast streams based on activity. Lifecycle managers monitor metadata/events, create streams on activity, and remove after idle timeout. FIFO keepers prevent audio service blocking when no stream exists. See `_resources/DYNAMIC-STREAM-LIFECYCLE-FRAMEWORK.md` for implementation details.
-16. **Audio I/O Configuration**: Audio devices configured via GUI (Settings → Audio). **Output**: Device selection persists in `settings.json`, snapclient reloads on restart. SNAPCLIENT_SOUNDCARD env var deprecated (auto-migrated). **Tested on RPi with multiple devices (headphones, HDMI, HAT)**. **Input (BETA)**: Enable devices to create Snapcast streams. Each enabled device creates an ALSA input stream via `manage_input_streams.py` (uses JSON-RPC API). Custom stream names configurable. Default: all inputs disabled. **NOT YET TESTED with physical audio input devices** - requires USB microphone or audio interface for validation. UI includes beta warning. Supports all ALSA devices: built-in (headphones/HDMI), USB, HATs, microphones.
-17. **Enhanced Theming**: 5 theme modes (light, dark, system, black, white). 6 built-in accent colors + custom color picker. Album art color extraction with WCAG AA contrast (4.5:1 minimum) - extracts background + accent colors from artwork, automatically adjusts for accessibility. Monochrome modes (black/white) disable accent selection. Theme settings persist in `settings.json`.
-18. **Audio Visualizer**: Full-screen overlay with multiple preset types (bars, circular, waveform, amorphous blob). Frequency-reactive animations using Web Audio API. Preset cycling on track change. Smart color theming from album artwork. Browser audio auto-start integration. Visualizer settings (preset, theme, colors) persist in `settings.json`. Accessible via "Visualize" button in Now Playing.
+1. **Container Architecture**: Self-contained D-Bus/Avahi - works across all host OS versions, no host mounts needed
+
+2. **Dynamic Stream Lifecycle**: All integrations use lifecycle managers to create/remove streams based on activity. FIFO keepers prevent blocking when no stream exists. Signal files track disconnect events via mtime - be careful not to touch them unnecessarily.
+
+3. **Multi-Instance AirPlay**: Up to 10 endpoints with unique shairport-sync instances. Control script wrapper pattern works around Snapcast's no-arguments limitation. See `airplay_endpoints_api.py`.
+
+4. **Playback Position API**: Independent from Snapcast to avoid audio stuttering. Uses dual-timestamp architecture for accurate interpolation. See `playback_api.py`.
+
+5. **Browser Audio**: Snapweb clients hidden from UI. useBrowserAudio hook manages auto-assignment and reconnection.
+
+6. **Audio I/O Config**: Output via GUI (Settings → Audio). Input devices (BETA) create ALSA streams - not yet tested with physical hardware.
+
+7. **Enhanced Theming**: 5 modes, 6 accent colors + custom, album art extraction with WCAG AA contrast.
+
+8. **Audio Visualizer**: Full-screen overlay, multiple presets, Web Audio API, smart color theming.
 
 ---
 
@@ -391,11 +230,6 @@ git pull && docker compose pull && docker compose up -d
 # Development
 cd frontend && npm run dev                # Dev server
 cd frontend && npm run build              # Production build
-
-# Testing
-docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.conf status
-docker exec plum-snapcast-server aplay -l
-docker exec plum-snapcast-server speaker-test -D hw:Headphones -c 2 -t wav -l 1
 
 # Docker
 docker compose up -d                      # Start
@@ -410,9 +244,7 @@ cd docker && bash build-and-push.sh       # Multi-arch build
 ### File Locations
 - Backend config: `/app/config/` (snapcast-config volume)
 - Backend data: `/app/data/` (snapcast-data volume)
-- Logs: `docker logs` or supervisorctl tail
 - Frontend build: `frontend/dist/`
-- Docs: `/docs/` (except README.md)
 - Dev references: `/_resources/` (NOT in git)
 
 ---
@@ -423,12 +255,11 @@ cd docker && bash build-and-push.sh       # Multi-arch build
 - **Snapcast JSON-RPC API**: https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/
 - **Docker Snapcast**: https://github.com/firefrei/docker-snapcast
 - **Shairport-Sync**: https://github.com/mikebrady/shairport-sync
-- **Spotifyd**: https://github.com/Spotifyd/spotifyd
 
 ---
 
 ## Maintaining This File
 
-**When to Update**: Major architecture changes, new audio sources, Docker/deployment changes, env var updates, new workflows
-**What Not to Include**: Temporary notes (use `_resources/`), duplicate info from README/ARCHITECTURE, overly detailed API specs
-**Tips**: Document WHY (not just WHAT), test command examples, keep ARCHITECTURE.md in sync
+**When to Update**: Major architecture changes, new audio sources, new env vars, new workflows
+**What Not to Include**: Temporary notes (use `_resources/`), detailed API specs (use ARCHITECTURE.md)
+**Tips**: Document WHY (not just WHAT), keep ARCHITECTURE.md in sync for detailed specs

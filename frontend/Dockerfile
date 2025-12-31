@@ -72,6 +72,25 @@ RUN echo 'server { \
         proxy_set_header X-Forwarded-Proto $scheme; \
     } \
     \
+    # Proxy requests to Playback API (real-time position tracking) \
+    # Use exact match (=) to avoid matching /api/playback/stream-id \
+    location = /api/playback { \
+        proxy_pass http://snapcast-host:5001/api/playback; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $scheme; \
+    } \
+    \
+    # Proxy requests to Playback API for specific streams \
+    location ~ ^/api/playback/.+ { \
+        proxy_pass http://snapcast-host:5001$request_uri; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $scheme; \
+    } \
+    \
     # Proxy requests to Health Check API \
     location /api/health { \
         proxy_pass http://snapcast-host:5001/api/health; \

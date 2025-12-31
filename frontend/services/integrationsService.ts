@@ -99,6 +99,104 @@ export const airplayService = {
       throw error;
     }
   },
+
+  /**
+   * List all AirPlay endpoints
+   */
+  async listEndpoints(): Promise<{ success: boolean; endpoints: Array<{id: string; enabled: boolean; deviceName: string; port: number; udpPortBase: number}> }> {
+    try {
+      const response = await fetch(`${API_BASE}/airplay/endpoints`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to list endpoints' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to list AirPlay endpoints:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add a new AirPlay endpoint
+   */
+  async addEndpoint(deviceName: string, enabled: boolean = true): Promise<{ success: boolean; message: string; endpoint?: any; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/airplay/endpoints`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to add endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to add AirPlay endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update an existing AirPlay endpoint
+   */
+  async updateEndpoint(endpointId: string, deviceName?: string, enabled?: boolean): Promise<{ success: boolean; message: string; endpoint?: any; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/airplay/endpoints/${endpointId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update AirPlay endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove an AirPlay endpoint
+   */
+  async removeEndpoint(endpointId: string): Promise<{ success: boolean; message: string; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/airplay/endpoints/${endpointId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to remove endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to remove AirPlay endpoint:', error);
+      throw error;
+    }
+  },
 };
 
 /**

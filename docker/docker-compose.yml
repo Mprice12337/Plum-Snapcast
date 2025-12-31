@@ -35,6 +35,8 @@ services:
       # Federation API port (integration/federation settings managed via web UI)
       - FEDERATION_API_PORT=${FEDERATION_API_PORT:-5001}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # AirPlay idle timeout (seconds to keep stream alive after pause/idle)
+      - AIRPLAY_IDLE_TIMEOUT=${AIRPLAY_IDLE_TIMEOUT:-300}
     volumes:
       - snapcast-config:/app/config
       - snapcast-data:/app/data

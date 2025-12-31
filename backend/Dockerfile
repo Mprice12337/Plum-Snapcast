@@ -32,11 +32,14 @@ RUN apk add --no-cache \
     ffmpeg-libs \
     python3 \
     py3-pip \
+    py3-paho-mqtt \
     py3-dbus \
     py3-gobject3 \
     py3-requests \
     py3-flask \
     py3-flask-cors \
+    mosquitto \
+    mosquitto-clients \
     bluez \
     bluez-alsa \
     util-linux \
@@ -46,7 +49,8 @@ RUN apk add --no-cache \
     gst-plugins-bad \
     gst-plugins-ugly \
     gst-libav \
-    libupnp
+    libupnp \
+    sudo
 
 # Install Python packages for federation service and lifecycle manager
 RUN pip3 install --no-cache-dir --break-system-packages websockets websocket-client
@@ -83,6 +87,7 @@ RUN apk add --no-cache --virtual .build-deps \
     soxr-dev \
     libgcrypt-dev \
     ffmpeg-dev \
+    mosquitto-dev \
     # DLNA/UPnP build dependencies
     gstreamer-dev \
     gst-plugins-base-dev \
@@ -99,7 +104,7 @@ RUN git clone --depth 1 https://github.com/mikebrady/alac.git && \
     cd .. && \
     rm -rf alac
 
-# Build shairport-sync with metadata and AirPlay support
+# Build shairport-sync with metadata, MQTT, D-Bus/MPRIS, and AirPlay support
 RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-sync.git && \
     cd shairport-sync && \
     autoreconf -fi && \
@@ -109,12 +114,15 @@ RUN git clone --depth 1 --branch master https://github.com/mikebrady/shairport-s
         --with-avahi \
         --with-ssl=openssl \
         --with-metadata \
+        --with-mqtt-client \
         --with-dbus-interface \
+        --with-mpris-interface \
         --with-stdout \
         --with-pipe \
         --with-apple-alac && \
     make -j$(nproc) && \
     make install && \
+    rm -f /etc/dbus-1/system.d/shairport-sync-mpris.conf && \
     cd .. && \
     rm -rf shairport-sync
 
@@ -170,7 +178,15 @@ RUN deluser snapcast 2>/dev/null || true && \
     adduser -D -u 1000 -G snapcast -h /app snapcast && \
     addgroup snapcast audio && \
     addgroup -S messagebus 2>/dev/null || true && \
-    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true
+    adduser -S -G messagebus -H -s /sbin/nologin messagebus 2>/dev/null || true && \
+    addgroup -S mosquitto 2>/dev/null || true && \
+    adduser -S -G mosquitto -H -s /sbin/nologin mosquitto 2>/dev/null || true
+
+# Configure sudo for snapcast user (needed for API to manage endpoints)
+# Allow snapcast to run setup script and supervisorctl without password
+RUN echo "snapcast ALL=(ALL) NOPASSWD: /bin/bash /app/scripts/setup-airplay-multi-instance.sh" >> /etc/sudoers.d/snapcast && \
+    echo "snapcast ALL=(ALL) NOPASSWD: /usr/bin/supervisorctl" >> /etc/sudoers.d/snapcast && \
+    chmod 0440 /etc/sudoers.d/snapcast
 
 # Configure D-Bus machine-id (required for D-Bus to create socket)
 RUN mkdir -p /var/lib/dbus && \
@@ -193,11 +209,16 @@ RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
 COPY config/plum-snapcast.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
+COPY config/shairport-sync.conf.template /app/config/
 COPY config/spotifyd.conf /app/config/
+COPY config/mosquitto.conf /app/config/
 
 # Make avahi config writable by snapcast user (for hostname updates via settings API)
 RUN chown snapcast:snapcast /etc/avahi/avahi-daemon.conf && \
     chmod 644 /etc/avahi/avahi-daemon.conf
+
+# Make mosquitto config readable by mosquitto user
+RUN chmod 644 /app/config/mosquitto.conf
 
 
 # Create required directories
@@ -250,11 +271,11 @@ RUN chown snapcast:snapcast /usr/share/snapserver/snapweb/index.html && \
 
 # Expose ports
 # Snapcast: 1704-1705 (control/stream), 1780 (HTTP), 1788 (HTTPS)
-# Shairport-Sync: 3689, 5000, 5353, 6000-6009/udp, 7000
+# AirPlay Endpoints: 5050-5059 (up to 10 endpoints), 3689, 5353, 6001-6100/udp
+# Federation API: 5001 (HTTP REST API)
 # Metadata Debug Server: 8080 (HTTP)
-# Federation API: 5000 (HTTP REST API)
 # Note: Plexamp runs in separate container (port 32500)
-EXPOSE 1704 1705 1780 1788 3689 5000 5353 6000-6009/udp 7000 8080
+EXPOSE 1704 1705 1780 1788 3689 5001 5050-5059 5353 6001-6100/udp 8080
 
 # Set working directory
 WORKDIR /app

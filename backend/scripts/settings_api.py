@@ -123,6 +123,14 @@ class SettingsManager:
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
+
+            # Ensure file has correct ownership (snapcast user, UID 1000)
+            try:
+                os.chown(self.settings_file, 1000, 1000)
+                os.chmod(self.settings_file, 0o644)
+            except Exception as chown_error:
+                logger.warning(f"Could not set file ownership: {chown_error}")
+
             logger.info("Settings saved successfully")
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")

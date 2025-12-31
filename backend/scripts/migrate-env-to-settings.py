@@ -47,14 +47,45 @@ def main():
 
     # Build settings from environment variables
     default_device_name = "Plum Snapcast"
+
+    # Handle AirPlay endpoint migration
+    # If existing settings has old format (single endpoint), migrate to new format (array of endpoints)
+    existing_airplay = existing_settings.get("integrations", {}).get("airplay", {})
+    if "endpoints" in existing_airplay:
+        # Already using new multi-endpoint format
+        airplay_config = existing_airplay
+    elif "deviceName" in existing_airplay or "enabled" in existing_airplay:
+        # Old single-endpoint format - migrate to array
+        airplay_config = {
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": existing_airplay.get("enabled", bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True)),
+                    "deviceName": existing_airplay.get("deviceName", os.getenv("AIRPLAY_DEVICE_NAME", "Plum Audio")),
+                    "port": 5050,
+                    "udpPortBase": 6001
+                }
+            ]
+        }
+    else:
+        # No existing AirPlay config - create default single endpoint
+        airplay_config = {
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True),
+                    "deviceName": os.getenv("AIRPLAY_DEVICE_NAME", "Plum Audio"),
+                    "port": 5050,
+                    "udpPortBase": 6001
+                }
+            ]
+        }
+
     settings = {
         "deviceName": existing_settings.get("deviceName", default_device_name),
         "hostname": existing_settings.get("hostname", sanitize_hostname(default_device_name)),
         "integrations": {
-            "airplay": {
-                "enabled": bool_from_env(os.getenv("AIRPLAY_CONFIG_ENABLED"), True),
-                "deviceName": os.getenv("AIRPLAY_DEVICE_NAME", "Plum Audio")
-            },
+            "airplay": airplay_config,
             "bluetooth": {
                 "enabled": bool_from_env(os.getenv("BLUETOOTH_ENABLED"), False),
                 "deviceName": os.getenv("BLUETOOTH_DEVICE_NAME", "Plum Audio"),
@@ -142,6 +173,13 @@ def main():
 
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f, indent=2)
+
+        # Set ownership to snapcast user (UID 1000, GID 1000)
+        try:
+            os.chown(SETTINGS_FILE, 1000, 1000)
+            os.chmod(SETTINGS_FILE, 0o644)
+        except Exception as e:
+            print(f"\n✗ Warning: Could not set file ownership: {e}")
 
         print(f"\n✓ Successfully wrote settings to {SETTINGS_FILE}")
         print("\nMigrated settings:")
