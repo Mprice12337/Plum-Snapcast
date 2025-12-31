@@ -19,6 +19,13 @@ type AirPlayEndpoint = {
   udpPortBase: number;
 };
 
+type SpotifyEndpoint = {
+  id: string;
+  enabled: boolean;
+  deviceName: string;
+  zeroconfPort: number;
+};
+
 export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   settings,
   onSettingsChange,
@@ -35,17 +42,21 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [newEndpointName, setNewEndpointName] = useState('');
   const [showAddEndpoint, setShowAddEndpoint] = useState(false);
 
+  // Spotify endpoints state
+  const [spotifyEndpoints, setSpotifyEndpoints] = useState<SpotifyEndpoint[]>([]);
+  const [spotifyEndpointNames, setSpotifyEndpointNames] = useState<Record<string, string>>({});
+  const [spotifyEndpointNameStatuses, setSpotifyEndpointNameStatuses] = useState<Record<string, ApplyStatus>>({});
+  const [spotifyEndpointNameMessages, setSpotifyEndpointNameMessages] = useState<Record<string, string>>({});
+  const [isTogglingSpotifyEndpoint, setIsTogglingSpotifyEndpoint] = useState<Record<string, boolean>>({});
+  const [isAddingSpotifyEndpoint, setIsAddingSpotifyEndpoint] = useState(false);
+  const [newSpotifyEndpointName, setNewSpotifyEndpointName] = useState('');
+  const [showAddSpotifyEndpoint, setShowAddSpotifyEndpoint] = useState(false);
+
   // Bluetooth device name state
   const [bluetoothDeviceName, setBluetoothDeviceName] = useState(settings.integrations.bluetooth.deviceName);
   const [bluetoothNameStatus, setBluetoothNameStatus] = useState<ApplyStatus>('idle');
   const [bluetoothNameMessage, setBluetoothNameMessage] = useState('');
   const [isTogglingBluetooth, setIsTogglingBluetooth] = useState(false);
-
-  // Spotify device name state
-  const [spotifyDeviceName, setSpotifyDeviceName] = useState(settings.integrations.spotify.deviceName);
-  const [spotifyNameStatus, setSpotifyNameStatus] = useState<ApplyStatus>('idle');
-  const [spotifyNameMessage, setSpotifyNameMessage] = useState('');
-  const [isTogglingSpotify, setIsTogglingSpotify] = useState(false);
 
   // DLNA device name state
   const [dlnaDeviceName, setDlnaDeviceName] = useState(settings.integrations.dlna.deviceName);
@@ -77,13 +88,30 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     loadEndpoints();
   }, []);
 
+  // Load Spotify endpoints on mount
+  useEffect(() => {
+    const loadSpotifyEndpoints = async () => {
+      try {
+        const result = await spotifyService.listEndpoints();
+        if (result.success && result.endpoints) {
+          setSpotifyEndpoints(result.endpoints);
+          // Initialize endpoint name states
+          const names: Record<string, string> = {};
+          result.endpoints.forEach(ep => {
+            names[ep.id] = ep.deviceName;
+          });
+          setSpotifyEndpointNames(names);
+        }
+      } catch (error) {
+        console.error('Failed to load Spotify endpoints:', error);
+      }
+    };
+    loadSpotifyEndpoints();
+  }, []);
+
   useEffect(() => {
     setBluetoothDeviceName(settings.integrations.bluetooth.deviceName);
   }, [settings.integrations.bluetooth.deviceName]);
-
-  useEffect(() => {
-    setSpotifyDeviceName(settings.integrations.spotify.deviceName);
-  }, [settings.integrations.spotify.deviceName]);
 
   useEffect(() => {
     setDlnaDeviceName(settings.integrations.dlna.deviceName);
@@ -91,7 +119,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
   // Check if device name has changed
   const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
-  const spotifyNameChanged = spotifyDeviceName !== settings.integrations.spotify.deviceName;
   const dlnaNameChanged = dlnaDeviceName !== settings.integrations.dlna.deviceName;
 
   const toggleSection = (section: string) => {
@@ -210,6 +237,118 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
   };
 
+  // Spotify endpoint handlers
+  const handleSpotifyEndpointToggle = async (endpointId: string, enabled: boolean) => {
+    setIsTogglingSpotifyEndpoint({...isTogglingSpotifyEndpoint, [endpointId]: true});
+    try {
+      const result = await spotifyService.updateEndpoint(endpointId, undefined, enabled);
+
+      if (result.success) {
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, enabled} : ep
+        ));
+      } else {
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} Spotify endpoint: ${error.message}`);
+    } finally {
+      setIsTogglingSpotifyEndpoint({...isTogglingSpotifyEndpoint, [endpointId]: false});
+    }
+  };
+
+  const handleSpotifyEndpointNameChange = async (endpointId: string) => {
+    const newName = spotifyEndpointNames[endpointId];
+    const endpoint = spotifyEndpoints.find(ep => ep.id === endpointId);
+
+    if (!endpoint || newName === endpoint.deviceName) return;
+
+    setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'applying'});
+    setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: 'Applying...'});
+
+    try {
+      const result = await spotifyService.updateEndpoint(endpointId, newName, undefined);
+
+      if (result.success) {
+        setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'success'});
+        setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: 'Applied'});
+
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, deviceName: newName} : ep
+        ));
+
+        setTimeout(() => {
+          setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'idle'});
+          setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: ''});
+        }, 3000);
+      } else {
+        setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'error'});
+        setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: result.message || 'Failed'});
+      }
+    } catch (error: any) {
+      setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'error'});
+      setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: error.message || 'Error'});
+    }
+  };
+
+  const handleAddSpotifyEndpoint = async () => {
+    if (!newSpotifyEndpointName.trim()) {
+      alert('Please enter a device name');
+      return;
+    }
+
+    setIsAddingSpotifyEndpoint(true);
+    try {
+      const result = await spotifyService.addEndpoint(newSpotifyEndpointName, true);
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setSpotifyEndpoints([...spotifyEndpoints, result.endpoint]);
+        setSpotifyEndpointNames({...spotifyEndpointNames, [result.endpoint.id]: result.endpoint.deviceName});
+        setNewSpotifyEndpointName('');
+        setShowAddSpotifyEndpoint(false);
+      } else {
+        alert(`Failed to add Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error adding Spotify endpoint: ${error.message}`);
+    } finally {
+      setIsAddingSpotifyEndpoint(false);
+    }
+  };
+
+  const handleRemoveSpotifyEndpoint = async (endpointId: string) => {
+    if (spotifyEndpoints.length <= 1) {
+      alert('Cannot remove the last Spotify endpoint');
+      return;
+    }
+
+    const endpoint = spotifyEndpoints.find(ep => ep.id === endpointId);
+    if (!endpoint) return;
+
+    if (!confirm(`Remove Spotify endpoint "${endpoint.deviceName}"?`)) {
+      return;
+    }
+
+    try {
+      const result = await spotifyService.removeEndpoint(endpointId);
+
+      if (result.success) {
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.filter(ep => ep.id !== endpointId));
+        const newNames = {...spotifyEndpointNames};
+        delete newNames[endpointId];
+        setSpotifyEndpointNames(newNames);
+      } else {
+        alert(`Failed to remove Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error removing Spotify endpoint: ${error.message}`);
+    }
+  };
+
   const handleBluetoothToggle = async (enabled: boolean) => {
     setIsTogglingBluetooth(true);
     try {
@@ -318,90 +457,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         },
       });
     }
-  };
-
-  const handleSpotifyToggle = async (enabled: boolean) => {
-    setIsTogglingSpotify(true);
-    try {
-      const result = enabled
-        ? await spotifyService.enable()
-        : await spotifyService.disable();
-
-      if (result.success) {
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            spotify: {
-              ...settings.integrations.spotify,
-              enabled,
-            },
-          },
-        });
-      } else {
-        console.error('Failed to toggle Spotify:', result.message);
-        alert(`Failed to ${enabled ? 'enable' : 'disable'} Spotify: ${result.message}`);
-      }
-    } catch (error) {
-      console.error('Error toggling Spotify:', error);
-      alert(`Error ${enabled ? 'enabling' : 'disabling'} Spotify`);
-    } finally {
-      setIsTogglingSpotify(false);
-    }
-  };
-
-  const handleApplySpotifyDeviceName = async () => {
-    if (!spotifyNameChanged) return;
-
-    setSpotifyNameStatus('applying');
-    setSpotifyNameMessage('Applying changes... this may take up to 60 seconds');
-
-    try {
-      const result = await spotifyService.updateDeviceName(spotifyDeviceName);
-
-      if (result.success) {
-        setSpotifyNameStatus('success');
-        setSpotifyNameMessage('Applied');
-
-        // Update settings - restarting service enables Spotify
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            spotify: {
-              ...settings.integrations.spotify,
-              deviceName: spotifyDeviceName,
-              enabled: true,
-            },
-          },
-        });
-
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setSpotifyNameStatus('idle');
-          setSpotifyNameMessage('');
-        }, 3000);
-      } else {
-        setSpotifyNameStatus('error');
-        setSpotifyNameMessage(result.message || 'Failed to apply');
-      }
-    } catch (error: any) {
-      setSpotifyNameStatus('error');
-      setSpotifyNameMessage(error.message || 'Error applying changes');
-    }
-  };
-
-  const handleSpotifyChange = (field: string, value: boolean | string | number) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        spotify: {
-          ...settings.integrations.spotify,
-          [field]: value,
-        },
-      },
-    });
   };
 
   const handleDlnaToggle = async (enabled: boolean) => {
@@ -834,33 +889,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <div className="flex flex-col flex-1">
               <span className="text-base font-semibold text-[var(--text-secondary)]">Spotify Connect</span>
               <p className="text-sm text-[var(--text-muted)] mt-1">
-                Stream music directly from Spotify
+                Stream music directly from Spotify - {spotifyEndpoints.length} endpoint{spotifyEndpoints.length !== 1 ? 's' : ''}
               </p>
-              {isTogglingSpotify && (
-                <p className="text-xs text-amber-500 mt-1">
-                  Processing... this may take up to 60 seconds
-                </p>
-              )}
             </div>
 
-            {/* Right: Toggle + Chevron */}
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={settings.integrations.spotify.enabled}
-                  onChange={(e) => handleSpotifyToggle(e.target.checked)}
-                  disabled={isTogglingSpotify}
-                  id="spotify-toggle"
-                />
-                <label
-                  htmlFor="spotify-toggle"
-                  className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.spotify.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingSpotify ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.spotify.enabled ? 'translate-x-6' : ''}`}></div>
-                </label>
-              </div>
+            {/* Right: Chevron */}
+            <div className="flex items-center flex-shrink-0">
               <button
                 onClick={() => toggleSection('spotify')}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -871,78 +905,144 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           </div>
 
           {expandedSection === 'spotify' && (
-            <div className="mt-4 ml-14 space-y-3">
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Source Name
-                </label>
-                <input
-                  type="text"
-                  value={settings.integrations.spotify.sourceName}
-                  onChange={(e) => handleSpotifyChange('sourceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="Spotify"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Device Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={spotifyDeviceName}
-                    onChange={(e) => setSpotifyDeviceName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && spotifyNameChanged) {
-                        handleApplySpotifyDeviceName();
-                      }
-                    }}
-                    className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                    placeholder="Plum Audio"
-                    disabled={spotifyNameStatus === 'applying'}
-                  />
-                  {spotifyNameChanged && (
-                    <button
-                      onClick={handleApplySpotifyDeviceName}
-                      disabled={spotifyNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-                    >
-                      {spotifyNameStatus === 'applying' ? 'Applying...' : 'Apply'}
-                    </button>
-                  )}
-                </div>
-                {spotifyNameMessage && (
-                  <p className={`text-xs mt-1 ${
-                    spotifyNameStatus === 'success'
-                      ? 'text-green-500'
-                      : spotifyNameStatus === 'error'
-                      ? 'text-red-500'
-                      : 'text-[var(--text-muted)]'
-                  }`}>
-                    {spotifyNameMessage}
-                  </p>
-                )}
-                {spotifyNameChanged && !spotifyNameMessage && (
-                  <p className="text-xs text-amber-500 mt-1">
-                    Pending changes - press Enter or click Apply
-                  </p>
-                )}
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Bitrate (kbps)
-                </label>
-                <select
-                  value={settings.integrations.spotify.bitrate}
-                  onChange={(e) => handleSpotifyChange('bitrate', parseInt(e.target.value))}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+            <div className="mt-4 ml-14 space-y-4">
+              {/* Endpoints list */}
+              {spotifyEndpoints.map((endpoint) => {
+                const nameChanged = spotifyEndpointNames[endpoint.id] !== endpoint.deviceName;
+                return (
+                  <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                        Endpoint #{endpoint.id}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={endpoint.enabled}
+                            onChange={(e) => handleSpotifyEndpointToggle(endpoint.id, e.target.checked)}
+                            disabled={isTogglingSpotifyEndpoint[endpoint.id]}
+                            id={`spotify-endpoint-${endpoint.id}-toggle`}
+                          />
+                          <label
+                            htmlFor={`spotify-endpoint-${endpoint.id}-toggle`}
+                            className={`block w-10 h-5 rounded-full transition cursor-pointer ${endpoint.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingSpotifyEndpoint[endpoint.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform ${endpoint.enabled ? 'translate-x-5' : ''}`}></div>
+                          </label>
+                        </div>
+                        {spotifyEndpoints.length > 1 && (
+                          <button
+                            onClick={() => handleRemoveSpotifyEndpoint(endpoint.id)}
+                            className="text-red-500 hover:text-red-400 text-xs"
+                            title="Remove endpoint"
+                          >
+                            <Icon name="trash" className="text-sm" style={{ color: 'inherit' }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--text-muted)] mb-1">
+                        Device Name
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={spotifyEndpointNames[endpoint.id] || endpoint.deviceName}
+                          onChange={(e) => setSpotifyEndpointNames({...spotifyEndpointNames, [endpoint.id]: e.target.value})}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && nameChanged) {
+                              handleSpotifyEndpointNameChange(endpoint.id);
+                            }
+                          }}
+                          className="w-full px-2 py-1.5 pr-16 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                          placeholder="Plum Audio"
+                          disabled={spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
+                        />
+                        {nameChanged && (
+                          <button
+                            onClick={() => handleSpotifyEndpointNameChange(endpoint.id)}
+                            disabled={spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {spotifyEndpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
+                          </button>
+                        )}
+                      </div>
+                      {spotifyEndpointNameMessages[endpoint.id] && (
+                        <p className={`text-xs mt-1 ${
+                          spotifyEndpointNameStatuses[endpoint.id] === 'success'
+                            ? 'text-green-500'
+                            : spotifyEndpointNameStatuses[endpoint.id] === 'error'
+                            ? 'text-red-500'
+                            : 'text-[var(--text-muted)]'
+                        }`}>
+                          {spotifyEndpointNameMessages[endpoint.id]}
+                        </p>
+                      )}
+                      {nameChanged && !spotifyEndpointNameMessages[endpoint.id] && (
+                        <p className="text-xs text-amber-500 mt-1">
+                          Pending changes
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)] mt-2">
+                      Zeroconf Port: {endpoint.zeroconfPort}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add endpoint button/form */}
+              {!showAddSpotifyEndpoint && spotifyEndpoints.length < 10 && (
+                <button
+                  onClick={() => setShowAddSpotifyEndpoint(true)}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
                 >
-                  <option value="96">96</option>
-                  <option value="160">160</option>
-                  <option value="320">320</option>
-                </select>
-              </div>
+                  + Add Endpoint
+                </button>
+              )}
+
+              {showAddSpotifyEndpoint && (
+                <div className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--accent-color)]">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                    New Endpoint Name
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newSpotifyEndpointName}
+                      onChange={(e) => setNewSpotifyEndpointName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddSpotifyEndpoint()}
+                      className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                      placeholder="Living Room"
+                      disabled={isAddingSpotifyEndpoint}
+                    />
+                    <button
+                      onClick={handleAddSpotifyEndpoint}
+                      disabled={isAddingSpotifyEndpoint}
+                      className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isAddingSpotifyEndpoint ? 'Adding...' : 'Add'}
+                    </button>
+                    <button
+                      onClick={() => {setShowAddSpotifyEndpoint(false); setNewSpotifyEndpointName('');}}
+                      disabled={isAddingSpotifyEndpoint}
+                      className="px-3 py-1.5 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary-hover)] rounded text-xs text-[var(--text-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {spotifyEndpoints.length >= 10 && (
+                <p className="text-xs text-[var(--text-muted)] italic">
+                  Maximum of 10 endpoints reached
+                </p>
+              )}
             </div>
           )}
         </div>
