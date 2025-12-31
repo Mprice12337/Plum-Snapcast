@@ -185,37 +185,45 @@ iOS/macOS       Plex App                   http://localhost:3000
 
 #### 3.2.3. Shairport-Sync (AirPlay Receiver)
 
-**Name**: AirPlay Audio Receiver
+**Name**: AirPlay Audio Receiver (Multi-Instance)
 
-**Description**: Receives AirPlay and AirPlay 2 audio streams from iOS/macOS devices and pipes them into Snapcast for synchronized multi-room playback. Includes custom metadata processing for album art and track information.
+**Description**: Receives AirPlay and AirPlay 2 audio streams from iOS/macOS devices and pipes them into Snapcast for synchronized multi-room playback. Supports up to 10 simultaneous AirPlay endpoints, each with unique device names and ports.
+
+**Multi-Instance Architecture**:
+- Each endpoint runs a separate shairport-sync instance
+- Instances have unique ports, FIFO pipes, metadata pipes, and lifecycle managers
+- Control script wrapper pattern (`airplay-control-script-{id}.py`) works around Snapcast's no-arguments limitation
+- Endpoint management via REST API (`/api/airplay/endpoints`)
+- Stream names: "AirPlay - [deviceName]"
 
 **Technologies**:
 - Shairport-Sync (latest from Alpine repositories)
-- D-Bus for inter-process communication and remote control
+- MQTT for real-time metadata and control (distinguishes pause from disconnect)
+- D-Bus for playback controls (endpoint 1 only to avoid conflicts)
 - Avahi for mDNS service discovery
-- Python control script (`airplay-control-script.py`) for metadata and artwork
-- Shairport-sync metadata pipe for real-time updates
+- Python control script with instance-specific wrappers
 
-**Deployment**: Managed by Supervisord in backend container
+**Deployment**: Managed by Supervisord, dynamically configured via `generate-airplay-supervisord-config.py`
 
-**Ports**:
-- 3689: AirPlay control
-- 5000: AirPlay Classic/1 streaming
-- 6000-6009/udp: AirPlay audio streaming
-- 7000: AirPlay 2 streaming (in airplay2 builds)
+**Ports (per endpoint, N = endpoint ID)**:
+- 5050-5059: AirPlay Classic/1 streaming (5050 + N - 1)
+- 3689, 5353/udp: mDNS service discovery
+- UDP 6001-6100: RTP/timing ports (6001 + (N-1) × 10 base)
 - 319-320/udp: NQPTP for AirPlay 2
 
-#### 3.2.4. Librespot (Spotify Connect)
+#### 3.2.4. Spotifyd (Spotify Connect)
 
 **Name**: Spotify Connect Endpoint
 
 **Description**: Optional service that makes the system appear as a Spotify Connect device, allowing users to cast audio from the Spotify app directly to the multi-room audio system.
 
 **Technologies**:
-- Librespot (open-source Spotify Connect client)
+- Spotifyd (uses D-Bus MPRIS for metadata, unlike librespot)
+- Patched with-avahi to avoid port conflicts
 - Configured to output to Snapcast FIFO pipe
+- Album art cached to `/usr/share/snapserver/snapweb/coverart/`
 
-**Deployment**: Optional, enabled via environment variable
+**Deployment**: Optional, enabled via Settings → Integrations in web UI
 
 #### 3.2.5. Plexamp (Plex Music Casting)
 
@@ -376,6 +384,107 @@ iOS/macOS       Plex App                   http://localhost:3000
 - `Stream.Control` - Control stream playback
 
 **Documentation**: https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/
+
+### 5.2. REST APIs (Flask)
+
+The backend exposes several REST APIs for configuration and control. All APIs are proxied through nginx on the frontend port.
+
+#### Settings API
+- **Base URL**: `/api/settings`
+- **Implementation**: `backend/scripts/settings_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/settings` | Get current settings |
+| POST | `/api/settings` | Update settings (partial or full) |
+
+#### Integrations API
+- **Base URL**: `/api/integrations`
+- **Implementation**: `backend/scripts/integrations_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/integrations/{service}/enable` | Enable integration |
+| POST | `/api/integrations/{service}/disable` | Disable integration |
+| POST | `/api/integrations/{service}/device-name` | Update device name |
+| GET | `/api/integrations/{service}/status` | Get integration status |
+
+Services: `airplay`, `bluetooth`, `spotify`, `dlna`
+
+#### AirPlay Endpoints API
+- **Base URL**: `/api/airplay/endpoints`
+- **Implementation**: `backend/scripts/airplay_endpoints_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/airplay/endpoints` | List all AirPlay endpoints |
+| POST | `/api/airplay/endpoints` | Add new endpoint |
+| PUT | `/api/airplay/endpoints/:id` | Update endpoint |
+| DELETE | `/api/airplay/endpoints/:id` | Remove endpoint |
+
+**Endpoint Object**:
+```json
+{
+  "id": "1",
+  "enabled": true,
+  "deviceName": "Living Room",
+  "port": 5050,
+  "udpPortBase": 6001
+}
+```
+
+#### Audio Configuration API
+- **Base URL**: `/api/audio`
+- **Implementation**: `backend/scripts/audio_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/audio/devices/output` | List all ALSA playback devices |
+| GET | `/api/audio/output/current` | Get currently configured output |
+| POST | `/api/audio/output/device` | Set output device |
+| POST | `/api/audio/output/test` | Test output device |
+| GET | `/api/audio/devices/input` | List all ALSA capture devices |
+| POST | `/api/audio/input/device` | Add/update input device |
+| DELETE | `/api/audio/input/device/:hw_id` | Remove input device |
+
+#### Playback Position API
+- **Base URL**: `/api/playback` (via Federation API port 5001)
+- **Implementation**: `backend/scripts/playback_api.py`
+- **Purpose**: Real-time position tracking without audio stuttering
+
+**Problem**: Snapcast's `Plugin.Stream.Player.Properties` notifications cause audio stuttering when position updates are pushed frequently.
+
+**Solution**: Independent position tracking with server-side interpolation:
+1. Control scripts POST position updates on actual changes (track start, seek, pause)
+2. Server interpolates position between updates using dual timestamps
+3. Frontend polls for interpolated position every 2 seconds
+4. No impact on Snapcast audio pipeline
+
+**Dual-Timestamp Architecture**:
+- `last_update`: Updated on every heartbeat (prevents staleness detection)
+- `position_timestamp`: Updated only when position changes >500ms (enables interpolation)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/playback/:stream_id` | Update position (from control scripts) |
+| GET | `/api/playback/:stream_id` | Get position for specific stream |
+| GET | `/api/playback` | Get position for all streams |
+| DELETE | `/api/playback/:stream_id` | Remove position data |
+
+**Response Object**:
+```json
+{
+  "stream_id": "AirPlay - Living Room",
+  "position": 45000,
+  "duration": 180000,
+  "playback_status": "playing",
+  "interpolated_position": 47000,
+  "last_update": 1735600000.0,
+  "position_timestamp": 1735600000.0,
+  "age_seconds": 2.0,
+  "is_stale": false
+}
+```
 
 ## 6. Deployment & Infrastructure
 
@@ -726,10 +835,12 @@ Each integration has a FIFO keeper that prevents audio service blocking:
 ### 13.5. Integration-Specific Implementations
 
 #### AirPlay (Shairport-Sync)
-- **Activity Trigger**: `pbeg` (play begin) metadata event
-- **Idle Trigger**: `pend` (play end) + 10s timeout
-- **Metadata Source**: XML metadata pipe (`/tmp/shairport-sync-metadata`)
-- **Disconnect**: `disc` event → immediate removal
+- **Activity Trigger**: MQTT `active_start` or metadata activity
+- **Idle Trigger**: MQTT `active_end` + idle timeout, or signal file mtime change
+- **Metadata Source**: MQTT broker (`localhost:1883`) for real-time updates
+- **Disconnect Detection**: MQTT activity monitor distinguishes pause (activity continues) from disconnect (no activity for 15s)
+- **Signal File**: `/tmp/airplay-{id}-stream-end.signal` - mtime change triggers disconnect check
+- **Multi-Instance**: Each endpoint has separate lifecycle manager, signal file, and MQTT topics
 
 #### Bluetooth (BlueZ + bluez-alsa)
 - **Activity Trigger**: BlueZ Device1 `Connected=true` + A2DP profile
@@ -1036,4 +1147,4 @@ docker logs plum-snapcast-server 2>&1 | grep -i "artwork\|track"
 - Performance characteristics change
 - Security considerations evolve
 
-**Last Reviewed**: 2025-12-15
+**Last Reviewed**: 2025-12-31

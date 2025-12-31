@@ -178,6 +178,47 @@ curl -X DELETE http://localhost:3000/api/audio/input/device/hw%3A0%2C0
   4. Audio from input device should be captured and streamed
 - Please report any issues or successful tests
 
+### AirPlay Endpoints API (Multi-Instance)
+
+```bash
+# List all AirPlay endpoints
+curl http://localhost:3000/api/airplay/endpoints | python3 -m json.tool
+
+# Add a new AirPlay endpoint
+curl -X POST http://localhost:3000/api/airplay/endpoints \
+  -H "Content-Type: application/json" \
+  -d '{"deviceName":"Kitchen"}'
+
+# Update endpoint name
+curl -X PUT http://localhost:3000/api/airplay/endpoints/2 \
+  -H "Content-Type: application/json" \
+  -d '{"deviceName":"Kitchen Updated"}'
+
+# Enable/disable an endpoint
+curl -X PUT http://localhost:3000/api/airplay/endpoints/2 \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":false}'
+
+# Remove an endpoint
+curl -X DELETE http://localhost:3000/api/airplay/endpoints/2
+```
+
+**Endpoint Limits**: Up to 10 AirPlay endpoints (ports 5050-5059)
+
+### Playback Position API
+
+```bash
+# Get position for all active streams
+curl http://localhost:5001/api/playback | python3 -m json.tool
+
+# Get position for specific stream
+curl "http://localhost:5001/api/playback/AirPlay%20-%20Living%20Room"
+
+# Response includes interpolated_position for smooth progress bar updates
+```
+
+**Note**: The Playback Position API runs on the Federation port (5001) and provides real-time position tracking independent of Snapcast to avoid audio stuttering.
+
 ### Check Audio Pipeline
 
 ```bash
@@ -202,9 +243,11 @@ docker exec plum-snapcast-server supervisorctl -c /app/supervisord/supervisord.c
 # Expected output (varies by enabled integrations):
 # avahi                                  RUNNING
 # dbus                                   RUNNING
-# shairport-sync                         RUNNING    (if AirPlay enabled)
-# stream-lifecycle-manager               RUNNING    (AirPlay lifecycle)
-# fifo-keeper                            RUNNING    (AirPlay FIFO keeper)
+# shairport-sync-1                       RUNNING    (AirPlay endpoint 1)
+# shairport-sync-2                       RUNNING    (AirPlay endpoint 2, if configured)
+# stream-lifecycle-manager-1             RUNNING    (AirPlay 1 lifecycle)
+# stream-lifecycle-manager-2             RUNNING    (AirPlay 2 lifecycle, if configured)
+# fifo-keeper-1                          RUNNING    (AirPlay 1 FIFO keeper)
 # bluetooth-stream-lifecycle-manager     RUNNING    (if Bluetooth enabled)
 # bluetooth-fifo-keeper                  RUNNING    (Bluetooth FIFO keeper)
 # spotify-stream-lifecycle-manager       RUNNING    (if Spotify enabled)
@@ -347,26 +390,30 @@ snapcastService.send({
 
 ### Backend (.env in docker/ folder)
 
-```bash
-# AirPlay
-AIRPLAY_CONFIG_ENABLED=1
-AIRPLAY_DEVICE_NAME=Plum Audio
-AIRPLAY_SOURCE_NAME=Airplay
+**Note**: Most integration settings are now managed via web UI (Settings → Integrations). Only container-level settings use env vars.
 
+```bash
 # Snapclient (integrated audio output)
 SNAPCLIENT_ENABLED=1
-SNAPCLIENT_SOUNDCARD=hw:Headphones
 SNAPCLIENT_LATENCY=0
+# SNAPCLIENT_SOUNDCARD is deprecated - use Settings → Audio instead
 
-# Spotify (optional)
-SPOTIFY_CONFIG_ENABLED=0
-SPOTIFY_BITRATE=320
+# Plexamp (optional, separate container)
+PLEXAMP_ENABLED=0
+PLEXAMP_CLAIM_TOKEN=claim-xxxxx  # From https://plex.tv/claim
+PLEXAMP_SERVER_NAME=Plum Plexamp
 
 # General
 TZ=America/New_York
 FRONTEND_PORT=3000
 HTTPS_ENABLED=1
 ```
+
+**Managed via Web UI** (Settings → Integrations):
+- AirPlay: Enable/disable, device names, multi-endpoint support
+- Bluetooth: Enable/disable, device name, discoverable setting
+- Spotify: Enable/disable, device name
+- DLNA: Enable/disable, device name
 
 ### Frontend (.env.local in frontend/ folder)
 
@@ -637,17 +684,17 @@ docker exec plum-snapcast-server cat /var/log/supervisor/supervisord.log
 ### Audio Pipeline
 
 ```
-iOS/Mac (AirPlay) or Spotify App
+iOS/Mac (AirPlay) or Spotify App or Plex
               ↓
-    shairport-sync / librespot
+    shairport-sync / spotifyd / plexamp / gmrender / bluealsa
               ↓
-       /tmp/snapfifo (FIFO pipe)
+       /tmp/*-fifo (FIFO pipes per source)
               ↓
          snapserver (distributes audio)
               ↓
          snapclient (integrated, outputs to hardware)
               ↓
-    ALSA hw:Headphones (Raspberry Pi 3.5mm jack)
+    ALSA output device (configured via Settings → Audio)
               ↓
       Speakers/Headphones
 ```
@@ -668,14 +715,20 @@ iOS/Mac (AirPlay) or Spotify App
 - `1780`: HTTP/WebSocket (legacy)
 - `1788`: HTTPS/WebSocket (default)
 
-**AirPlay:**
-- `3689`: Control
-- `5000`: Streaming
-- `6000-6009/udp`: Audio
-- `5353/udp`: mDNS (Avahi)
+**AirPlay (Multi-Instance):**
+- `5050-5059`: AirPlay endpoints (5050 + endpoint_id - 1)
+- `6001-6100/udp`: RTP/timing ports (10 per endpoint)
+- `3689, 5353/udp`: mDNS (Avahi)
+- `319-320/udp`: NQPTP for AirPlay 2
+
+**Internal APIs:**
+- `5001`: Federation/Playback API
+- `5002`: Settings API
+- `5003`: Integrations API
+- `5004`: Audio API
 
 **Frontend:**
-- `3000`: Web interface (default)
+- `3000`: Web interface (default, proxies to all APIs)
 
 ---
 

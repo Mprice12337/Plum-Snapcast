@@ -99,8 +99,7 @@ export class SnapcastService {
     private maxReconnectAttempts = 10;
 
     constructor() {
-        this.host =
-            this.host = window.location.hostname;
+        this.host = window.location.hostname;
         this.port = 1780;
     }
 
