@@ -212,6 +212,7 @@ COPY config/plum-snapcast.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/shairport-sync.conf.template /app/config/
 COPY config/spotifyd.conf /app/config/
+COPY config/spotifyd.conf.template /app/config/
 COPY config/mosquitto.conf /app/config/
 
 # Make avahi config writable by snapcast user (for hostname updates via settings API)
