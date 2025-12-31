@@ -81,6 +81,34 @@ def main():
             ]
         }
 
+    # Handle Spotify endpoint migration
+    # If existing settings has old format (single endpoint), migrate to new format (array of endpoints)
+    existing_spotify = existing_settings.get("integrations", {}).get("spotify", {})
+    if "endpoints" in existing_spotify:
+        # Already using new multi-endpoint format
+        spotify_config = existing_spotify
+    elif "deviceName" in existing_spotify or "enabled" in existing_spotify:
+        # Old single-endpoint format - migrate to array
+        # Preserve bitrate at integration level (shared setting)
+        # CRITICAL: Preserve enabled state from existing config
+        spotify_config = {
+            "bitrate": existing_spotify.get("bitrate", int(os.getenv("SPOTIFY_BITRATE", "320"))),
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": existing_spotify.get("enabled", bool_from_env(os.getenv("SPOTIFY_CONFIG_ENABLED"), False)),
+                    "deviceName": existing_spotify.get("deviceName", os.getenv("SPOTIFY_DEVICE_NAME", "Plum Audio")),
+                    "zeroconfPort": 5354
+                }
+            ]
+        }
+    else:
+        # No existing Spotify config - create default (disabled by default)
+        spotify_config = {
+            "bitrate": int(os.getenv("SPOTIFY_BITRATE", "320")),
+            "endpoints": []  # Start with no endpoints
+        }
+
     settings = {
         "deviceName": existing_settings.get("deviceName", default_device_name),
         "hostname": existing_settings.get("hostname", sanitize_hostname(default_device_name)),
@@ -93,12 +121,7 @@ def main():
                 "autoPair": bool_from_env(os.getenv("BLUETOOTH_AUTO_PAIR"), True),
                 "discoverable": bool_from_env(os.getenv("BLUETOOTH_DISCOVERABLE"), True)
             },
-            "spotify": {
-                "enabled": bool_from_env(os.getenv("SPOTIFY_CONFIG_ENABLED"), False),
-                "sourceName": os.getenv("SPOTIFY_SOURCE_NAME", "Spotify"),
-                "deviceName": os.getenv("SPOTIFY_DEVICE_NAME", "Plum Audio"),
-                "bitrate": int(os.getenv("SPOTIFY_BITRATE", "320"))
-            },
+            "spotify": spotify_config,
             "dlna": {
                 "enabled": bool_from_env(os.getenv("DLNA_ENABLED"), False),
                 "sourceName": os.getenv("DLNA_SOURCE_NAME", "DLNA"),

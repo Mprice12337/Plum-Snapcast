@@ -1101,6 +1101,91 @@ def create_integrations_blueprint(
             logger.error(f"AirPlay remove endpoint failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
+    # Spotify Endpoints Management (multi-instance support)
+    from spotify_endpoints_api import SpotifyEndpointsManager
+    spotify_endpoints_manager = SpotifyEndpointsManager()
+
+    @bp.route("/api/integrations/spotify/endpoints", methods=["GET"])
+    def spotify_list_endpoints():
+        """List all Spotify endpoints"""
+        try:
+            result = spotify_endpoints_manager.list_endpoints()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Spotify list endpoints failed: {e}")
+            return jsonify({"success": False, "message": str(e), "endpoints": []}), 500
+
+    @bp.route("/api/integrations/spotify/endpoints", methods=["POST"])
+    def spotify_add_endpoint():
+        """Add new Spotify endpoint"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            enabled = data.get("enabled", True)
+
+            result = spotify_endpoints_manager.add_endpoint(device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify add endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/endpoints/<endpoint_id>", methods=["PUT"])
+    def spotify_update_endpoint(endpoint_id):
+        """Update existing Spotify endpoint"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "message": "Request body is required"}), 400
+
+            device_name = data.get("deviceName")
+            enabled = data.get("enabled")
+
+            result = spotify_endpoints_manager.update_endpoint(endpoint_id, device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify update endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/endpoints/<endpoint_id>", methods=["DELETE"])
+    def spotify_remove_endpoint(endpoint_id):
+        """Remove Spotify endpoint"""
+        try:
+            result = spotify_endpoints_manager.remove_endpoint(endpoint_id)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify remove endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/spotify/bitrate", methods=["POST"])
+    def spotify_update_bitrate():
+        """Update Spotify bitrate (shared across all endpoints)
+
+        WARNING: This will restart ALL Spotify instances and interrupt any active playback.
+        """
+        try:
+            data = request.get_json()
+            if not data or "bitrate" not in data:
+                return jsonify({"success": False, "message": "bitrate is required"}), 400
+
+            bitrate = data["bitrate"]
+
+            # Validate bitrate
+            if bitrate not in [96, 160, 320]:
+                return jsonify({"success": False, "message": "bitrate must be 96, 160, or 320"}), 400
+
+            result = spotify_endpoints_manager.update_bitrate(bitrate)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"Spotify update bitrate failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
     # Bluetooth endpoints
     @bp.route("/api/integrations/bluetooth/enable", methods=["POST"])
     def bluetooth_enable():

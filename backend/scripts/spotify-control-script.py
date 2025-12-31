@@ -52,6 +52,27 @@ except ImportError:
     log("[Warning] D-Bus not available - Spotify features disabled")
 
 
+def get_spotifyd_pid(instance_id: str) -> Optional[str]:
+    """
+    Get PID of spotifyd process for specific instance.
+    Used for MPRIS service name detection (org.mpris.MediaPlayer2.spotifyd.instance[PID])
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"spotifyd.*spotifyd-{instance_id}.conf"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Return first PID if multiple found
+            return result.stdout.strip().split('\n')[0]
+    except:
+        pass
+    return None
+
+
 class MetadataStore:
     """
     Thread-safe storage for current metadata and playback state.
@@ -123,9 +144,10 @@ class MetadataStore:
 class SpotifyMetadataMonitor:
     """Monitor librespot D-Bus MPRIS interface for Spotify metadata and playback state"""
 
-    def __init__(self, store: MetadataStore, on_update_callback):
+    def __init__(self, store: MetadataStore, on_update_callback, instance_id: Optional[str] = None):
         self.store = store
         self.on_update = on_update_callback
+        self.instance_id = instance_id  # Instance ID for multi-instance mode
         self.player_interface = None
         self.player_properties = None
         self.bus = None
@@ -137,7 +159,7 @@ class SpotifyMetadataMonitor:
         # Initialize D-Bus
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self.bus = dbus.SessionBus() if 'DBUS_SESSION_BUS_ADDRESS' in os.environ else dbus.SystemBus()
-        log("[Spotify] D-Bus monitor initialized")
+        log(f"[Spotify] D-Bus monitor initialized (instance: {instance_id or 'default'})")
 
     def _download_cover_art(self, cover_url: str) -> Optional[str]:
         """Download cover art from Spotify and save to web root"""
@@ -286,50 +308,65 @@ class SpotifyMetadataMonitor:
             log(f"[Error] Properties changed handler failed: {e}")
 
     def _scan_for_players(self):
-        """Scan for existing spotifyd player on D-Bus"""
+        """Scan for existing spotifyd player on D-Bus with instance-aware detection"""
         if not self.bus:
             return
 
         try:
-            # Get list of all D-Bus names
-            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
-            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
-            all_names = bus_interface.ListNames()
+            # Multi-instance support: Try PID-based naming for instances 2+
+            mpris_names_to_try = []
 
-            # Look for any service starting with org.mpris.MediaPlayer2.spotifyd or librespot
-            # (spotifyd uses instance-based naming like org.mpris.MediaPlayer2.spotifyd.instance35)
-            prefixes = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
+            if self.instance_id:
+                # Get spotifyd PID for this instance
+                instance_pid = get_spotifyd_pid(self.instance_id)
 
-            for name in all_names:
-                for prefix in prefixes:
-                    if name.startswith(prefix):
-                        try:
-                            player_obj = self.bus.get_object(name, '/org/mpris/MediaPlayer2')
-                            self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
-                            self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
-                            log(f"[DBus] ✓ Found player: {name}")
+                if instance_pid:
+                    # Try PID-based name first (instance 2+)
+                    pid_based_name = f"org.mpris.MediaPlayer2.spotifyd.instance{instance_pid}"
+                    mpris_names_to_try.append(pid_based_name)
+                    log(f"[DBus] Trying PID-based MPRIS name: {pid_based_name}")
 
-                            # Get initial metadata
-                            try:
-                                metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
-                                if metadata:
-                                    extracted = self._extract_metadata_from_dict(metadata)
-                                    if extracted:
-                                        self.store.update(**extracted)
+                # Fallback to base name (instance 1)
+                base_name = "org.mpris.MediaPlayer2.spotifyd"
+                mpris_names_to_try.append(base_name)
+                log(f"[DBus] Fallback to base MPRIS name: {base_name}")
+            else:
+                # Single-instance mode: Try common names
+                mpris_names_to_try = [
+                    "org.mpris.MediaPlayer2.spotifyd",
+                    "org.mpris.MediaPlayer2.librespot"
+                ]
 
-                                status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
-                                if status:
-                                    self.store.update(playback_status=self._extract_playback_status(str(status)))
-                            except:
-                                pass
+            # Try each potential MPRIS name
+            for mpris_name in mpris_names_to_try:
+                try:
+                    player_obj = self.bus.get_object(mpris_name, '/org/mpris/MediaPlayer2')
+                    self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
+                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                    log(f"[DBus] ✓ Connected to player: {mpris_name}")
 
-                            # Notify that control is available
-                            if self.on_update:
-                                self.on_update()
+                    # Get initial metadata
+                    try:
+                        metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
+                        if metadata:
+                            extracted = self._extract_metadata_from_dict(metadata)
+                            if extracted:
+                                self.store.update(**extracted)
 
-                            return
-                        except dbus.DBusException:
-                            continue
+                        status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                        if status:
+                            self.store.update(playback_status=self._extract_playback_status(str(status)))
+                    except:
+                        pass
+
+                    # Notify that control is available
+                    if self.on_update:
+                        self.on_update()
+
+                    return  # Successfully connected
+                except dbus.DBusException as e:
+                    log(f"[DBus] Couldn't connect to {mpris_name}: {e}")
+                    continue
 
             log("[DBus] No Spotify player found yet (will monitor for connections)")
 
@@ -520,11 +557,12 @@ class SpotifyMetadataMonitor:
 class SnapcastControlScript:
     """Snapcast control script that communicates via stdin/stdout"""
 
-    def __init__(self, stream_id: str):
+    def __init__(self, stream_id: str, instance_id: Optional[str] = None):
         self.stream_id = stream_id
+        self.instance_id = instance_id
         self.store = MetadataStore()
-        self.spotify_monitor = SpotifyMetadataMonitor(self.store, self.send_update)
-        log(f"[Init] Initialized for stream: {stream_id}")
+        self.spotify_monitor = SpotifyMetadataMonitor(self.store, self.send_update, instance_id=instance_id)
+        log(f"[Init] Initialized for stream: {stream_id} (instance: {instance_id or 'default'})")
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -737,13 +775,19 @@ class SnapcastControlScript:
 if __name__ == "__main__":
     # Parse command line arguments passed by Snapcast
     parser = argparse.ArgumentParser(description='Spotify metadata control script for Snapcast')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, 3, etc.)')
     parser.add_argument('--stream', required=False, default='Spotify', help='Stream ID')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    log(f"[Main] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
+    # Multi-instance support: override log file path
+    if args.instance_id:
+        globals()['LOG_FILE'] = f"/tmp/spotify-control-script-{args.instance_id}.log"
+        log(f"[Init] Multi-instance control script: instance={args.instance_id}")
 
-    script = SnapcastControlScript(stream_id=args.stream)
+    log(f"[Main] Starting with args: stream={args.stream}, instance={args.instance_id or 'default'}, host={args.snapcast_host}, port={args.snapcast_port}")
+
+    script = SnapcastControlScript(stream_id=args.stream, instance_id=args.instance_id)
     script.run()

@@ -23,8 +23,15 @@ DEFAULT_SETTINGS = {
     "hostname": "plum-snapcast",
     "integrations": {
         "airplay": {
-            "enabled": True,
-            "deviceName": "Plum Audio"
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": True,
+                    "deviceName": "Plum Audio",
+                    "port": 5050,
+                    "udpPortBase": 6001
+                }
+            ]
         },
         "bluetooth": {
             "enabled": False,
@@ -34,10 +41,15 @@ DEFAULT_SETTINGS = {
             "discoverable": True
         },
         "spotify": {
-            "enabled": False,
-            "sourceName": "Spotify",
-            "deviceName": "Plum Audio",
-            "bitrate": 320
+            "bitrate": 320,
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": False,
+                    "deviceName": "Plum Audio",
+                    "zeroconfPort": 5354
+                }
+            ]
         },
         "dlna": {
             "enabled": False,

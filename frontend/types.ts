@@ -360,13 +360,29 @@ export const BUILT_IN_PRESETS: VisualizerPreset[] = [
     }
 ];
 
+// AirPlay Endpoint
+export interface AirPlayEndpoint {
+    id: string;
+    enabled: boolean;
+    deviceName: string;
+    port: number;
+    udpPortBase: number;
+}
+
+// Spotify Endpoint
+export interface SpotifyEndpoint {
+    id: string;
+    enabled: boolean;
+    deviceName: string;
+    zeroconfPort: number;
+}
+
 export interface Settings {
     deviceName: string;
     hostname: string;
     integrations: {
         airplay: {
-            enabled: boolean;
-            deviceName: string;
+            endpoints: AirPlayEndpoint[];
         };
         bluetooth: {
             enabled: boolean;
@@ -376,10 +392,8 @@ export interface Settings {
             discoverable: boolean;
         };
         spotify: {
-            enabled: boolean;
-            sourceName: string;
-            deviceName: string;
             bitrate: 96 | 160 | 320;
+            endpoints: SpotifyEndpoint[];
         };
         dlna: {
             enabled: boolean;

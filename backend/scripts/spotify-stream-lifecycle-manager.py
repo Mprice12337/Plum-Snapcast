@@ -300,12 +300,13 @@ class SnapcastWebSocketMonitor:
 class StreamLifecycleManager:
     """Manages Spotify stream lifecycle based on playback state"""
 
-    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, instance_id: Optional[str] = None):
         self.client = snapserver_client
         self.idle_timeout = idle_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
+        self.instance_id = instance_id  # Instance ID for multi-instance mode
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
@@ -444,14 +445,20 @@ class StreamLifecycleManager:
     def _stop_fifo_keeper(self):
         """Stop FIFO keeper via supervisorctl"""
         try:
+            # Use instance-aware service name if in multi-instance mode
+            if self.instance_id:
+                service_name = f'spotify-{self.instance_id}-fifo-keeper'
+            else:
+                service_name = 'spotify-fifo-keeper'
+
             result = subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', 'spotify-fifo-keeper'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'stop', service_name],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
             if result.returncode == 0:
-                log("FIFO keeper stopped")
+                log(f"FIFO keeper stopped ({service_name})")
             else:
                 log(f"FIFO keeper stop returned code {result.returncode}: {result.stdout} {result.stderr}")
         except Exception as e:
@@ -464,9 +471,15 @@ class StreamLifecycleManager:
         is in a failed/stopped state and won't start with 'start' command.
         """
         try:
+            # Use instance-aware service name if in multi-instance mode
+            if self.instance_id:
+                service_name = f'spotify-{self.instance_id}-fifo-keeper'
+            else:
+                service_name = 'spotify-fifo-keeper'
+
             # First check if it's already running
             status_result = subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'status', 'spotify-fifo-keeper'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'status', service_name],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -474,14 +487,14 @@ class StreamLifecycleManager:
 
             # Use restart to ensure it starts even if in weird state
             result = subprocess.run(
-                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', 'spotify-fifo-keeper'],
+                ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'restart', service_name],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
 
             if result.returncode == 0 or 'started' in result.stdout.lower():
-                log("FIFO keeper started")
+                log(f"FIFO keeper started ({service_name})")
             else:
                 log(f"FIFO keeper start returned code {result.returncode}")
                 log(f"  stdout: {result.stdout.strip()}")
@@ -494,30 +507,39 @@ class StreamLifecycleManager:
         """Kill orphaned Spotify control script processes
 
         Snapcast spawns control scripts when streams are dynamically added but doesn't
-        clean them up when streams are removed.
+        clean them up when streams are removed. This causes multiple control scripts
+        to compete for FIFO reads, resulting in choppy audio.
         """
         try:
-            # Find all spotify-control-script.py processes
+            # Use pgrep to find spotify-control-script processes
+            # Wrapper scripts exec the main script with --instance-id parameter
+            # So actual running process is: spotify-control-script.py --instance-id N
+            if self.instance_id:
+                search_pattern = f'spotify-control-script.py.*--instance-id {self.instance_id}'
+            else:
+                # Single-instance mode: match main script without instance-id
+                search_pattern = 'spotify-control-script.py'
+
+            log(f"Searching for orphaned control scripts: '{search_pattern}'")
             result = subprocess.run(
-                ['ps', 'aux'],
+                ['pgrep', '-f', search_pattern],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
 
             killed_count = 0
-            for line in result.stdout.splitlines():
-                if 'spotify-control-script.py' in line and 'grep' not in line:
-                    # Extract PID (second column in ps aux output)
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        try:
-                            pid = int(parts[1])
-                            subprocess.run(['kill', str(pid)], timeout=2)
-                            killed_count += 1
-                            log(f"Killed orphaned control script: PID {pid}")
-                        except (ValueError, subprocess.TimeoutExpired):
-                            pass
+            if result.returncode == 0 and result.stdout.strip():
+                pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str)
+                        # Use SIGKILL (-9) for immediate termination
+                        subprocess.run(['kill', '-9', str(pid)], timeout=2)
+                        killed_count += 1
+                        log(f"Killed orphaned control script: PID {pid}")
+                    except (ValueError, subprocess.TimeoutExpired) as e:
+                        log(f"Failed to kill PID {pid_str}: {e}")
 
             if killed_count == 0:
                 log("No orphaned control scripts found")
@@ -670,11 +692,42 @@ class SpotifyPlaybackMonitor:
 
 def main():
     parser = argparse.ArgumentParser(description='Spotify stream lifecycle manager for Snapcast')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, 3, etc.)')
     parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
     parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
     parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
 
     args = parser.parse_args()
+
+    # Multi-instance support: override paths based on instance-id
+    instance_id = None
+    if args.instance_id:
+        instance_id = args.instance_id
+
+        # Get endpoint name from settings.json for stream display name
+        endpoint_name = None
+        try:
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('spotify', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            print(f"[Init] WARNING: Could not read endpoint name from settings: {e}", file=sys.stderr)
+            endpoint_name = f'Endpoint {instance_id}'
+
+        # Override module-level constants GLOBALLY for this instance
+        # Use format "Spotify - [device name]" for stream display name
+        globals()['SPOTIFY_STREAM_ID'] = f"Spotify - {endpoint_name}" if endpoint_name else f"Spotify-{instance_id}"
+        globals()['SPOTIFY_FIFO_PATH'] = f"/tmp/spotify-{instance_id}-fifo"
+        globals()['SPOTIFY_CONTROL_SCRIPT'] = "/usr/share/snapserver/plug-ins/spotify-control-script.py"
+        globals()['LOG_FILE'] = f"/tmp/spotify-lifecycle-{instance_id}.log"
+
+        print(f"[Init] Multi-instance lifecycle manager: instance={instance_id}", file=sys.stderr)
+        print(f"[Init] Stream ID: {globals()['SPOTIFY_STREAM_ID']}", file=sys.stderr)
+        print(f"[Init] FIFO: {globals()['SPOTIFY_FIFO_PATH']}", file=sys.stderr)
 
     # Use local variables instead of modifying globals
     snapserver_host = args.snapserver_host
@@ -693,8 +746,8 @@ def main():
     # Create Snapserver client
     snapserver = SnapserverClient(snapserver_host, snapserver_port)
 
-    # Create lifecycle manager
-    lifecycle = StreamLifecycleManager(snapserver, idle_timeout)
+    # Create lifecycle manager (pass instance_id for multi-instance support)
+    lifecycle = StreamLifecycleManager(snapserver, idle_timeout, instance_id=instance_id)
 
     # Create and start WebSocket monitor (runs in background thread)
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
