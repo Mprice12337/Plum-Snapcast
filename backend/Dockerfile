@@ -183,8 +183,9 @@ RUN deluser snapcast 2>/dev/null || true && \
     adduser -S -G mosquitto -H -s /sbin/nologin mosquitto 2>/dev/null || true
 
 # Configure sudo for snapcast user (needed for API to manage endpoints)
-# Allow snapcast to run setup script and supervisorctl without password
+# Allow snapcast to run setup scripts and supervisorctl without password
 RUN echo "snapcast ALL=(ALL) NOPASSWD: /bin/bash /app/scripts/setup-airplay-multi-instance.sh" >> /etc/sudoers.d/snapcast && \
+    echo "snapcast ALL=(ALL) NOPASSWD: /bin/bash /app/scripts/setup-spotify-multi-instance.sh" >> /etc/sudoers.d/snapcast && \
     echo "snapcast ALL=(ALL) NOPASSWD: /usr/bin/supervisorctl" >> /etc/sudoers.d/snapcast && \
     chmod 0440 /etc/sudoers.d/snapcast
 

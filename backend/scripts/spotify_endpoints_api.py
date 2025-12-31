@@ -20,6 +20,7 @@ class SpotifyEndpointsManager:
 
     def __init__(self, settings_manager: SettingsManager = None):
         self.settings_manager = settings_manager or SettingsManager()
+        self.setup_script = '/app/scripts/setup-spotify-multi-instance.sh'
         self.supervisorctl_cmd = [
             'sudo',
             'supervisorctl',
@@ -497,7 +498,7 @@ class SpotifyEndpointsManager:
                 try:
                     # Run setup script to regenerate all configs with new bitrate
                     result = subprocess.run(
-                        ["/bin/bash", self.setup_script],
+                        ['sudo', 'bash', self.setup_script],
                         capture_output=True,
                         text=True,
                         timeout=30
