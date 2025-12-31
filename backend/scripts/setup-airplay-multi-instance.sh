@@ -130,10 +130,16 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
 
     # Create stream end signal file
     SIGNAL_FILE="/tmp/airplay-${INSTANCE_ID}-stream-end.signal"
-    touch "${SIGNAL_FILE}"
-    chmod 666 "${SIGNAL_FILE}" 2>/dev/null || true
-    chown snapcast:snapcast "${SIGNAL_FILE}" 2>/dev/null || true
-    echo "    ✓ Signal file: ${SIGNAL_FILE}"
+    # CRITICAL: Only create if doesn't exist - don't update mtime of existing files
+    # Updating mtime triggers false "active_end" detection in lifecycle manager
+    if [ ! -f "${SIGNAL_FILE}" ]; then
+        touch "${SIGNAL_FILE}"
+        chmod 666 "${SIGNAL_FILE}" 2>/dev/null || true
+        chown snapcast:snapcast "${SIGNAL_FILE}" 2>/dev/null || true
+        echo "    ✓ Signal file created: ${SIGNAL_FILE}"
+    else
+        echo "    ✓ Signal file exists: ${SIGNAL_FILE}"
+    fi
 
     # Create instance-specific control script wrapper
     # Snapcast's JSON-RPC API doesn't support arguments in controlscript parameter,

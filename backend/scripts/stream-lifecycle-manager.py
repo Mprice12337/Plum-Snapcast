@@ -27,6 +27,7 @@ import argparse
 import base64
 import json
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -327,8 +328,18 @@ class StreamLifecycleManager:
         self.idle_check_timer = None
 
         # Signal file monitoring
-        # Initialize to current time to ignore any stale signal files from previous runs
-        self.last_signal_time = time.time()
+        # Initialize to signal file's current mtime to ignore any touches during setup/restart
+        # This prevents false "active_end" triggers when setup script touches the file
+        try:
+            if Path(STREAM_END_SIGNAL_FILE).exists():
+                self.last_signal_time = Path(STREAM_END_SIGNAL_FILE).stat().st_mtime
+                log(f"Signal file exists - initialized last_signal_time to {self.last_signal_time}")
+            else:
+                self.last_signal_time = time.time()
+                log("Signal file doesn't exist yet - initialized last_signal_time to current time")
+        except Exception as e:
+            log(f"WARNING: Could not read signal file mtime: {e} - using current time")
+            self.last_signal_time = time.time()
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
@@ -1154,15 +1165,112 @@ def main():
 
                         # Only remove if stream is idle - don't interrupt active playback
                         if stream_status == "idle":
-                            log(f"[Startup] Stream is idle - removing to trigger recreation with new name...")
+                            log(f"[Startup] Stream is idle - removing with full cleanup to prevent orphaned resources...")
 
-                            # Remove the stream - it will be recreated with new name on next activity
-                            # NOTE: We don't restart snapserver here because:
-                            # 1. Stream removal doesn't leak FDs - only re-adding does
-                            # 2. Normal stream lifecycle cleanup handles the restart when needed
-                            # 3. Restarting here causes race conditions with port binding
+                            # CRITICAL: Do FULL cleanup to prevent orphaned resources
+                            # Just calling remove_stream() leaves orphaned control scripts and file handles
+                            # which causes the first connection after rename to fail
+
+                            # 1. Clean up orphaned control scripts FIRST
+                            log(f"[Startup] Cleaning up orphaned control scripts for instance {instance_id}...")
+                            try:
+                                search_pattern = f'airplay-control-script.py.*--instance-id {instance_id}'
+                                result = subprocess.run(
+                                    ['pgrep', '-f', search_pattern],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5
+                                )
+                                if result.returncode == 0 and result.stdout.strip():
+                                    pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                                    for pid_str in pids:
+                                        try:
+                                            subprocess.run(['kill', '-9', pid_str], timeout=2)
+                                            log(f"[Startup] ✓ Killed orphaned control script: PID {pid_str}")
+                                        except Exception as e:
+                                            log(f"[Startup] ✗ Failed to kill PID {pid_str}: {e}")
+                            except Exception as e:
+                                log(f"[Startup] WARNING: Control script cleanup failed: {e}")
+
+                            # 2. Move clients to fallback stream before removal
+                            log(f"[Startup] Moving clients to fallback stream...")
+                            try:
+                                # Find the none stream (fallback)
+                                none_stream_id = None
+                                for s in streams:
+                                    if s['id'].startswith('none-'):
+                                        none_stream_id = s['id']
+                                        break
+
+                                if none_stream_id:
+                                    # Move all groups on this stream to fallback
+                                    for group in status.get('server', {}).get('groups', []):
+                                        if group.get('stream_id') == stream_id:
+                                            snapserver.set_group_stream(group['id'], none_stream_id)
+                                            log(f"[Startup] ✓ Moved group {group['id']} to fallback")
+                            except Exception as e:
+                                log(f"[Startup] WARNING: Client reassignment failed: {e}")
+
+                            # 3. Remove the stream
                             if snapserver.remove_stream(stream_id):
-                                log(f"[Startup] Stream removed - will be recreated with new name on next playback")
+                                log(f"[Startup] ✓ Stream removed")
+
+                                # 4. Wait for snapserver to close FIFO file handles
+                                log("[Startup] Waiting 2s for snapserver to close FIFO handles...")
+                                time.sleep(2)
+
+                                # 5. Ensure FIFO keeper is restarted (might have been stopped)
+                                log(f"[Startup] Ensuring FIFO keeper is running...")
+                                try:
+                                    keeper_name = f"airplay-{instance_id}-fifo-keeper"
+                                    subprocess.run(
+                                        ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'start', keeper_name],
+                                        capture_output=True,
+                                        timeout=10
+                                    )
+                                    log(f"[Startup] ✓ FIFO keeper ready")
+                                except Exception as e:
+                                    log(f"[Startup] WARNING: FIFO keeper restart failed: {e}")
+
+                                log(f"[Startup] Stream cleanup complete - checking if AirPlay is still active...")
+
+                                # CRITICAL: Check if shairport-sync is currently playing
+                                # If the user is still connected via AirPlay, we need to create the stream immediately
+                                # instead of waiting for pbeg (which won't come since connection is already established)
+                                try:
+                                    # Check if shairport-sync process is running and actively streaming
+                                    shairport_service = f"shairport-sync-{instance_id}"
+                                    status_result = subprocess.run(
+                                        ['supervisorctl', '-c', '/app/supervisord/supervisord.conf', 'status', shairport_service],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=5
+                                    )
+
+                                    if status_result.returncode == 0 and 'RUNNING' in status_result.stdout:
+                                        # Service is running - check if actively streaming by checking FIFO
+                                        # If FIFO has data flowing, shairport-sync is actively connected
+                                        fifo_path = AIRPLAY_FIFO_PATH
+                                        try:
+                                            # Non-blocking check: if we can read without blocking, audio is flowing
+                                            fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                                            readable, _, _ = select.select([fd], [], [], 0)
+                                            os.close(fd)
+
+                                            if readable:
+                                                log(f"[Startup] ✓ AirPlay is actively streaming - recreating stream immediately")
+                                                # Trigger stream creation via normal flow (handles FIFO keeper properly)
+                                                lifecycle.on_stream_begin()
+                                                log(f"[Startup] ✓ Stream recreated with new name while connection is active")
+                                            else:
+                                                log(f"[Startup] AirPlay service running but not streaming - will wait for next connection")
+                                        except Exception as e:
+                                            log(f"[Startup] Could not check FIFO status: {e} - assuming idle")
+                                    else:
+                                        log(f"[Startup] shairport-sync not running - will wait for next connection")
+                                except Exception as e:
+                                    log(f"[Startup] WARNING: Could not check shairport-sync status: {e}")
+
                             else:
                                 log(f"[Startup] WARNING: Failed to remove stream with old name")
                         else:
