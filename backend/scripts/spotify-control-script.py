@@ -376,75 +376,90 @@ class SpotifyMetadataMonitor:
     def _poll_position(self):
         """Background thread that polls position updates from D-Bus
 
-        Note: We send position updates when the D-Bus Position property changes,
-        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
-        to increment position smoothly between server updates.
+        IMPORTANT: spotifyd has a bug where PlaybackStatus property doesn't update
+        when pausing/resuming from remote Spotify clients (phone/desktop app).
+        See: https://github.com/Spotifyd/spotifyd/issues/668
 
-        Position changes occur when:
-        - Track starts (position resets to 0 or start offset)
-        - User seeks/scrubs from Spotify app
-        - Track ends and next track begins
+        Workaround: Infer playback state from position changes:
+        - If position stops advancing for 2+ seconds → Paused
+        - If position starts advancing again → Playing
         """
-        log("[DBus] Position polling thread started")
+        log("[DBus] Position polling thread started (with playback state inference)")
         last_position_value = None
+        last_position_change_time = time.time()
+        position_stall_count = 0
 
         while True:
             try:
-                # Poll playback status first to detect pause/resume
                 current_status_in_store = self.store.get_all().get("playback_status", "Stopped")
 
                 if self.player_properties:
                     try:
-                        # Poll PlaybackStatus from D-Bus
-                        dbus_status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
-                        new_status = self._extract_playback_status(str(dbus_status))
-
-                        # If status changed, update store and notify frontend
-                        if new_status != current_status_in_store:
-                            log(f"[DBus] PlaybackStatus polled: {current_status_in_store} → {new_status}")
-                            self.store.update(playback_status=new_status)
-                            if self.on_update:
-                                self.on_update()
-                            current_status_in_store = new_status
-                    except Exception:
-                        pass  # Player might not be ready yet
-
-                # Only poll position when playing
-                if self.player_properties and current_status_in_store == "Playing":
-                    try:
-                        # Get current position from MPRIS
+                        # Always poll position (even when paused, to detect resume)
                         position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
                         position_s = int(position_us) // 1_000_000
 
-                        # Always update store with latest position
-                        self.store.update(position=position_s)
+                        # Detect playback state from position changes (spotifyd bug workaround)
+                        position_is_advancing = False
+                        if last_position_value is not None:
+                            position_delta = position_s - last_position_value
 
-                        # Only send update if position actually changed from last poll
-                        # This detects seeks, track changes, and initial connection
-                        if last_position_value is None:
-                            # Initial connection
-                            log(f"[DBus] Position changed: {position_s}s (initial)")
+                            # Position advanced by ~1 second (accounting for poll interval)
+                            if 0 < position_delta <= 2:
+                                position_is_advancing = True
+                                position_stall_count = 0
+                                last_position_change_time = time.time()
+                            # Position jumped (seek/track change)
+                            elif abs(position_delta) > 2:
+                                position_is_advancing = True
+                                position_stall_count = 0
+                                last_position_change_time = time.time()
+                            # Position stalled (not advancing)
+                            else:
+                                position_stall_count += 1
+
+                        # Infer playback state from position behavior
+                        inferred_status = current_status_in_store
+
+                        if position_is_advancing and current_status_in_store != "Playing":
+                            # Position is advancing but we think it's paused → must be playing
+                            inferred_status = "Playing"
+                            log(f"[State] Position advancing → Playing (spotifyd bug workaround)")
+                        elif position_stall_count >= 2 and current_status_in_store == "Playing":
+                            # Position stalled for 2+ seconds while playing → must be paused
+                            inferred_status = "Paused"
+                            log(f"[State] Position stalled {position_stall_count}s → Paused (spotifyd bug workaround)")
+
+                        # Update playback state if it changed
+                        if inferred_status != current_status_in_store:
+                            self.store.update(playback_status=inferred_status)
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_s
+                            current_status_in_store = inferred_status
+
+                        # Update position in store
+                        self.store.update(position=position_s)
+
+                        # Send position update to frontend if it changed significantly
+                        if last_position_value is None:
+                            # Initial connection
+                            log(f"[DBus] Position: {position_s}s (initial)")
+                            if self.on_update:
+                                self.on_update()
                         elif abs(position_s - last_position_value) > 2:
-                            # Position changed significantly (seek, track change, or mid-track start)
-                            # Allow 2s tolerance for polling delay
+                            # Position changed significantly (seek or track change)
                             if position_s < 5:
                                 reason = "track_change"
                             else:
                                 reason = "seek"
-                            log(f"[DBus] Position changed: {last_position_value}s → {position_s}s ({reason})")
+                            log(f"[DBus] Position: {last_position_value}s → {position_s}s ({reason})")
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_s
-                        else:
-                            # Position progressing normally, just track it
-                            last_position_value = position_s
 
-                    except Exception:
-                        # Player might not be ready yet
-                        pass
+                        last_position_value = position_s
+
+                    except Exception as e:
+                        log(f"[DBus] Position polling error: {e}")
 
                 # Poll every second
                 time.sleep(1)
