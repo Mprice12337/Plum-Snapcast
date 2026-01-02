@@ -390,10 +390,27 @@ class SpotifyMetadataMonitor:
 
         while True:
             try:
-                # Only poll when we have a player and it's playing
-                playback_status = self.store.get_all().get("playback_status", "Stopped")
+                # Poll playback status first to detect pause/resume
+                current_status_in_store = self.store.get_all().get("playback_status", "Stopped")
 
-                if self.player_properties and playback_status == "Playing":
+                if self.player_properties:
+                    try:
+                        # Poll PlaybackStatus from D-Bus
+                        dbus_status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                        new_status = self._extract_playback_status(str(dbus_status))
+
+                        # If status changed, update store and notify frontend
+                        if new_status != current_status_in_store:
+                            log(f"[DBus] PlaybackStatus polled: {current_status_in_store} → {new_status}")
+                            self.store.update(playback_status=new_status)
+                            if self.on_update:
+                                self.on_update()
+                            current_status_in_store = new_status
+                    except Exception:
+                        pass  # Player might not be ready yet
+
+                # Only poll position when playing
+                if self.player_properties and current_status_in_store == "Playing":
                     try:
                         # Get current position from MPRIS
                         position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
