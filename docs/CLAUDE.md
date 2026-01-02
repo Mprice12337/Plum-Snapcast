@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-**Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with AirPlay (multi-instance), Spotify Connect, DLNA/UPnP, Plexamp, and Bluetooth sources.
+**Plum-Snapcast** is a multi-room audio streaming solution combining Snapcast server backend with React/TypeScript frontend. Enables synchronized audio playback with multi-instance AirPlay (up to 10), Spotify Connect (up to 10), DLNA/UPnP (up to 10), Plexamp, and Bluetooth sources.
 
 **Key Features**: Multi-room sync, integrated snapclient (RPi 3.5mm output), browser audio client, React web UI, WebSocket (JSON-RPC 2.0), real-time metadata with album art, volume control, full-screen audio visualizer, enhanced theming with album art color extraction
 
@@ -134,6 +134,8 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 ### Key Ports
 - Snapcast: 1704-1705 (clients), 1780 (HTTP/WS), 1788 (HTTPS/WS)
 - AirPlay: 5050-5059 (up to 10 endpoints), 5353/udp (mDNS), UDP 6001-6100
+- Spotify Connect: 5354-5363 (zeroconf ports, up to 10 endpoints)
+- DLNA/UPnP: 49494-49503 (UPnP ports, up to 10 endpoints)
 - Internal APIs: 5001-5004 (Federation, Settings, Integrations, Audio)
 - Frontend: 3000
 
@@ -147,8 +149,8 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 |-------------|-------------|
 | **AirPlay** | Multi-instance (up to 10 endpoints), MQTT metadata, dynamic stream lifecycle, control script wrapper pattern |
 | **Bluetooth** | No album art (BlueZ 5.70 < 5.81 required), SSP only (no PIN), AVRCP metadata |
-| **Spotify** | spotifyd (not librespot) for D-Bus MPRIS, patched with-avahi |
-| **DLNA/UPnP** | gmrender-resurrect, GStreamer 44.1kHz/16-bit, UPnP AVTransport metadata |
+| **Spotify** | Multi-instance (up to 10 endpoints), spotifyd (not librespot) for D-Bus MPRIS, patched with-avahi |
+| **DLNA/UPnP** | Multi-instance (up to 10 endpoints), gmrender-resurrect, GStreamer 44.1kHz/16-bit, UPnP AVTransport metadata |
 | **Plexamp** | Separate Debian container, PlayQueue.json metadata, pinned v4.11.3 (4.12.x buggy) |
 
 ---
@@ -209,7 +211,7 @@ docker exec plum-snapcast-server aplay -l
 
 2. **Dynamic Stream Lifecycle**: All integrations use lifecycle managers to create/remove streams based on activity. FIFO keepers prevent blocking when no stream exists. Signal files track disconnect events via mtime - be careful not to touch them unnecessarily.
 
-3. **Multi-Instance AirPlay**: Up to 10 endpoints with unique shairport-sync instances. Control script wrapper pattern works around Snapcast's no-arguments limitation. See `airplay_endpoints_api.py`.
+3. **Multi-Instance Support**: AirPlay, Spotify Connect, and DLNA/UPnP each support up to 10 independent endpoints. Each appears as a separate device on the network. Control script wrapper pattern works around Snapcast's no-arguments limitation. See `airplay_endpoints_api.py`, `spotify_endpoints_api.py`, and `dlna_endpoints_api.py`.
 
 4. **Playback Position API**: Independent from Snapcast to avoid audio stuttering. Uses dual-timestamp architecture for accurate interpolation. See `playback_api.py`.
 

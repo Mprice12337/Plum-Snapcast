@@ -91,18 +91,53 @@ def main():
     print(f"export BLUETOOTH_AUTO_PAIR={bool_to_env(bluetooth.get('autoPair', True))}")
     print(f"export BLUETOOTH_DISCOVERABLE={bool_to_env(bluetooth.get('discoverable', True))}")
 
-    # Spotify settings
+    # Spotify settings (multi-endpoint support)
     spotify = integrations.get('spotify', {})
-    print(f"export SPOTIFY_CONFIG_ENABLED={bool_to_env(spotify.get('enabled', False))}")
-    print(f"export SPOTIFY_SOURCE_NAME=\"{spotify.get('sourceName', 'Spotify')}\"")
-    print(f"export SPOTIFY_DEVICE_NAME=\"{spotify.get('deviceName', 'Plum Audio')}\"")
-    print(f"export SPOTIFY_BITRATE={spotify.get('bitrate', 320)}")
 
-    # DLNA settings
+    # Handle both old (single endpoint) and new (multi-endpoint) formats
+    if 'endpoints' in spotify:
+        # New format: array of endpoints
+        spotify_endpoints = spotify['endpoints']
+        spotify_bitrate = spotify.get('bitrate', 320)
+    elif 'deviceName' in spotify or 'enabled' in spotify:
+        # Old format: single endpoint - convert to array
+        spotify_endpoints = [{
+            "id": "1",
+            "enabled": spotify.get('enabled', False),
+            "deviceName": spotify.get('deviceName', 'Plum Audio'),
+            "zeroconfPort": 5354
+        }]
+        spotify_bitrate = spotify.get('bitrate', 320)
+    else:
+        # No Spotify config - start with empty endpoints
+        spotify_endpoints = []
+        spotify_bitrate = 320
+
+    # Export endpoints as JSON string (will be parsed by setup script)
+    print(f"export SPOTIFY_ENDPOINTS_JSON='{json.dumps(spotify_endpoints)}'")
+
+    # Export shared bitrate setting
+    print(f"export SPOTIFY_BITRATE={spotify_bitrate}")
+
+    # Legacy env vars for backward compatibility (uses first endpoint)
+    first_spotify_endpoint = spotify_endpoints[0] if spotify_endpoints else {"enabled": False, "deviceName": "Plum Audio"}
+    print(f"export SPOTIFY_CONFIG_ENABLED={bool_to_env(first_spotify_endpoint.get('enabled', False))}")
+    print(f"export SPOTIFY_SOURCE_NAME=\"Spotify\"")
+    print(f"export SPOTIFY_DEVICE_NAME=\"{first_spotify_endpoint.get('deviceName', 'Plum Audio')}\"")
+
+    # DLNA settings - multi-instance support
     dlna = integrations.get('dlna', {})
-    print(f"export DLNA_ENABLED={bool_to_env(dlna.get('enabled', False))}")
-    print(f"export DLNA_SOURCE_NAME=\"{dlna.get('sourceName', 'DLNA')}\"")
-    print(f"export DLNA_DEVICE_NAME=\"{dlna.get('deviceName', 'Plum Audio')}\"")
+    dlna_endpoints = dlna.get('endpoints', [])
+
+    # Export endpoints as JSON string (will be parsed by setup script)
+    print(f"export DLNA_ENDPOINTS_JSON='{json.dumps(dlna_endpoints)}'")
+
+    # Legacy env vars for backward compatibility (uses first endpoint)
+    first_dlna_endpoint = dlna_endpoints[0] if dlna_endpoints else {"enabled": False, "deviceName": "Plum Audio"}
+    print(f"export DLNA_ENABLED={bool_to_env(first_dlna_endpoint.get('enabled', False))}")
+    print(f"export DLNA_SOURCE_NAME=\"DLNA\"")
+    print(f"export DLNA_DEVICE_NAME=\"{first_dlna_endpoint.get('deviceName', 'Plum Audio')}\"")
+    print(f"export DLNA_UUID=\"{first_dlna_endpoint.get('uuid', '')}\"")
 
     # Plexamp settings (only enable if both available AND enabled)
     plexamp = integrations.get('plexamp', {})

@@ -19,6 +19,13 @@ type AirPlayEndpoint = {
   udpPortBase: number;
 };
 
+type SpotifyEndpoint = {
+  id: string;
+  enabled: boolean;
+  deviceName: string;
+  zeroconfPort: number;
+};
+
 export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   settings,
   onSettingsChange,
@@ -35,23 +42,32 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [newEndpointName, setNewEndpointName] = useState('');
   const [showAddEndpoint, setShowAddEndpoint] = useState(false);
 
+  // Spotify endpoints state
+  const [spotifyEndpoints, setSpotifyEndpoints] = useState<SpotifyEndpoint[]>([]);
+  const [spotifyEndpointNames, setSpotifyEndpointNames] = useState<Record<string, string>>({});
+  const [spotifyEndpointNameStatuses, setSpotifyEndpointNameStatuses] = useState<Record<string, ApplyStatus>>({});
+  const [spotifyEndpointNameMessages, setSpotifyEndpointNameMessages] = useState<Record<string, string>>({});
+  const [isTogglingSpotifyEndpoint, setIsTogglingSpotifyEndpoint] = useState<Record<string, boolean>>({});
+  const [isAddingSpotifyEndpoint, setIsAddingSpotifyEndpoint] = useState(false);
+  const [newSpotifyEndpointName, setNewSpotifyEndpointName] = useState('');
+  const [showAddSpotifyEndpoint, setShowAddSpotifyEndpoint] = useState(false);
+
   // Bluetooth device name state
   const [bluetoothDeviceName, setBluetoothDeviceName] = useState(settings.integrations.bluetooth.deviceName);
   const [bluetoothNameStatus, setBluetoothNameStatus] = useState<ApplyStatus>('idle');
   const [bluetoothNameMessage, setBluetoothNameMessage] = useState('');
   const [isTogglingBluetooth, setIsTogglingBluetooth] = useState(false);
 
-  // Spotify device name state
-  const [spotifyDeviceName, setSpotifyDeviceName] = useState(settings.integrations.spotify.deviceName);
-  const [spotifyNameStatus, setSpotifyNameStatus] = useState<ApplyStatus>('idle');
-  const [spotifyNameMessage, setSpotifyNameMessage] = useState('');
-  const [isTogglingSpotify, setIsTogglingSpotify] = useState(false);
-
-  // DLNA device name state
-  const [dlnaDeviceName, setDlnaDeviceName] = useState(settings.integrations.dlna.deviceName);
-  const [dlnaNameStatus, setDlnaNameStatus] = useState<ApplyStatus>('idle');
-  const [dlnaNameMessage, setDlnaNameMessage] = useState('');
-  const [isTogglingDlna, setIsTogglingDlna] = useState(false);
+  // DLNA endpoints state
+  const [dlnaEndpoints, setDlnaEndpoints] = useState<any[]>([]);
+  const [dlnaEndpointNames, setDlnaEndpointNames] = useState<Record<string, string>>({});
+  const [dlnaEndpointNameStatuses, setDlnaEndpointNameStatuses] = useState<Record<string, ApplyStatus>>({});
+  const [dlnaEndpointNameMessages, setDlnaEndpointNameMessages] = useState<Record<string, string>>({});
+  const [isTogglingDlnaEndpoint, setIsTogglingDlnaEndpoint] = useState<Record<string, boolean>>({});
+  const [isAddingDlnaEndpoint, setIsAddingDlnaEndpoint] = useState(false);
+  const [newDlnaEndpointName, setNewDlnaEndpointName] = useState('');
+  const [showAddDlnaEndpoint, setShowAddDlnaEndpoint] = useState(false);
+  const [loadingDlnaEndpoints, setLoadingDlnaEndpoints] = useState(true);
 
   // Plexamp state
   const [isTogglingPlexamp, setIsTogglingPlexamp] = useState(false);
@@ -77,22 +93,56 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     loadEndpoints();
   }, []);
 
+  // Load Spotify endpoints on mount
+  useEffect(() => {
+    const loadSpotifyEndpoints = async () => {
+      try {
+        const result = await spotifyService.listEndpoints();
+        if (result.success && result.endpoints) {
+          setSpotifyEndpoints(result.endpoints);
+          // Initialize endpoint name states
+          const names: Record<string, string> = {};
+          result.endpoints.forEach(ep => {
+            names[ep.id] = ep.deviceName;
+          });
+          setSpotifyEndpointNames(names);
+        }
+      } catch (error) {
+        console.error('Failed to load Spotify endpoints:', error);
+      }
+    };
+    loadSpotifyEndpoints();
+  }, []);
+
+  // Load DLNA endpoints on mount
+  useEffect(() => {
+    const loadDlnaEndpoints = async () => {
+      try {
+        const result = await dlnaService.listEndpoints();
+        if (result.success && result.endpoints) {
+          setDlnaEndpoints(result.endpoints);
+          // Initialize endpoint name states
+          const names: Record<string, string> = {};
+          result.endpoints.forEach((ep: any) => {
+            names[ep.id] = ep.deviceName;
+          });
+          setDlnaEndpointNames(names);
+        }
+      } catch (error) {
+        console.error('Failed to load DLNA endpoints:', error);
+      } finally {
+        setLoadingDlnaEndpoints(false);
+      }
+    };
+    loadDlnaEndpoints();
+  }, []);
+
   useEffect(() => {
     setBluetoothDeviceName(settings.integrations.bluetooth.deviceName);
   }, [settings.integrations.bluetooth.deviceName]);
 
-  useEffect(() => {
-    setSpotifyDeviceName(settings.integrations.spotify.deviceName);
-  }, [settings.integrations.spotify.deviceName]);
-
-  useEffect(() => {
-    setDlnaDeviceName(settings.integrations.dlna.deviceName);
-  }, [settings.integrations.dlna.deviceName]);
-
   // Check if device name has changed
   const bluetoothNameChanged = bluetoothDeviceName !== settings.integrations.bluetooth.deviceName;
-  const spotifyNameChanged = spotifyDeviceName !== settings.integrations.spotify.deviceName;
-  const dlnaNameChanged = dlnaDeviceName !== settings.integrations.dlna.deviceName;
 
   const toggleSection = (section: string) => {
     setExpandedSection(expandedSection === section ? null : section);
@@ -210,6 +260,233 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
   };
 
+  // Spotify endpoint handlers
+  const handleSpotifyEndpointToggle = async (endpointId: string, enabled: boolean) => {
+    setIsTogglingSpotifyEndpoint({...isTogglingSpotifyEndpoint, [endpointId]: true});
+    try {
+      const result = await spotifyService.updateEndpoint(endpointId, undefined, enabled);
+
+      if (result.success) {
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, enabled} : ep
+        ));
+      } else {
+        alert(`Failed to ${enabled ? 'enable' : 'disable'} Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error ${enabled ? 'enabling' : 'disabling'} Spotify endpoint: ${error.message}`);
+    } finally {
+      setIsTogglingSpotifyEndpoint({...isTogglingSpotifyEndpoint, [endpointId]: false});
+    }
+  };
+
+  const handleSpotifyEndpointNameChange = async (endpointId: string) => {
+    const newName = spotifyEndpointNames[endpointId];
+    const endpoint = spotifyEndpoints.find(ep => ep.id === endpointId);
+
+    if (!endpoint || newName === endpoint.deviceName) return;
+
+    setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'applying'});
+    setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: 'Applying...'});
+
+    try {
+      const result = await spotifyService.updateEndpoint(endpointId, newName, undefined);
+
+      if (result.success) {
+        setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'success'});
+        setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: 'Applied'});
+
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, deviceName: newName} : ep
+        ));
+
+        setTimeout(() => {
+          setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'idle'});
+          setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: ''});
+        }, 3000);
+      } else {
+        setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'error'});
+        setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: result.message || 'Failed'});
+      }
+    } catch (error: any) {
+      setSpotifyEndpointNameStatuses({...spotifyEndpointNameStatuses, [endpointId]: 'error'});
+      setSpotifyEndpointNameMessages({...spotifyEndpointNameMessages, [endpointId]: error.message || 'Error'});
+    }
+  };
+
+  const handleAddSpotifyEndpoint = async () => {
+    if (!newSpotifyEndpointName.trim()) {
+      alert('Please enter a device name');
+      return;
+    }
+
+    setIsAddingSpotifyEndpoint(true);
+    try {
+      const result = await spotifyService.addEndpoint(newSpotifyEndpointName, true);
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setSpotifyEndpoints([...spotifyEndpoints, result.endpoint]);
+        setSpotifyEndpointNames({...spotifyEndpointNames, [result.endpoint.id]: result.endpoint.deviceName});
+        setNewSpotifyEndpointName('');
+        setShowAddSpotifyEndpoint(false);
+      } else {
+        alert(`Failed to add Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error adding Spotify endpoint: ${error.message}`);
+    } finally {
+      setIsAddingSpotifyEndpoint(false);
+    }
+  };
+
+  const handleRemoveSpotifyEndpoint = async (endpointId: string) => {
+    if (spotifyEndpoints.length <= 1) {
+      alert('Cannot remove the last Spotify endpoint');
+      return;
+    }
+
+    const endpoint = spotifyEndpoints.find(ep => ep.id === endpointId);
+    if (!endpoint) return;
+
+    if (!confirm(`Remove Spotify endpoint "${endpoint.deviceName}"?`)) {
+      return;
+    }
+
+    try {
+      const result = await spotifyService.removeEndpoint(endpointId);
+
+      if (result.success) {
+        // Update local state
+        setSpotifyEndpoints(spotifyEndpoints.filter(ep => ep.id !== endpointId));
+        const newNames = {...spotifyEndpointNames};
+        delete newNames[endpointId];
+        setSpotifyEndpointNames(newNames);
+      } else {
+        alert(`Failed to remove Spotify endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error removing Spotify endpoint: ${error.message}`);
+    }
+  };
+
+  // DLNA endpoint handlers
+  const handleDlnaEndpointToggle = async (endpointId: string, enabled: boolean) => {
+    setIsTogglingDlnaEndpoint({...isTogglingDlnaEndpoint, [endpointId]: true});
+
+    try {
+      const result = await dlnaService.updateEndpoint(endpointId, {enabled});
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setDlnaEndpoints(dlnaEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, enabled: result.endpoint.enabled} : ep
+        ));
+      } else {
+        alert(`Failed to toggle DLNA endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error toggling DLNA endpoint: ${error.message}`);
+    } finally {
+      setIsTogglingDlnaEndpoint({...isTogglingDlnaEndpoint, [endpointId]: false});
+    }
+  };
+
+  const handleDlnaEndpointNameChange = async (endpointId: string) => {
+    const newName = dlnaEndpointNames[endpointId];
+    if (!newName || !newName.trim()) {
+      return;
+    }
+
+    const endpoint = dlnaEndpoints.find(ep => ep.id === endpointId);
+    if (!endpoint) return;
+
+    if (newName === endpoint.deviceName) {
+      return; // No change
+    }
+
+    setDlnaEndpointNameStatuses({...dlnaEndpointNameStatuses, [endpointId]: 'applying'});
+    setDlnaEndpointNameMessages({...dlnaEndpointNameMessages, [endpointId]: ''});
+
+    try {
+      const result = await dlnaService.updateEndpoint(endpointId, {deviceName: newName});
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setDlnaEndpoints(dlnaEndpoints.map(ep =>
+          ep.id === endpointId ? {...ep, deviceName: result.endpoint.deviceName} : ep
+        ));
+        setDlnaEndpointNameStatuses({...dlnaEndpointNameStatuses, [endpointId]: 'success'});
+        setDlnaEndpointNameMessages({...dlnaEndpointNameMessages, [endpointId]: 'Device name updated'});
+
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setDlnaEndpointNameMessages({...dlnaEndpointNameMessages, [endpointId]: ''});
+          setDlnaEndpointNameStatuses({...dlnaEndpointNameStatuses, [endpointId]: 'idle'});
+        }, 3000);
+      } else {
+        setDlnaEndpointNameStatuses({...dlnaEndpointNameStatuses, [endpointId]: 'error'});
+        setDlnaEndpointNameMessages({...dlnaEndpointNameMessages, [endpointId]: result.message || 'Update failed'});
+      }
+    } catch (error: any) {
+      setDlnaEndpointNameStatuses({...dlnaEndpointNameStatuses, [endpointId]: 'error'});
+      setDlnaEndpointNameMessages({...dlnaEndpointNameMessages, [endpointId]: error.message || 'Update failed'});
+    }
+  };
+
+  const handleAddDlnaEndpoint = async () => {
+    if (!newDlnaEndpointName.trim()) {
+      alert('Please enter a device name');
+      return;
+    }
+
+    setIsAddingDlnaEndpoint(true);
+    try {
+      const result = await dlnaService.addEndpoint(newDlnaEndpointName, true);
+
+      if (result.success && result.endpoint) {
+        // Update local state
+        setDlnaEndpoints([...dlnaEndpoints, result.endpoint]);
+        setDlnaEndpointNames({...dlnaEndpointNames, [result.endpoint.id]: result.endpoint.deviceName});
+        setNewDlnaEndpointName('');
+        setShowAddDlnaEndpoint(false);
+      } else {
+        alert(`Failed to add DLNA endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error adding DLNA endpoint: ${error.message}`);
+    } finally {
+      setIsAddingDlnaEndpoint(false);
+    }
+  };
+
+  const handleRemoveDlnaEndpoint = async (endpointId: string) => {
+    const endpoint = dlnaEndpoints.find(ep => ep.id === endpointId);
+    if (!endpoint) return;
+
+    if (!confirm(`Remove DLNA endpoint "${endpoint.deviceName}"?`)) {
+      return;
+    }
+
+    try {
+      const result = await dlnaService.removeEndpoint(endpointId);
+
+      if (result.success) {
+        // Update local state
+        setDlnaEndpoints(dlnaEndpoints.filter(ep => ep.id !== endpointId));
+        const newNames = {...dlnaEndpointNames};
+        delete newNames[endpointId];
+        setDlnaEndpointNames(newNames);
+      } else {
+        alert(`Failed to remove DLNA endpoint: ${result.message}`);
+      }
+    } catch (error: any) {
+      alert(`Error removing DLNA endpoint: ${error.message}`);
+    }
+  };
+
   const handleBluetoothToggle = async (enabled: boolean) => {
     setIsTogglingBluetooth(true);
     try {
@@ -318,169 +595,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         },
       });
     }
-  };
-
-  const handleSpotifyToggle = async (enabled: boolean) => {
-    setIsTogglingSpotify(true);
-    try {
-      const result = enabled
-        ? await spotifyService.enable()
-        : await spotifyService.disable();
-
-      if (result.success) {
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            spotify: {
-              ...settings.integrations.spotify,
-              enabled,
-            },
-          },
-        });
-      } else {
-        console.error('Failed to toggle Spotify:', result.message);
-        alert(`Failed to ${enabled ? 'enable' : 'disable'} Spotify: ${result.message}`);
-      }
-    } catch (error) {
-      console.error('Error toggling Spotify:', error);
-      alert(`Error ${enabled ? 'enabling' : 'disabling'} Spotify`);
-    } finally {
-      setIsTogglingSpotify(false);
-    }
-  };
-
-  const handleApplySpotifyDeviceName = async () => {
-    if (!spotifyNameChanged) return;
-
-    setSpotifyNameStatus('applying');
-    setSpotifyNameMessage('Applying changes... this may take up to 60 seconds');
-
-    try {
-      const result = await spotifyService.updateDeviceName(spotifyDeviceName);
-
-      if (result.success) {
-        setSpotifyNameStatus('success');
-        setSpotifyNameMessage('Applied');
-
-        // Update settings - restarting service enables Spotify
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            spotify: {
-              ...settings.integrations.spotify,
-              deviceName: spotifyDeviceName,
-              enabled: true,
-            },
-          },
-        });
-
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setSpotifyNameStatus('idle');
-          setSpotifyNameMessage('');
-        }, 3000);
-      } else {
-        setSpotifyNameStatus('error');
-        setSpotifyNameMessage(result.message || 'Failed to apply');
-      }
-    } catch (error: any) {
-      setSpotifyNameStatus('error');
-      setSpotifyNameMessage(error.message || 'Error applying changes');
-    }
-  };
-
-  const handleSpotifyChange = (field: string, value: boolean | string | number) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        spotify: {
-          ...settings.integrations.spotify,
-          [field]: value,
-        },
-      },
-    });
-  };
-
-  const handleDlnaToggle = async (enabled: boolean) => {
-    setIsTogglingDlna(true);
-    try {
-      const result = enabled
-        ? await dlnaService.enable()
-        : await dlnaService.disable();
-
-      if (result.success) {
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            dlna: {
-              ...settings.integrations.dlna,
-              enabled,
-            },
-          },
-        });
-      } else {
-        alert(`Failed to ${enabled ? 'enable' : 'disable'} DLNA: ${result.message}`);
-      }
-    } catch (error: any) {
-      alert(`Error ${enabled ? 'enabling' : 'disabling'} DLNA: ${error.message}`);
-    } finally {
-      setIsTogglingDlna(false);
-    }
-  };
-
-  const handleApplyDlnaDeviceName = async () => {
-    if (!dlnaNameChanged) return;
-
-    setDlnaNameStatus('applying');
-    setDlnaNameMessage('Applying changes...');
-
-    try {
-      const result = await dlnaService.updateDeviceName(dlnaDeviceName);
-
-      if (result.success) {
-        setDlnaNameStatus('success');
-        setDlnaNameMessage('Applied');
-
-        // Update parent settings
-        onSettingsChange({
-          ...settings,
-          integrations: {
-            ...settings.integrations,
-            dlna: {
-              ...settings.integrations.dlna,
-              deviceName: dlnaDeviceName,
-              enabled: true,
-            },
-          },
-        });
-
-        // Clear success message after 3 seconds
-        setTimeout(() => {
-          setDlnaNameStatus('idle');
-          setDlnaNameMessage('');
-        }, 3000);
-      }
-    } catch (error: any) {
-      setDlnaNameStatus('error');
-      setDlnaNameMessage(error.message || 'Error applying changes');
-    }
-  };
-
-  const handleDlnaChange = (field: string, value: boolean | string) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        dlna: {
-          ...settings.integrations.dlna,
-          [field]: value,
-        },
-      },
-    });
   };
 
   const handlePlexampToggle = async (enabled: boolean) => {
@@ -834,33 +948,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <div className="flex flex-col flex-1">
               <span className="text-base font-semibold text-[var(--text-secondary)]">Spotify Connect</span>
               <p className="text-sm text-[var(--text-muted)] mt-1">
-                Stream music directly from Spotify
+                Stream music directly from Spotify - {spotifyEndpoints.length} endpoint{spotifyEndpoints.length !== 1 ? 's' : ''}
               </p>
-              {isTogglingSpotify && (
-                <p className="text-xs text-amber-500 mt-1">
-                  Processing... this may take up to 60 seconds
-                </p>
-              )}
             </div>
 
-            {/* Right: Toggle + Chevron */}
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={settings.integrations.spotify.enabled}
-                  onChange={(e) => handleSpotifyToggle(e.target.checked)}
-                  disabled={isTogglingSpotify}
-                  id="spotify-toggle"
-                />
-                <label
-                  htmlFor="spotify-toggle"
-                  className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.spotify.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingSpotify ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.spotify.enabled ? 'translate-x-6' : ''}`}></div>
-                </label>
-              </div>
+            {/* Right: Chevron */}
+            <div className="flex items-center flex-shrink-0">
               <button
                 onClick={() => toggleSection('spotify')}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -871,78 +964,144 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           </div>
 
           {expandedSection === 'spotify' && (
-            <div className="mt-4 ml-14 space-y-3">
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Source Name
-                </label>
-                <input
-                  type="text"
-                  value={settings.integrations.spotify.sourceName}
-                  onChange={(e) => handleSpotifyChange('sourceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="Spotify"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Device Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={spotifyDeviceName}
-                    onChange={(e) => setSpotifyDeviceName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && spotifyNameChanged) {
-                        handleApplySpotifyDeviceName();
-                      }
-                    }}
-                    className="w-full px-3 py-2 pr-20 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                    placeholder="Plum Audio"
-                    disabled={spotifyNameStatus === 'applying'}
-                  />
-                  {spotifyNameChanged && (
-                    <button
-                      onClick={handleApplySpotifyDeviceName}
-                      disabled={spotifyNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-                    >
-                      {spotifyNameStatus === 'applying' ? 'Applying...' : 'Apply'}
-                    </button>
-                  )}
-                </div>
-                {spotifyNameMessage && (
-                  <p className={`text-xs mt-1 ${
-                    spotifyNameStatus === 'success'
-                      ? 'text-green-500'
-                      : spotifyNameStatus === 'error'
-                      ? 'text-red-500'
-                      : 'text-[var(--text-muted)]'
-                  }`}>
-                    {spotifyNameMessage}
-                  </p>
-                )}
-                {spotifyNameChanged && !spotifyNameMessage && (
-                  <p className="text-xs text-amber-500 mt-1">
-                    Pending changes - press Enter or click Apply
-                  </p>
-                )}
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Bitrate (kbps)
-                </label>
-                <select
-                  value={settings.integrations.spotify.bitrate}
-                  onChange={(e) => handleSpotifyChange('bitrate', parseInt(e.target.value))}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+            <div className="mt-4 ml-14 space-y-4">
+              {/* Endpoints list */}
+              {spotifyEndpoints.map((endpoint) => {
+                const nameChanged = spotifyEndpointNames[endpoint.id] !== endpoint.deviceName;
+                return (
+                  <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                        Endpoint #{endpoint.id}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={endpoint.enabled}
+                            onChange={(e) => handleSpotifyEndpointToggle(endpoint.id, e.target.checked)}
+                            disabled={isTogglingSpotifyEndpoint[endpoint.id]}
+                            id={`spotify-endpoint-${endpoint.id}-toggle`}
+                          />
+                          <label
+                            htmlFor={`spotify-endpoint-${endpoint.id}-toggle`}
+                            className={`block w-10 h-5 rounded-full transition cursor-pointer ${endpoint.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingSpotifyEndpoint[endpoint.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform ${endpoint.enabled ? 'translate-x-5' : ''}`}></div>
+                          </label>
+                        </div>
+                        {spotifyEndpoints.length > 1 && (
+                          <button
+                            onClick={() => handleRemoveSpotifyEndpoint(endpoint.id)}
+                            className="text-red-500 hover:text-red-400 text-xs"
+                            title="Remove endpoint"
+                          >
+                            <Icon name="trash" className="text-sm" style={{ color: 'inherit' }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--text-muted)] mb-1">
+                        Device Name
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={spotifyEndpointNames[endpoint.id] || endpoint.deviceName}
+                          onChange={(e) => setSpotifyEndpointNames({...spotifyEndpointNames, [endpoint.id]: e.target.value})}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && nameChanged) {
+                              handleSpotifyEndpointNameChange(endpoint.id);
+                            }
+                          }}
+                          className="w-full px-2 py-1.5 pr-16 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                          placeholder="Plum Audio"
+                          disabled={spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
+                        />
+                        {nameChanged && (
+                          <button
+                            onClick={() => handleSpotifyEndpointNameChange(endpoint.id)}
+                            disabled={spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {spotifyEndpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
+                          </button>
+                        )}
+                      </div>
+                      {spotifyEndpointNameMessages[endpoint.id] && (
+                        <p className={`text-xs mt-1 ${
+                          spotifyEndpointNameStatuses[endpoint.id] === 'success'
+                            ? 'text-green-500'
+                            : spotifyEndpointNameStatuses[endpoint.id] === 'error'
+                            ? 'text-red-500'
+                            : 'text-[var(--text-muted)]'
+                        }`}>
+                          {spotifyEndpointNameMessages[endpoint.id]}
+                        </p>
+                      )}
+                      {nameChanged && !spotifyEndpointNameMessages[endpoint.id] && (
+                        <p className="text-xs text-amber-500 mt-1">
+                          Pending changes
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)] mt-2">
+                      Zeroconf Port: {endpoint.zeroconfPort}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add endpoint button/form */}
+              {!showAddSpotifyEndpoint && spotifyEndpoints.length < 10 && (
+                <button
+                  onClick={() => setShowAddSpotifyEndpoint(true)}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
                 >
-                  <option value="96">96</option>
-                  <option value="160">160</option>
-                  <option value="320">320</option>
-                </select>
-              </div>
+                  + Add Endpoint
+                </button>
+              )}
+
+              {showAddSpotifyEndpoint && (
+                <div className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--accent-color)]">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                    New Endpoint Name
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newSpotifyEndpointName}
+                      onChange={(e) => setNewSpotifyEndpointName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddSpotifyEndpoint()}
+                      className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                      placeholder="Living Room"
+                      disabled={isAddingSpotifyEndpoint}
+                    />
+                    <button
+                      onClick={handleAddSpotifyEndpoint}
+                      disabled={isAddingSpotifyEndpoint}
+                      className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isAddingSpotifyEndpoint ? 'Adding...' : 'Add'}
+                    </button>
+                    <button
+                      onClick={() => {setShowAddSpotifyEndpoint(false); setNewSpotifyEndpointName('');}}
+                      disabled={isAddingSpotifyEndpoint}
+                      className="px-3 py-1.5 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary-hover)] rounded text-xs text-[var(--text-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {spotifyEndpoints.length >= 10 && (
+                <p className="text-xs text-[var(--text-muted)] italic">
+                  Maximum of 10 endpoints reached
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -959,33 +1118,12 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             <div className="flex flex-col flex-1">
               <span className="text-base font-semibold text-[var(--text-secondary)]">DLNA/UPnP</span>
               <p className="text-sm text-[var(--text-muted)] mt-1">
-                DLNA/UPnP media renderer
+                DLNA/UPnP media renderer - {dlnaEndpoints.length} endpoint{dlnaEndpoints.length !== 1 ? 's' : ''}
               </p>
-              {isTogglingDlna && (
-                <p className="text-xs text-amber-500 mt-1">
-                  Processing... this may take up to 60 seconds
-                </p>
-              )}
             </div>
 
-            {/* Right: Toggle + Chevron */}
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={settings.integrations.dlna.enabled}
-                  onChange={(e) => handleDlnaToggle(e.target.checked)}
-                  disabled={isTogglingDlna}
-                  id="dlna-toggle"
-                />
-                <label
-                  htmlFor="dlna-toggle"
-                  className={`block w-12 h-6 rounded-full transition cursor-pointer ${settings.integrations.dlna.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingDlna ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${settings.integrations.dlna.enabled ? 'translate-x-6' : ''}`}></div>
-                </label>
-              </div>
+            {/* Right: Chevron */}
+            <div className="flex items-center flex-shrink-0">
               <button
                 onClick={() => toggleSection('dlna')}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -996,68 +1134,142 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           </div>
 
           {expandedSection === 'dlna' && (
-            <div className="mt-4 ml-14 space-y-3">
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Source Name
-                </label>
-                <input
-                  type="text"
-                  value={settings.integrations.dlna.sourceName}
-                  onChange={(e) => handleDlnaChange('sourceName', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
-                  placeholder="DLNA"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-[var(--text-secondary)] mb-1">
-                  Device Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={dlnaDeviceName}
-                    onChange={(e) => setDlnaDeviceName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && dlnaNameChanged) {
-                        handleApplyDlnaDeviceName();
-                      }
-                    }}
-                    placeholder="Plum Audio"
-                    className="w-full px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)] pr-20"
-                    disabled={dlnaNameStatus === 'applying'}
-                  />
-                  {dlnaNameChanged && (
+            <div className="mt-4 ml-14 space-y-4">
+              {/* Endpoints list */}
+              {dlnaEndpoints.map((endpoint) => {
+                const nameChanged = dlnaEndpointNames[endpoint.id] !== endpoint.deviceName;
+                return (
+                  <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                        Endpoint #{endpoint.id}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={endpoint.enabled}
+                            onChange={(e) => handleDlnaEndpointToggle(endpoint.id, e.target.checked)}
+                            disabled={isTogglingDlnaEndpoint[endpoint.id]}
+                            id={`dlna-endpoint-${endpoint.id}-toggle`}
+                          />
+                          <label
+                            htmlFor={`dlna-endpoint-${endpoint.id}-toggle`}
+                            className={`block w-10 h-5 rounded-full transition cursor-pointer ${endpoint.enabled ? 'bg-[var(--accent-color)]' : 'bg-[var(--bg-tertiary-hover)]'} ${isTogglingDlnaEndpoint[endpoint.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition-transform ${endpoint.enabled ? 'translate-x-5' : ''}`}></div>
+                          </label>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveDlnaEndpoint(endpoint.id)}
+                          className="text-red-500 hover:text-red-400 text-xs"
+                          title="Remove endpoint"
+                        >
+                          <Icon name="trash" className="text-sm" style={{ color: 'inherit' }} />
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[var(--text-muted)] mb-1">
+                        Device Name
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={dlnaEndpointNames[endpoint.id] || endpoint.deviceName}
+                          onChange={(e) => setDlnaEndpointNames({...dlnaEndpointNames, [endpoint.id]: e.target.value})}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && nameChanged) {
+                              handleDlnaEndpointNameChange(endpoint.id);
+                            }
+                          }}
+                          className="w-full px-2 py-1.5 pr-16 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                          placeholder="Plum Audio"
+                          disabled={dlnaEndpointNameStatuses[endpoint.id] === 'applying'}
+                        />
+                        {nameChanged && (
+                          <button
+                            onClick={() => handleDlnaEndpointNameChange(endpoint.id)}
+                            disabled={dlnaEndpointNameStatuses[endpoint.id] === 'applying'}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {dlnaEndpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
+                          </button>
+                        )}
+                      </div>
+                      {dlnaEndpointNameMessages[endpoint.id] && (
+                        <p className={`text-xs mt-1 ${
+                          dlnaEndpointNameStatuses[endpoint.id] === 'success'
+                            ? 'text-green-500'
+                            : dlnaEndpointNameStatuses[endpoint.id] === 'error'
+                            ? 'text-red-500'
+                            : 'text-[var(--text-muted)]'
+                        }`}>
+                          {dlnaEndpointNameMessages[endpoint.id]}
+                        </p>
+                      )}
+                      {nameChanged && !dlnaEndpointNameMessages[endpoint.id] && (
+                        <p className="text-xs text-amber-500 mt-1">
+                          Pending changes
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)] mt-2">
+                      UPnP Port: {endpoint.port}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add endpoint button/form */}
+              {!showAddDlnaEndpoint && dlnaEndpoints.length < 10 && (
+                <button
+                  onClick={() => setShowAddDlnaEndpoint(true)}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
+                >
+                  + Add Endpoint
+                </button>
+              )}
+
+              {showAddDlnaEndpoint && (
+                <div className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--accent-color)]">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1">
+                    New Endpoint Name
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newDlnaEndpointName}
+                      onChange={(e) => setNewDlnaEndpointName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddDlnaEndpoint()}
+                      className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
+                      placeholder="Living Room"
+                      disabled={isAddingDlnaEndpoint}
+                    />
                     <button
-                      onClick={handleApplyDlnaDeviceName}
-                      disabled={dlnaNameStatus === 'applying'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-[var(--accent-color)] accent-button-text rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={handleAddDlnaEndpoint}
+                      disabled={isAddingDlnaEndpoint}
+                      className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {dlnaNameStatus === 'applying' ? 'Applying...' : 'Apply'}
+                      {isAddingDlnaEndpoint ? 'Adding...' : 'Add'}
                     </button>
-                  )}
+                    <button
+                      onClick={() => {setShowAddDlnaEndpoint(false); setNewDlnaEndpointName('');}}
+                      disabled={isAddingDlnaEndpoint}
+                      className="px-3 py-1.5 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary-hover)] rounded text-xs text-[var(--text-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
+              )}
 
-                {/* Status feedback */}
-                {dlnaNameMessage && (
-                  <p className={`text-xs mt-1 ${
-                    dlnaNameStatus === 'success'
-                      ? 'text-green-500'
-                      : dlnaNameStatus === 'error'
-                      ? 'text-red-500'
-                      : 'text-[var(--text-muted)]'
-                  }`}>
-                    {dlnaNameMessage}
-                  </p>
-                )}
-
-                {/* Pending changes indicator */}
-                {dlnaNameChanged && !dlnaNameMessage && (
-                  <p className="text-xs text-amber-500 mt-1">
-                    Pending changes - press Enter or click Apply
-                  </p>
-                )}
-              </div>
+              {dlnaEndpoints.length >= 10 && (
+                <p className="text-xs text-[var(--text-muted)] italic">
+                  Maximum of 10 endpoints reached
+                </p>
+              )}
             </div>
           )}
         </div>

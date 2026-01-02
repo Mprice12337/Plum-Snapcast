@@ -52,6 +52,27 @@ except ImportError:
     log("[Warning] D-Bus not available - Spotify features disabled")
 
 
+def get_spotifyd_pid(instance_id: str) -> Optional[str]:
+    """
+    Get PID of spotifyd process for specific instance.
+    Used for MPRIS service name detection (org.mpris.MediaPlayer2.spotifyd.instance[PID])
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"spotifyd.*spotifyd-{instance_id}.conf"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Return first PID if multiple found
+            return result.stdout.strip().split('\n')[0]
+    except:
+        pass
+    return None
+
+
 class MetadataStore:
     """
     Thread-safe storage for current metadata and playback state.
@@ -68,7 +89,7 @@ class MetadataStore:
             "duration": None,
             "position": 0,
             "last_updated": None,
-            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
+            "playback_status": "stopped",  # "playing", "paused", or "stopped" (lowercase for Snapcast)
         }
 
     def update(self, **kwargs):
@@ -123,9 +144,10 @@ class MetadataStore:
 class SpotifyMetadataMonitor:
     """Monitor librespot D-Bus MPRIS interface for Spotify metadata and playback state"""
 
-    def __init__(self, store: MetadataStore, on_update_callback):
+    def __init__(self, store: MetadataStore, on_update_callback, instance_id: Optional[str] = None):
         self.store = store
         self.on_update = on_update_callback
+        self.instance_id = instance_id  # Instance ID for multi-instance mode
         self.player_interface = None
         self.player_properties = None
         self.bus = None
@@ -137,7 +159,7 @@ class SpotifyMetadataMonitor:
         # Initialize D-Bus
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self.bus = dbus.SessionBus() if 'DBUS_SESSION_BUS_ADDRESS' in os.environ else dbus.SystemBus()
-        log("[Spotify] D-Bus monitor initialized")
+        log(f"[Spotify] D-Bus monitor initialized (instance: {instance_id or 'default'})")
 
     def _download_cover_art(self, cover_url: str) -> Optional[str]:
         """Download cover art from Spotify and save to web root"""
@@ -214,8 +236,8 @@ class SpotifyMetadataMonitor:
             if 'mpris:length' in metadata_dict:
                 # MPRIS length is in microseconds
                 length_us = int(metadata_dict['mpris:length'])
-                result['duration'] = length_us // 1000  # Convert to milliseconds
-                log(f"[Metadata] Duration: {result['duration']}ms")
+                result['duration'] = length_us // 1_000_000  # Convert to seconds
+                log(f"[Metadata] Duration: {result['duration']}s")
 
         except Exception as e:
             log(f"[Error] Metadata extraction failed: {e}")
@@ -223,14 +245,15 @@ class SpotifyMetadataMonitor:
         return result
 
     def _extract_playback_status(self, status_str: str) -> str:
-        """Convert MPRIS playback status to our format"""
-        # MPRIS statuses: "Playing", "Paused", "Stopped"
+        """Convert MPRIS playback status to Snapcast format (lowercase)"""
+        # MPRIS sends: "Playing", "Paused", "Stopped"
+        # Snapcast expects: "playing", "paused", "stopped"
         status_map = {
-            "playing": "Playing",
-            "paused": "Paused",
-            "stopped": "Stopped",
+            "playing": "playing",
+            "paused": "paused",
+            "stopped": "stopped",
         }
-        return status_map.get(status_str.lower(), "Stopped")
+        return status_map.get(status_str.lower(), "stopped")
 
     def _properties_changed_handler(self, interface, changed, invalidated, sender):
         """Handle D-Bus PropertiesChanged signals"""
@@ -268,12 +291,24 @@ class SpotifyMetadataMonitor:
                 self.store.update(playback_status=status)
                 updated = True
 
+                # When transitioning to "playing", force immediate position read
+                # This catches position changes that occurred during pause/disconnect
+                # (spotifyd doesn't send Position property change when resuming)
+                if status == "playing" and self.player_properties:
+                    try:
+                        position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                        position_s = int(position_us) // 1_000_000
+                        log(f"[DBus] Force position read on play: {position_s}s")
+                        self.store.update(position=position_s)
+                    except Exception as e:
+                        log(f"[DBus] Failed to read position on play: {e}")
+
             # Check if position changed
             if 'Position' in changed:
                 position_us = int(changed['Position'])
-                position_ms = position_us // 1000
-                log(f"[DBus] Position changed: {position_ms}ms")
-                self.store.update(position=position_ms)
+                position_s = position_us // 1_000_000
+                log(f"[DBus] Position changed: {position_s}s")
+                self.store.update(position=position_s)
                 # Trigger update for position changes to keep frontend in sync
                 if self.on_update:
                     self.on_update()
@@ -286,50 +321,65 @@ class SpotifyMetadataMonitor:
             log(f"[Error] Properties changed handler failed: {e}")
 
     def _scan_for_players(self):
-        """Scan for existing spotifyd player on D-Bus"""
+        """Scan for existing spotifyd player on D-Bus with instance-aware detection"""
         if not self.bus:
             return
 
         try:
-            # Get list of all D-Bus names
-            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
-            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
-            all_names = bus_interface.ListNames()
+            # Multi-instance support: Try PID-based naming for instances 2+
+            mpris_names_to_try = []
 
-            # Look for any service starting with org.mpris.MediaPlayer2.spotifyd or librespot
-            # (spotifyd uses instance-based naming like org.mpris.MediaPlayer2.spotifyd.instance35)
-            prefixes = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
+            if self.instance_id:
+                # Get spotifyd PID for this instance
+                instance_pid = get_spotifyd_pid(self.instance_id)
 
-            for name in all_names:
-                for prefix in prefixes:
-                    if name.startswith(prefix):
-                        try:
-                            player_obj = self.bus.get_object(name, '/org/mpris/MediaPlayer2')
-                            self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
-                            self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
-                            log(f"[DBus] ✓ Found player: {name}")
+                if instance_pid:
+                    # Try PID-based name first (instance 2+)
+                    pid_based_name = f"org.mpris.MediaPlayer2.spotifyd.instance{instance_pid}"
+                    mpris_names_to_try.append(pid_based_name)
+                    log(f"[DBus] Trying PID-based MPRIS name: {pid_based_name}")
 
-                            # Get initial metadata
-                            try:
-                                metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
-                                if metadata:
-                                    extracted = self._extract_metadata_from_dict(metadata)
-                                    if extracted:
-                                        self.store.update(**extracted)
+                # Fallback to base name (instance 1)
+                base_name = "org.mpris.MediaPlayer2.spotifyd"
+                mpris_names_to_try.append(base_name)
+                log(f"[DBus] Fallback to base MPRIS name: {base_name}")
+            else:
+                # Single-instance mode: Try common names
+                mpris_names_to_try = [
+                    "org.mpris.MediaPlayer2.spotifyd",
+                    "org.mpris.MediaPlayer2.librespot"
+                ]
 
-                                status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
-                                if status:
-                                    self.store.update(playback_status=self._extract_playback_status(str(status)))
-                            except:
-                                pass
+            # Try each potential MPRIS name
+            for mpris_name in mpris_names_to_try:
+                try:
+                    player_obj = self.bus.get_object(mpris_name, '/org/mpris/MediaPlayer2')
+                    self.player_interface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
+                    self.player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                    log(f"[DBus] ✓ Connected to player: {mpris_name}")
 
-                            # Notify that control is available
-                            if self.on_update:
-                                self.on_update()
+                    # Get initial metadata
+                    try:
+                        metadata = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Metadata')
+                        if metadata:
+                            extracted = self._extract_metadata_from_dict(metadata)
+                            if extracted:
+                                self.store.update(**extracted)
 
-                            return
-                        except dbus.DBusException:
-                            continue
+                        status = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                        if status:
+                            self.store.update(playback_status=self._extract_playback_status(str(status)))
+                    except:
+                        pass
+
+                    # Notify that control is available
+                    if self.on_update:
+                        self.on_update()
+
+                    return  # Successfully connected
+                except dbus.DBusException as e:
+                    log(f"[DBus] Couldn't connect to {mpris_name}: {e}")
+                    continue
 
             log("[DBus] No Spotify player found yet (will monitor for connections)")
 
@@ -339,58 +389,44 @@ class SpotifyMetadataMonitor:
     def _poll_position(self):
         """Background thread that polls position updates from D-Bus
 
-        Note: We send position updates when the D-Bus Position property changes,
-        not on a periodic basis. The frontend uses client-side sync (useAudioSync)
-        to increment position smoothly between server updates.
-
-        Position changes occur when:
-        - Track starts (position resets to 0 or start offset)
-        - User seeks/scrubs from Spotify app
-        - Track ends and next track begins
+        Note: Playback state (Playing/Paused/Stopped) is handled by D-Bus property
+        change signals in _on_property_changed(). This method only tracks position
+        for timeline updates.
         """
         log("[DBus] Position polling thread started")
         last_position_value = None
 
         while True:
             try:
-                # Only poll when we have a player and it's playing
-                playback_status = self.store.get_all().get("playback_status", "Stopped")
-
-                if self.player_properties and playback_status == "Playing":
+                if self.player_properties:
                     try:
-                        # Get current position from MPRIS
+                        # Poll current position
                         position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
-                        position_ms = int(position_us) // 1000
+                        position_s = int(position_us) // 1_000_000
 
-                        # Always update store with latest position
-                        self.store.update(position=position_ms)
+                        # Update position in store
+                        self.store.update(position=position_s)
 
-                        # Only send update if position actually changed from last poll
-                        # This detects seeks, track changes, and initial connection
+                        # Send position update to frontend on significant changes
                         if last_position_value is None:
                             # Initial connection
-                            log(f"[DBus] Position changed: {position_ms}ms (initial)")
+                            log(f"[DBus] Position: {position_s}s (initial)")
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_ms
-                        elif abs(position_ms - last_position_value) > 1500:
-                            # Position changed significantly (seek, track change, or mid-track start)
-                            # Allow 1.5s tolerance for polling delay
-                            if position_ms < 5000:
+                        elif abs(position_s - last_position_value) > 2:
+                            # Position changed significantly (seek or track change)
+                            if position_s < 5:
                                 reason = "track_change"
                             else:
                                 reason = "seek"
-                            log(f"[DBus] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                            log(f"[DBus] Position: {last_position_value}s → {position_s}s ({reason})")
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_ms
-                        else:
-                            # Position progressing normally, just track it
-                            last_position_value = position_ms
 
-                    except Exception:
-                        # Player might not be ready yet
-                        pass
+                        last_position_value = position_s
+
+                    except Exception as e:
+                        log(f"[DBus] Position polling error: {e}")
 
                 # Poll every second
                 time.sleep(1)
@@ -520,11 +556,12 @@ class SpotifyMetadataMonitor:
 class SnapcastControlScript:
     """Snapcast control script that communicates via stdin/stdout"""
 
-    def __init__(self, stream_id: str):
+    def __init__(self, stream_id: str, instance_id: Optional[str] = None):
         self.stream_id = stream_id
+        self.instance_id = instance_id
         self.store = MetadataStore()
-        self.spotify_monitor = SpotifyMetadataMonitor(self.store, self.send_update)
-        log(f"[Init] Initialized for stream: {stream_id}")
+        self.spotify_monitor = SpotifyMetadataMonitor(self.store, self.send_update, instance_id=instance_id)
+        log(f"[Init] Initialized for stream: {stream_id} (instance: {instance_id or 'default'})")
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -595,7 +632,7 @@ class SnapcastControlScript:
                 # Return COMPLETE properties object
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
                 state_data = self.store.get_all()
-                playback_status = state_data.get("playback_status", "Stopped")
+                playback_status = state_data.get("playback_status", "stopped")
                 position = state_data.get("position", 0)
                 can_control = self.spotify_monitor.is_available()
 
@@ -737,13 +774,46 @@ class SnapcastControlScript:
 if __name__ == "__main__":
     # Parse command line arguments passed by Snapcast
     parser = argparse.ArgumentParser(description='Spotify metadata control script for Snapcast')
-    parser.add_argument('--stream', required=False, default='Spotify', help='Stream ID')
+    parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, 3, etc.)')
+    parser.add_argument('--stream', required=False, help='Stream ID (auto-generated from instance-id if not provided)')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    log(f"[Main] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
+    # Multi-instance support: override log file path and construct stream ID
+    if args.instance_id:
+        instance_id = args.instance_id
+        globals()['LOG_FILE'] = f"/tmp/spotify-control-script-{instance_id}.log"
+        log(f"[Init] Multi-instance control script: instance={instance_id}")
 
-    script = SnapcastControlScript(stream_id=args.stream)
+        # Get endpoint name from settings.json for stream display name (must match lifecycle manager)
+        endpoint_name = None
+        try:
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('spotify', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            log(f"[Init] WARNING: Could not read endpoint name from settings: {e}")
+            endpoint_name = f'Endpoint {instance_id}'
+
+        # Generate stream ID to match lifecycle manager format: "Spotify - [device name]"
+        # This MUST match what the lifecycle manager uses when creating the stream
+        # Always use constructed name in multi-instance mode (ignore --stream arg)
+        stream_id = f"Spotify - {endpoint_name}" if endpoint_name else f"Spotify-{instance_id}"
+
+        log(f"[Init] Multi-instance mode: instance={instance_id}, stream={stream_id}")
+        log(f"[Init] Endpoint name: {endpoint_name}")
+    else:
+        # Single-instance mode (original behavior)
+        stream_id = args.stream if args.stream else 'Spotify'
+        log(f"[Init] Single-instance mode: stream={stream_id}")
+
+    log(f"[Main] Starting with args: stream={stream_id}, instance={args.instance_id or 'default'}, host={args.snapcast_host}, port={args.snapcast_port}")
+
+    script = SnapcastControlScript(stream_id=stream_id, instance_id=args.instance_id)
     script.run()

@@ -616,8 +616,18 @@ if __name__ == "__main__":
     parser.add_argument('--stream', required=False, default='DLNA', help='Stream ID')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
+    parser.add_argument('--instance-id', type=str, help='Instance ID for multi-instance support')
 
     args = parser.parse_args()
+
+    # Override globals for multi-instance support
+    if args.instance_id:
+        instance_id = args.instance_id
+        globals()['LOG_FILE'] = f"/tmp/dlna-control-script-{instance_id}.log"
+        globals()['METADATA_FILE'] = f"/tmp/dlna-{instance_id}-metadata.json"
+        log(f"[Main] Multi-instance mode: instance_id={instance_id}")
+        log(f"[Main] Using metadata file: {METADATA_FILE}")
+        log(f"[Main] Using log file: {LOG_FILE}")
 
     log(f"[Main] Starting with args: stream={args.stream}, host={args.snapcast_host}, port={args.snapcast_port}")
 

@@ -5,11 +5,44 @@ set -e
 # Prevents spotifyd from blocking when writing to FIFO when no Snapcast stream exists
 # Continuously reads and discards data from FIFO when stream is not active
 
-FIFO_PATH="/tmp/spotifyfifo"
-STREAM_NAME="Spotify"
+# Get instance ID from first argument (for multi-instance mode)
+INSTANCE_ID="$1"
+
+if [ -n "$INSTANCE_ID" ]; then
+    # Multi-instance mode
+    FIFO_PATH="/tmp/spotify-${INSTANCE_ID}-fifo"
+
+    # Get endpoint name from settings.json for stream name matching
+    if [ -f "/app/data/settings.json" ]; then
+        ENDPOINT_NAME=$(python3 -c "
+import json
+try:
+    with open('/app/data/settings.json', 'r') as f:
+        settings = json.load(f)
+        endpoints = settings.get('integrations', {}).get('spotify', {}).get('endpoints', [])
+        for ep in endpoints:
+            if ep.get('id') == '${INSTANCE_ID}':
+                print(ep.get('deviceName', 'Endpoint ${INSTANCE_ID}'))
+                break
+        else:
+            print('Endpoint ${INSTANCE_ID}')
+except:
+    print('Endpoint ${INSTANCE_ID}')
+" 2>/dev/null)
+    else
+        ENDPOINT_NAME="Endpoint ${INSTANCE_ID}"
+    fi
+
+    STREAM_NAME="Spotify - ${ENDPOINT_NAME}"
+else
+    # Single-instance mode (legacy)
+    FIFO_PATH="/tmp/spotifyfifo"
+    STREAM_NAME="Spotify"
+fi
+
 CHECK_INTERVAL=1
 
-echo "[Spotify FIFO Keeper] Starting for $FIFO_PATH"
+echo "[Spotify FIFO Keeper] Starting for $FIFO_PATH (stream: $STREAM_NAME)"
 
 while true; do
     # Check if Spotify stream exists in Snapcast

@@ -1,0 +1,14 @@
+[global]
+device_name = "SPOTIFY_NAME"
+backend = "pipe"
+device = "/tmp/spotify-INSTANCE_ID-fifo"
+cache_path = "/tmp/spotify-INSTANCE_ID-cache"
+zeroconf_port = SPOTIFY_ZEROCONF_PORT
+use_mpris = true
+dbus_type = "system"
+bitrate = SPOTIFY_BITRATE
+audio_format = "S16"
+device_type = "speaker"
+volume_normalisation = true
+normalisation_pregain = -10
+initial_volume = 50

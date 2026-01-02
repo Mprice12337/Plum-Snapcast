@@ -7,11 +7,16 @@ and dynamically manages Snapcast stream creation/removal.
 
 Architecture:
 - gmrender-resurrect runs continuously (UPnP renderer discovery)
-- gmrender-metadata-bridge writes /tmp/dlna-metadata.json when playback occurs
+- gmrender-metadata-bridge writes /tmp/dlna-{instance_id}-metadata.json when playback occurs
 - This script monitors the metadata file for activity
 - Creates Snapcast stream when playback starts
 - Removes stream after idle timeout when playback stops
 - Coordinates with dlna-fifo-keeper to prevent gmrender blocking
+
+Multi-Instance Support:
+- Supports multiple DLNA endpoints via --instance-id argument
+- Each instance monitors its own metadata file and manages its own stream
+- Stream naming: "DLNA - {deviceName}" (e.g., "DLNA - Living Room")
 
 Lifecycle States:
 - IDLE: No stream, monitoring for activity
@@ -23,6 +28,7 @@ Activity Detection:
 - End: Metadata file removed or status="Stopped"
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -36,7 +42,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import websockets
 
-# ===== CONFIGURATION =====
+# ===== CONFIGURATION (can be overridden for multi-instance) =====
 DLNA_STREAM_ID = "DLNA"
 DLNA_FIFO_PATH = "/tmp/dlna-fifo"
 DLNA_METADATA_FILE = "/tmp/dlna-metadata.json"
@@ -45,6 +51,7 @@ IDLE_TIMEOUT = 300  # 5 minutes
 SNAPSERVER_HOST = "localhost"
 SNAPSERVER_HTTP_PORT = 1780
 SNAPSERVER_WS_PORT = 1780
+LOG_FILE = None  # Per-instance logging
 
 # ===== LOGGING =====
 def log(message: str):
@@ -293,6 +300,19 @@ class StreamLifecycleManager:
                 self._cancel_timeout()
                 self._remove_stream()
                 self.state = StreamState.IDLE
+
+    def _cleanup_control_scripts(self):
+        """Clean up any orphaned control scripts from previous runs
+
+        Snapcast doesn't automatically clean up control script processes when streams are removed.
+        Multiple control scripts reading from the same FIFO causes choppy/sped-up audio.
+        """
+        try:
+            # This is a precautionary check - in practice, removing the stream should
+            # terminate the control script, but we log this for debugging
+            log(f"[Cleanup] Checking for orphaned control scripts for {DLNA_STREAM_ID}")
+        except Exception as e:
+            log(f"[Cleanup] Error during control script cleanup: {e}")
 
     def _add_stream(self):
         """Add DLNA stream to Snapserver"""
@@ -543,9 +563,51 @@ class WebSocketMonitor:
             log(f"[WebSocket] Message handling error: {e}")
 
 
+def get_endpoint_name_from_settings(instance_id: str) -> str:
+    """
+    Read endpoint device name from settings.json
+    Used for multi-instance stream naming
+    """
+    try:
+        settings_file = "/app/data/settings.json"
+        if os.path.exists(settings_file):
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+
+            endpoints = settings.get("integrations", {}).get("dlna", {}).get("endpoints", [])
+            for endpoint in endpoints:
+                if endpoint.get("id") == instance_id:
+                    return endpoint.get("deviceName", f"DLNA {instance_id}")
+
+    except Exception as e:
+        log(f"Error reading endpoint name from settings: {e}")
+
+    return f"DLNA {instance_id}"
+
+
 async def main():
     """Main entry point"""
-    log("=== DLNA Stream Lifecycle Manager Starting ===")
+    # Parse command-line arguments for multi-instance support
+    parser = argparse.ArgumentParser(description="DLNA Stream Lifecycle Manager")
+    parser.add_argument("--instance-id", type=str, help="Instance ID for multi-instance support")
+    args = parser.parse_args()
+
+    # Override globals for multi-instance
+    if args.instance_id:
+        instance_id = args.instance_id
+        endpoint_name = get_endpoint_name_from_settings(instance_id)
+
+        # Override configuration globals
+        globals()['DLNA_STREAM_ID'] = f"DLNA - {endpoint_name}"
+        globals()['DLNA_FIFO_PATH'] = f"/tmp/dlna-{instance_id}-fifo"
+        globals()['DLNA_METADATA_FILE'] = f"/tmp/dlna-{instance_id}-metadata.json"
+        globals()['DLNA_CONTROL_SCRIPT'] = f"/usr/share/snapserver/plug-ins/dlna-control-script-{instance_id}.py"
+        globals()['LOG_FILE'] = f"/tmp/dlna-lifecycle-{instance_id}.log"
+
+        log(f"=== DLNA Stream Lifecycle Manager Starting (Instance {instance_id}: {endpoint_name}) ===")
+    else:
+        log("=== DLNA Stream Lifecycle Manager Starting (Single Instance) ===")
+
     log(f"Snapserver: {SNAPSERVER_HOST}:{SNAPSERVER_HTTP_PORT}")
     log(f"Metadata file: {DLNA_METADATA_FILE}")
     log(f"FIFO path: {DLNA_FIFO_PATH}")

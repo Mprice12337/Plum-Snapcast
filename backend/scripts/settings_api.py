@@ -11,8 +11,9 @@ import logging
 import os
 import re
 import subprocess
+import urllib.request
 from typing import Dict, Any
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,15 @@ DEFAULT_SETTINGS = {
     "hostname": "plum-snapcast",
     "integrations": {
         "airplay": {
-            "enabled": True,
-            "deviceName": "Plum Audio"
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": True,
+                    "deviceName": "Plum Audio",
+                    "port": 5050,
+                    "udpPortBase": 6001
+                }
+            ]
         },
         "bluetooth": {
             "enabled": False,
@@ -34,15 +42,18 @@ DEFAULT_SETTINGS = {
             "discoverable": True
         },
         "spotify": {
-            "enabled": False,
-            "sourceName": "Spotify",
-            "deviceName": "Plum Audio",
-            "bitrate": 320
+            "bitrate": 320,
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": False,
+                    "deviceName": "Plum Audio",
+                    "zeroconfPort": 5354
+                }
+            ]
         },
         "dlna": {
-            "enabled": False,
-            "sourceName": "DLNA",
-            "deviceName": "Plum Audio"
+            "endpoints": []  # Start with no DLNA endpoints (user can add via UI)
         },
         "plexamp": {
             "available": False,  # Determined by PLEXAMP_ENABLED env var
@@ -416,6 +427,40 @@ def create_settings_blueprint(settings_manager: SettingsManager = None) -> Bluep
 
         except Exception as e:
             logger.error(f"Hostname sanitization failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/settings/proxy/coverart/<path:filename>", methods=["GET"])
+    def proxy_coverart(filename):
+        """Proxy album art from Snapserver with CORS headers
+
+        This endpoint solves the CORS issue when ColorThief tries to extract
+        colors from album artwork. Snapserver doesn't send Access-Control-Allow-Origin
+        headers, so we proxy the images through our API which does.
+        """
+        try:
+            # Construct Snapserver URL (on localhost:1780)
+            snapserver_url = f"http://localhost:1780/coverart/{filename}"
+
+            # Fetch image from Snapserver
+            req = urllib.request.Request(snapserver_url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                image_data = response.read()
+                content_type = response.headers.get('Content-Type', 'image/jpeg')
+
+            # Return image with CORS headers
+            resp = Response(image_data, mimetype=content_type)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+            return resp
+
+        except urllib.error.HTTPError as e:
+            logger.error(f"Snapserver returned HTTP {e.code} for {filename}")
+            return jsonify({"error": f"Album art not found: {e.code}"}), e.code
+        except urllib.error.URLError as e:
+            logger.error(f"Failed to fetch album art from Snapserver: {e}")
+            return jsonify({"error": "Snapserver unreachable"}), 503
+        except Exception as e:
+            logger.error(f"Proxy coverart failed: {e}")
             return jsonify({"error": str(e)}), 500
 
     return bp

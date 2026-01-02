@@ -414,6 +414,130 @@ export const spotifyService = {
       throw error;
     }
   },
+
+  /**
+   * List all Spotify endpoints
+   */
+  async listEndpoints(): Promise<{ success: boolean; endpoints: Array<{id: string; enabled: boolean; deviceName: string; zeroconfPort: number}> }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/endpoints`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to list endpoints' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to list Spotify endpoints:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add a new Spotify endpoint
+   */
+  async addEndpoint(deviceName: string, enabled: boolean = true): Promise<{ success: boolean; message: string; endpoint?: any; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/endpoints`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to add endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to add Spotify endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update an existing Spotify endpoint
+   */
+  async updateEndpoint(endpointId: string, deviceName?: string, enabled?: boolean): Promise<{ success: boolean; message: string; endpoint?: any; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/endpoints/${endpointId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update Spotify endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove a Spotify endpoint
+   */
+  async removeEndpoint(endpointId: string): Promise<{ success: boolean; message: string; restart_required?: boolean }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/endpoints/${endpointId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to remove endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to remove Spotify endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update Spotify bitrate (shared across all endpoints)
+   * WARNING: This will restart ALL Spotify instances and interrupt active playback.
+   */
+  async updateBitrate(bitrate: 96 | 160 | 320): Promise<{ success: boolean; message: string; warning?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/spotify/bitrate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ bitrate }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update bitrate' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update Spotify bitrate:', error);
+      throw error;
+    }
+  },
 };
 
 /**
@@ -507,6 +631,104 @@ export const dlnaService = {
       return await response.json();
     } catch (error) {
       console.error('Failed to update DLNA device name:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * List all DLNA endpoints
+   */
+  async listEndpoints(): Promise<{ success: boolean; endpoints: any[]; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to list DLNA endpoints' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to list DLNA endpoints:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add a new DLNA endpoint
+   */
+  async addEndpoint(deviceName: string, enabled: boolean = true): Promise<{ success: boolean; endpoint: any; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to add DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to add DLNA endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update an existing DLNA endpoint
+   */
+  async updateEndpoint(endpointId: string, updates: { deviceName?: string; enabled?: boolean }): Promise<{ success: boolean; endpoint: any; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints/${endpointId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update DLNA endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove a DLNA endpoint
+   */
+  async removeEndpoint(endpointId: string): Promise<{ success: boolean; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints/${endpointId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to remove DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to remove DLNA endpoint:', error);
       throw error;
     }
   },

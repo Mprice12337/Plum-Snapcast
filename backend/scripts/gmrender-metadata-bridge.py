@@ -7,12 +7,18 @@ Based on HiFiBerry's dlna-mpris approach:
 - Tails gmrender's log output
 - Parses CurrentTrackMetaData (DIDL-Lite XML)
 - Extracts title, artist, album, artwork
-- Writes to /tmp/dlna-metadata.json for control script
+- Writes to /tmp/dlna-{instance_id}-metadata.json for control script
+
+Multi-Instance Support:
+- Supports multiple DLNA endpoints via --instance-id argument
+- Each instance monitors its own gmrender log file
+- Writes to instance-specific metadata file
 
 Architecture:
   gmrender logs → this script → JSON file → control script → Snapcast
 """
 
+import argparse
 import json
 import re
 import sys
@@ -257,7 +263,21 @@ def tail_poll_log():
 
 def main():
     """Main entry point"""
-    log("Starting gmrender metadata bridge (stdout parser)...")
+    # Parse command-line arguments for multi-instance support
+    parser = argparse.ArgumentParser(description="gmrender Metadata Bridge")
+    parser.add_argument("--instance-id", type=str, help="Instance ID for multi-instance support")
+    args = parser.parse_args()
+
+    # Override globals for multi-instance
+    if args.instance_id:
+        instance_id = args.instance_id
+        globals()['METADATA_FILE'] = f"/tmp/dlna-{instance_id}-metadata.json"
+        globals()['LOG_FILE'] = f"/var/log/supervisord/gmrender-{instance_id}.log"
+        log(f"Starting gmrender metadata bridge (instance {instance_id})...")
+        log(f"Monitoring log: {LOG_FILE}")
+        log(f"Writing to: {METADATA_FILE}")
+    else:
+        log("Starting gmrender metadata bridge (single instance)...")
 
     # Try tail -F first (better), fall back to polling
     tail_follow_log()

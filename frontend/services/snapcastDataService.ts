@@ -160,8 +160,17 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
             // Data URL - use directly
             resolvedUrl = metadata.artUrl;
         } else if (metadata.artUrl.startsWith('/')) {
-            // Relative path - prepend Snapcast HTTP server URL
-            resolvedUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            // Relative path from Snapserver
+            // Route through our CORS proxy for /coverart/ paths to enable ColorThief extraction
+            if (metadata.artUrl.startsWith('/coverart/')) {
+                // Extract filename and use proxy endpoint (runs on federation service port 5001)
+                const filename = metadata.artUrl.replace('/coverart/', '');
+                const apiPort = window.location.hostname === 'localhost' ? '5001' : '5001';
+                resolvedUrl = `http://${window.location.hostname}:${apiPort}/api/settings/proxy/coverart/${filename}`;
+            } else {
+                // Other relative paths - use Snapserver directly
+                resolvedUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+            }
         } else {
             // Absolute URL - use directly
             resolvedUrl = metadata.artUrl;
