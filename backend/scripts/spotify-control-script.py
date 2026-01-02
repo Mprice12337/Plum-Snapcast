@@ -236,8 +236,8 @@ class SpotifyMetadataMonitor:
             if 'mpris:length' in metadata_dict:
                 # MPRIS length is in microseconds
                 length_us = int(metadata_dict['mpris:length'])
-                result['duration'] = length_us // 1000  # Convert to milliseconds
-                log(f"[Metadata] Duration: {result['duration']}ms")
+                result['duration'] = length_us // 1_000_000  # Convert to seconds
+                log(f"[Metadata] Duration: {result['duration']}s")
 
         except Exception as e:
             log(f"[Error] Metadata extraction failed: {e}")
@@ -293,9 +293,9 @@ class SpotifyMetadataMonitor:
             # Check if position changed
             if 'Position' in changed:
                 position_us = int(changed['Position'])
-                position_ms = position_us // 1000
-                log(f"[DBus] Position changed: {position_ms}ms")
-                self.store.update(position=position_ms)
+                position_s = position_us // 1_000_000
+                log(f"[DBus] Position changed: {position_s}s")
+                self.store.update(position=position_s)
                 # Trigger update for position changes to keep frontend in sync
                 if self.on_update:
                     self.on_update()
@@ -397,33 +397,33 @@ class SpotifyMetadataMonitor:
                     try:
                         # Get current position from MPRIS
                         position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
-                        position_ms = int(position_us) // 1000
+                        position_s = int(position_us) // 1_000_000
 
                         # Always update store with latest position
-                        self.store.update(position=position_ms)
+                        self.store.update(position=position_s)
 
                         # Only send update if position actually changed from last poll
                         # This detects seeks, track changes, and initial connection
                         if last_position_value is None:
                             # Initial connection
-                            log(f"[DBus] Position changed: {position_ms}ms (initial)")
+                            log(f"[DBus] Position changed: {position_s}s (initial)")
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_ms
-                        elif abs(position_ms - last_position_value) > 1500:
+                            last_position_value = position_s
+                        elif abs(position_s - last_position_value) > 2:
                             # Position changed significantly (seek, track change, or mid-track start)
-                            # Allow 1.5s tolerance for polling delay
-                            if position_ms < 5000:
+                            # Allow 2s tolerance for polling delay
+                            if position_s < 5:
                                 reason = "track_change"
                             else:
                                 reason = "seek"
-                            log(f"[DBus] Position changed: {last_position_value}ms → {position_ms}ms ({reason})")
+                            log(f"[DBus] Position changed: {last_position_value}s → {position_s}s ({reason})")
                             if self.on_update:
                                 self.on_update()
-                            last_position_value = position_ms
+                            last_position_value = position_s
                         else:
                             # Position progressing normally, just track it
-                            last_position_value = position_ms
+                            last_position_value = position_s
 
                     except Exception:
                         # Player might not be ready yet
