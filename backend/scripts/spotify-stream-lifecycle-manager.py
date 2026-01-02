@@ -722,12 +722,13 @@ def main():
         # Use format "Spotify - [device name]" for stream display name
         globals()['SPOTIFY_STREAM_ID'] = f"Spotify - {endpoint_name}" if endpoint_name else f"Spotify-{instance_id}"
         globals()['SPOTIFY_FIFO_PATH'] = f"/tmp/spotify-{instance_id}-fifo"
-        globals()['SPOTIFY_CONTROL_SCRIPT'] = "/usr/share/snapserver/plug-ins/spotify-control-script.py"
+        globals()['SPOTIFY_CONTROL_SCRIPT'] = f"/usr/share/snapserver/plug-ins/spotify-control-script-{instance_id}.py"
         globals()['LOG_FILE'] = f"/tmp/spotify-lifecycle-{instance_id}.log"
 
         print(f"[Init] Multi-instance lifecycle manager: instance={instance_id}", file=sys.stderr)
         print(f"[Init] Stream ID: {globals()['SPOTIFY_STREAM_ID']}", file=sys.stderr)
         print(f"[Init] FIFO: {globals()['SPOTIFY_FIFO_PATH']}", file=sys.stderr)
+        print(f"[Init] Control Script: {globals()['SPOTIFY_CONTROL_SCRIPT']}", file=sys.stderr)
 
     # Use local variables instead of modifying globals
     snapserver_host = args.snapserver_host
