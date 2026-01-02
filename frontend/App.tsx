@@ -730,11 +730,27 @@ const App: React.FC = () => {
                         console.log(`[Metadata] artUrl received: type=${artUrlType}, preview=${artUrlPreview}`);
 
                         if (metadata.artUrl && metadata.artUrl.trim() !== '') {
-                            // Transform artUrl: relative paths need Snapcast HTTP URL prefix
+                            // Transform artUrl: relative paths need proper routing
                             let resolvedArtUrl = metadata.artUrl;
-                            if (metadata.artUrl.startsWith('/')) {
-                                resolvedArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+
+                            // Check if it's a data URL (embedded image)
+                            if (metadata.artUrl.startsWith('data:')) {
+                                // Data URL - use directly
+                                resolvedArtUrl = metadata.artUrl;
+                            } else if (metadata.artUrl.startsWith('/')) {
+                                // Relative path from Snapserver
+                                // Route through our CORS proxy for /coverart/ paths to enable ColorThief extraction
+                                if (metadata.artUrl.startsWith('/coverart/')) {
+                                    // Extract filename and use proxy endpoint (runs on federation service port 5001)
+                                    const filename = metadata.artUrl.replace('/coverart/', '');
+                                    const apiPort = window.location.hostname === 'localhost' ? '5001' : '5001';
+                                    resolvedArtUrl = `http://${window.location.hostname}:${apiPort}/api/settings/proxy/coverart/${filename}`;
+                                } else {
+                                    // Other relative paths - use Snapserver directly
+                                    resolvedArtUrl = `${snapcastService.getHttpUrl()}${metadata.artUrl}`;
+                                }
                             }
+                            // else: absolute URL - use directly
 
                             // Validate artwork URL before using it
                             if (isValidAlbumArtUrl(resolvedArtUrl)) {
