@@ -53,9 +53,7 @@ DEFAULT_SETTINGS = {
             ]
         },
         "dlna": {
-            "enabled": False,
-            "sourceName": "DLNA",
-            "deviceName": "Plum Audio"
+            "endpoints": []  # Start with no DLNA endpoints (user can add via UI)
         },
         "plexamp": {
             "available": False,  # Determined by PLEXAMP_ENABLED env var

@@ -1186,6 +1186,67 @@ def create_integrations_blueprint(
             logger.error(f"Spotify update bitrate failed: {e}")
             return jsonify({"success": False, "message": str(e)}), 500
 
+    # DLNA/UPnP Endpoints Management (multi-instance support)
+    from dlna_endpoints_api import DLNAEndpointsManager
+    dlna_endpoints_manager = DLNAEndpointsManager()
+
+    @bp.route("/api/integrations/dlna/endpoints", methods=["GET"])
+    def dlna_list_endpoints():
+        """List all DLNA/UPnP endpoints"""
+        try:
+            result = dlna_endpoints_manager.list_endpoints()
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"DLNA list endpoints failed: {e}")
+            return jsonify({"success": False, "message": str(e), "endpoints": []}), 500
+
+    @bp.route("/api/integrations/dlna/endpoints", methods=["POST"])
+    def dlna_add_endpoint():
+        """Add new DLNA/UPnP endpoint"""
+        try:
+            data = request.get_json()
+            if not data or "deviceName" not in data:
+                return jsonify({"success": False, "message": "deviceName is required"}), 400
+
+            device_name = data["deviceName"]
+            enabled = data.get("enabled", True)
+
+            result = dlna_endpoints_manager.add_endpoint(device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA add endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/dlna/endpoints/<endpoint_id>", methods=["PUT"])
+    def dlna_update_endpoint(endpoint_id):
+        """Update existing DLNA/UPnP endpoint"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "message": "Request body is required"}), 400
+
+            device_name = data.get("deviceName")
+            enabled = data.get("enabled")
+
+            result = dlna_endpoints_manager.update_endpoint(endpoint_id, device_name, enabled)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA update endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    @bp.route("/api/integrations/dlna/endpoints/<endpoint_id>", methods=["DELETE"])
+    def dlna_remove_endpoint(endpoint_id):
+        """Remove DLNA/UPnP endpoint"""
+        try:
+            result = dlna_endpoints_manager.remove_endpoint(endpoint_id)
+            status_code = 200 if result["success"] else 400
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.error(f"DLNA remove endpoint failed: {e}")
+            return jsonify({"success": False, "message": str(e)}), 500
+
     # Bluetooth endpoints
     @bp.route("/api/integrations/bluetooth/enable", methods=["POST"])
     def bluetooth_enable():

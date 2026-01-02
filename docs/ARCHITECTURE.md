@@ -433,6 +433,49 @@ Services: `airplay`, `bluetooth`, `spotify`, `dlna`
 }
 ```
 
+#### Spotify Endpoints API
+- **Base URL**: `/api/integrations/spotify/endpoints`
+- **Implementation**: `backend/scripts/spotify_endpoints_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/integrations/spotify/endpoints` | List all Spotify endpoints |
+| POST | `/api/integrations/spotify/endpoints` | Add new endpoint |
+| PUT | `/api/integrations/spotify/endpoints/:id` | Update endpoint |
+| DELETE | `/api/integrations/spotify/endpoints/:id` | Remove endpoint |
+
+**Endpoint Object**:
+```json
+{
+  "id": "1",
+  "enabled": true,
+  "deviceName": "Living Room",
+  "zeroconfPort": 5354
+}
+```
+
+#### DLNA Endpoints API
+- **Base URL**: `/api/integrations/dlna/endpoints`
+- **Implementation**: `backend/scripts/dlna_endpoints_api.py`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/integrations/dlna/endpoints` | List all DLNA endpoints |
+| POST | `/api/integrations/dlna/endpoints` | Add new endpoint |
+| PUT | `/api/integrations/dlna/endpoints/:id` | Update endpoint |
+| DELETE | `/api/integrations/dlna/endpoints/:id` | Remove endpoint |
+
+**Endpoint Object**:
+```json
+{
+  "id": "1",
+  "enabled": true,
+  "deviceName": "Living Room",
+  "port": 49494,
+  "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
 #### Audio Configuration API
 - **Base URL**: `/api/audio`
 - **Implementation**: `backend/scripts/audio_api.py`

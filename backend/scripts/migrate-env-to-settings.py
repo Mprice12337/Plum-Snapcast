@@ -109,6 +109,33 @@ def main():
             "endpoints": []  # Start with no endpoints
         }
 
+    # Handle DLNA/UPnP endpoint migration
+    # If existing settings has old format (single endpoint), migrate to new format (array of endpoints)
+    import uuid as uuid_lib
+    existing_dlna = existing_settings.get("integrations", {}).get("dlna", {})
+    if "endpoints" in existing_dlna:
+        # Already using new multi-endpoint format
+        dlna_config = existing_dlna
+    elif "deviceName" in existing_dlna or "enabled" in existing_dlna:
+        # Old single-endpoint format - migrate to array
+        # CRITICAL: Preserve enabled state from existing config
+        dlna_config = {
+            "endpoints": [
+                {
+                    "id": "1",
+                    "enabled": existing_dlna.get("enabled", bool_from_env(os.getenv("DLNA_ENABLED"), False)),
+                    "deviceName": existing_dlna.get("deviceName", os.getenv("DLNA_DEVICE_NAME", "Plum Audio")),
+                    "port": 49494,
+                    "uuid": existing_dlna.get("uuid", str(uuid_lib.uuid4()))
+                }
+            ]
+        }
+    else:
+        # No existing DLNA config - create default (disabled by default)
+        dlna_config = {
+            "endpoints": []  # Start with no endpoints
+        }
+
     settings = {
         "deviceName": existing_settings.get("deviceName", default_device_name),
         "hostname": existing_settings.get("hostname", sanitize_hostname(default_device_name)),
@@ -122,11 +149,7 @@ def main():
                 "discoverable": bool_from_env(os.getenv("BLUETOOTH_DISCOVERABLE"), True)
             },
             "spotify": spotify_config,
-            "dlna": {
-                "enabled": bool_from_env(os.getenv("DLNA_ENABLED"), False),
-                "sourceName": os.getenv("DLNA_SOURCE_NAME", "DLNA"),
-                "deviceName": os.getenv("DLNA_DEVICE_NAME", "Plum Audio")
-            },
+            "dlna": dlna_config,
             "plexamp": {
                 # Check if Plexamp is available (configured in docker-compose)
                 "available": bool_from_env(os.getenv("PLEXAMP_ENABLED"), False),

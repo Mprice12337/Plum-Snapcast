@@ -125,11 +125,19 @@ def main():
     print(f"export SPOTIFY_SOURCE_NAME=\"Spotify\"")
     print(f"export SPOTIFY_DEVICE_NAME=\"{first_spotify_endpoint.get('deviceName', 'Plum Audio')}\"")
 
-    # DLNA settings
+    # DLNA settings - multi-instance support
     dlna = integrations.get('dlna', {})
-    print(f"export DLNA_ENABLED={bool_to_env(dlna.get('enabled', False))}")
-    print(f"export DLNA_SOURCE_NAME=\"{dlna.get('sourceName', 'DLNA')}\"")
-    print(f"export DLNA_DEVICE_NAME=\"{dlna.get('deviceName', 'Plum Audio')}\"")
+    dlna_endpoints = dlna.get('endpoints', [])
+
+    # Export endpoints as JSON string (will be parsed by setup script)
+    print(f"export DLNA_ENDPOINTS_JSON='{json.dumps(dlna_endpoints)}'")
+
+    # Legacy env vars for backward compatibility (uses first endpoint)
+    first_dlna_endpoint = dlna_endpoints[0] if dlna_endpoints else {"enabled": False, "deviceName": "Plum Audio"}
+    print(f"export DLNA_ENABLED={bool_to_env(first_dlna_endpoint.get('enabled', False))}")
+    print(f"export DLNA_SOURCE_NAME=\"DLNA\"")
+    print(f"export DLNA_DEVICE_NAME=\"{first_dlna_endpoint.get('deviceName', 'Plum Audio')}\"")
+    print(f"export DLNA_UUID=\"{first_dlna_endpoint.get('uuid', '')}\"")
 
     # Plexamp settings (only enable if both available AND enabled)
     plexamp = integrations.get('plexamp', {})

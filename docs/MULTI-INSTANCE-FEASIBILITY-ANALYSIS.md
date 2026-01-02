@@ -1,5 +1,9 @@
 # Multi-Instance Support Feasibility Analysis
 
+> **Status**: ✅ COMPLETED - Both Spotify Connect and DLNA/UPnP multi-instance implementations are complete and merged to main.
+>
+> This document served as the feasibility analysis and is preserved for historical reference.
+
 ## Executive Summary
 
 Based on thorough research of the codebase and underlying technologies, here's the feasibility assessment for multi-instance support:

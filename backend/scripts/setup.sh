@@ -211,6 +211,17 @@ if [ -f /app/supervisord/snapclient.ini ]; then
     echo "Disabled old single-instance Spotify services in snapclient.ini"
 fi
 
+# DLNA/UPnP Endpoint Configuration (always use multi-instance approach)
+# Endpoints are configured via settings.json and parsed by get-settings.py
+echo "Setting up DLNA/UPnP endpoints..."
+bash /app/scripts/setup-dlna-multi-instance.sh
+
+# Disable old single-instance DLNA components (if they exist)
+if [ -f /app/supervisord/gmrender.ini ]; then
+    sed -i '/^\[program:gmrender\]/,/^$/s/^autostart=true/autostart=false/' /app/supervisord/gmrender.ini 2>/dev/null || true
+    echo "Disabled old single-instance DLNA service in gmrender.ini"
+fi
+
 # Note: Federation API server always runs to provide Settings API
 # Federation features (multi-server control) are enabled/disabled via settings
 echo "Federation API server enabled (provides settings API)"

@@ -634,6 +634,104 @@ export const dlnaService = {
       throw error;
     }
   },
+
+  /**
+   * List all DLNA endpoints
+   */
+  async listEndpoints(): Promise<{ success: boolean; endpoints: any[]; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to list DLNA endpoints' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to list DLNA endpoints:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add a new DLNA endpoint
+   */
+  async addEndpoint(deviceName: string, enabled: boolean = true): Promise<{ success: boolean; endpoint: any; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deviceName, enabled }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to add DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to add DLNA endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update an existing DLNA endpoint
+   */
+  async updateEndpoint(endpointId: string, updates: { deviceName?: string; enabled?: boolean }): Promise<{ success: boolean; endpoint: any; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints/${endpointId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to update DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to update DLNA endpoint:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove a DLNA endpoint
+   */
+  async removeEndpoint(endpointId: string): Promise<{ success: boolean; message?: string }> {
+    try {
+      const response = await fetch(`${API_BASE}/dlna/endpoints/${endpointId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to remove DLNA endpoint' }));
+        throw new Error(errorData.message || `HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to remove DLNA endpoint:', error);
+      throw error;
+    }
+  },
 };
 
 /**

@@ -377,6 +377,15 @@ export interface SpotifyEndpoint {
     zeroconfPort: number;
 }
 
+// DLNA/UPnP Endpoint
+export interface DLNAEndpoint {
+    id: string;
+    enabled: boolean;
+    deviceName: string;
+    port: number;
+    uuid: string;
+}
+
 export interface Settings {
     deviceName: string;
     hostname: string;
@@ -396,9 +405,7 @@ export interface Settings {
             endpoints: SpotifyEndpoint[];
         };
         dlna: {
-            enabled: boolean;
-            sourceName: string;
-            deviceName: string;
+            endpoints: DLNAEndpoint[];
         };
         plexamp: {
             available: boolean;
