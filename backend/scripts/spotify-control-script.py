@@ -404,19 +404,25 @@ class SpotifyMetadataMonitor:
                         if last_position_value is not None:
                             position_delta = position_s - last_position_value
 
+                            # DEBUG: Log every position poll to track resume behavior
+                            log(f"[Position Poll] pos={position_s}s, delta={position_delta}s, status={current_status_in_store}, stall_count={position_stall_count}")
+
                             # Position advanced by ~1 second (accounting for poll interval)
                             if 0 < position_delta <= 2:
                                 position_is_advancing = True
                                 position_stall_count = 0
                                 last_position_change_time = time.time()
+                                log(f"[Position] Advancing detected (delta={position_delta}s)")
                             # Position jumped (seek/track change)
                             elif abs(position_delta) > 2:
                                 position_is_advancing = True
                                 position_stall_count = 0
                                 last_position_change_time = time.time()
+                                log(f"[Position] Jump detected (delta={position_delta}s)")
                             # Position stalled (not advancing)
                             else:
                                 position_stall_count += 1
+                                log(f"[Position] Stalled (delta={position_delta}s, stall_count={position_stall_count})")
 
                         # Infer playback state from position behavior
                         inferred_status = current_status_in_store
@@ -424,17 +430,20 @@ class SpotifyMetadataMonitor:
                         if position_is_advancing and current_status_in_store != "Playing":
                             # Position is advancing but we think it's paused → must be playing
                             inferred_status = "Playing"
-                            log(f"[State] Position advancing → Playing (spotifyd bug workaround)")
+                            log(f"[State] INFERENCE: Position advancing → Playing (current={current_status_in_store})")
                         elif position_stall_count >= 2 and current_status_in_store == "Playing":
                             # Position stalled for 2+ seconds while playing → must be paused
                             inferred_status = "Paused"
-                            log(f"[State] Position stalled {position_stall_count}s → Paused (spotifyd bug workaround)")
+                            log(f"[State] INFERENCE: Position stalled {position_stall_count}s → Paused (current={current_status_in_store})")
 
                         # Update playback state if it changed
                         if inferred_status != current_status_in_store:
+                            log(f"[State] STATE CHANGE: {current_status_in_store} → {inferred_status}, calling on_update()")
                             self.store.update(playback_status=inferred_status)
                             if self.on_update:
                                 self.on_update()
+                            else:
+                                log("[State] WARNING: on_update callback is None!")
                             current_status_in_store = inferred_status
 
                         # Update position in store
