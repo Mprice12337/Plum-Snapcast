@@ -44,6 +44,7 @@ LOG_FILE = "/tmp/spotify-stream-lifecycle-manager.log"
 
 # Timeout configuration (in seconds)
 IDLE_TIMEOUT = 300  # 5 minutes - time to wait after playback stops before removing stream
+STREAM_INIT_GRACE_PERIOD = 3  # 3 seconds - ignore pauses immediately after stream creation (spotifyd pipe initialization)
 
 # Stream configuration
 SPOTIFY_STREAM_ID = "Spotify"
@@ -68,6 +69,26 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+
+def get_spotifyd_pid(instance_id: str) -> Optional[str]:
+    """
+    Get PID of spotifyd process for specific instance.
+    Used for MPRIS service name detection (org.mpris.MediaPlayer2.spotifyd.instance[PID])
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"spotifyd.*spotifyd-{instance_id}.conf"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Return first PID if multiple found
+            return result.stdout.strip().split('\n')[0]
+    except:
+        pass
+    return None
 
 
 class SnapserverClient:
@@ -307,6 +328,7 @@ class StreamLifecycleManager:
         self.state_lock = threading.Lock()
         self.timeout_timer = None
         self.instance_id = instance_id  # Instance ID for multi-instance mode
+        self.stream_added_at = None  # Track when stream was added (for grace period)
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
 
@@ -333,6 +355,14 @@ class StreamLifecycleManager:
         """Handle spotifyd playback stopped (Paused/Stopped)"""
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
+                # Check if we're within grace period after stream creation
+                # Ignore pause events during spotifyd pipe initialization
+                if self.stream_added_at is not None:
+                    time_since_added = time.time() - self.stream_added_at
+                    if time_since_added < STREAM_INIT_GRACE_PERIOD:
+                        log(f"Event: Playback STOPPED - State: ACTIVE (ignoring - within {STREAM_INIT_GRACE_PERIOD}s grace period, {time_since_added:.1f}s since stream added)")
+                        return
+
                 # Playback stopped - start timeout before removal
                 log(f"Event: Playback STOPPED - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
                 self._start_timeout()
@@ -343,6 +373,26 @@ class StreamLifecycleManager:
 
             elif self.state == StreamState.TIMEOUT:
                 log("Event: Playback STOPPED - State: TIMEOUT (already waiting)")
+
+    def on_client_disconnected(self):
+        """Handle Spotify client disconnect - immediate stream removal"""
+        with self.state_lock:
+            if self.state == StreamState.ACTIVE:
+                # Client disconnected while playing/paused - remove immediately
+                log("Event: Client DISCONNECTED - State: ACTIVE → IDLE (immediate removal)")
+                self._cancel_timeout()  # Cancel any pending timeout
+                self._remove_stream()
+                self.state = StreamState.IDLE
+
+            elif self.state == StreamState.TIMEOUT:
+                # Client disconnected during timeout - remove immediately
+                log("Event: Client DISCONNECTED - State: TIMEOUT → IDLE (immediate removal)")
+                self._cancel_timeout()
+                self._remove_stream()
+                self.state = StreamState.IDLE
+
+            elif self.state == StreamState.IDLE:
+                log("Event: Client DISCONNECTED - State: IDLE (no stream to remove)")
 
     def on_status_idle(self):
         """Handle Snapcast status change to 'idle' - DISABLED
@@ -396,6 +446,9 @@ class StreamLifecycleManager:
             self._start_fifo_keeper()
             return
 
+        # Record when stream was added (for grace period to ignore initial pause during pipe init)
+        self.stream_added_at = time.time()
+
     def _remove_stream(self):
         """Remove Spotify stream from Snapserver"""
         # CRITICAL: Move all clients to fallback 'none' stream BEFORE removing this stream
@@ -413,6 +466,9 @@ class StreamLifecycleManager:
 
         # Start FIFO keeper to prevent spotifyd from blocking
         self._start_fifo_keeper()
+
+        # Reset stream creation timestamp
+        self.stream_added_at = None
 
     def _start_timeout(self):
         """Start timeout timer before removing stream"""
@@ -553,10 +609,12 @@ class StreamLifecycleManager:
 class SpotifyPlaybackMonitor:
     """Monitor spotifyd D-Bus MPRIS interface for playback state changes"""
 
-    def __init__(self, lifecycle_manager: StreamLifecycleManager):
+    def __init__(self, lifecycle_manager: StreamLifecycleManager, instance_id: Optional[str] = None):
         self.manager = lifecycle_manager
+        self.instance_id = instance_id  # Instance ID for multi-instance mode
         self.bus = None
         self.current_playback_status = None
+        self.expected_mpris_name = None  # The MPRIS service name we should listen to
 
         if not DBUS_AVAILABLE:
             log("[Spotify] D-Bus not available - monitoring disabled")
@@ -576,9 +634,76 @@ class SpotifyPlaybackMonitor:
                 log("[Spotify] Failed to connect to any D-Bus")
                 self.bus = None
 
+    def _is_our_instance(self, sender):
+        """Check if the D-Bus sender corresponds to our spotifyd instance
+
+        Args:
+            sender: D-Bus bus name (e.g., ":1.8")
+
+        Returns:
+            True if sender is our instance, False otherwise
+        """
+        try:
+            # If we already know our MPRIS service name, no need to check
+            if self.expected_mpris_name:
+                # Get the owner of our expected service name
+                bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+                bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
+                try:
+                    owner = bus_interface.GetNameOwner(self.expected_mpris_name)
+                    return str(owner) == sender
+                except dbus.DBusException:
+                    # Service doesn't exist anymore
+                    return False
+
+            # We don't know our MPRIS name yet - need to discover it from the sender
+            # Get list of all names owned by this sender
+            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
+            all_names = bus_interface.ListNames()
+
+            # Find MPRIS service names owned by this sender
+            for name in all_names:
+                if name.startswith('org.mpris.MediaPlayer2.spotifyd'):
+                    try:
+                        owner = bus_interface.GetNameOwner(name)
+                        if str(owner) == sender:
+                            # This sender owns this MPRIS service - check if it's our instance
+                            if self.instance_id:
+                                # Multi-instance: Check PID match
+                                instance_pid = get_spotifyd_pid(self.instance_id)
+                                if instance_pid and name == f"org.mpris.MediaPlayer2.spotifyd.instance{instance_pid}":
+                                    # This is our instance! Store it for future checks
+                                    self.expected_mpris_name = name
+                                    log(f"[DBus] Discovered our MPRIS service: {name}")
+                                    return True
+                                # Also check base name for instance 1 fallback
+                                elif self.instance_id == "1" and name == "org.mpris.MediaPlayer2.spotifyd":
+                                    self.expected_mpris_name = name
+                                    log(f"[DBus] Discovered our MPRIS service (base name): {name}")
+                                    return True
+                            else:
+                                # Single-instance mode: Accept any spotifyd
+                                self.expected_mpris_name = name
+                                log(f"[DBus] Discovered MPRIS service: {name}")
+                                return True
+                    except dbus.DBusException:
+                        continue
+
+            return False
+
+        except Exception as e:
+            log(f"[Error] Failed to check if sender is our instance: {e}")
+            return False
+
     def _properties_changed_handler(self, interface, changed, invalidated, sender):
         """Handle D-Bus PropertiesChanged signals"""
         try:
+            # CRITICAL: Filter by sender to only process signals from our specific spotifyd instance
+            # Without this, all lifecycle managers receive signals from all spotifyd instances
+            if not self._is_our_instance(sender):
+                return
+
             # We're interested in MediaPlayer2.Player interface
             if interface != 'org.mpris.MediaPlayer2.Player':
                 return
@@ -586,7 +711,7 @@ class SpotifyPlaybackMonitor:
             # Check if PlaybackStatus property changed
             if 'PlaybackStatus' in changed:
                 playback_status = str(changed['PlaybackStatus']).lower()
-                log(f"[DBus] PlaybackStatus changed: {playback_status}")
+                log(f"[DBus] PlaybackStatus changed: {playback_status} (from {sender})")
 
                 if playback_status == 'playing':
                     # Playback started
@@ -605,53 +730,126 @@ class SpotifyPlaybackMonitor:
             log(f"[Error] Properties changed handler failed: {e}")
 
     def _scan_for_players(self):
-        """Scan for existing spotifyd player on D-Bus"""
+        """Scan for existing spotifyd player on D-Bus with instance-aware detection"""
         if not self.bus:
             return
 
         try:
-            # Get list of all D-Bus names
-            bus_proxy = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
-            bus_interface = dbus.Interface(bus_proxy, 'org.freedesktop.DBus')
-            all_names = bus_interface.ListNames()
+            # Multi-instance support: Try PID-based naming for instances 2+
+            mpris_names_to_try = []
 
-            # Look for any service starting with org.mpris.MediaPlayer2.spotifyd or librespot
-            prefixes = ['org.mpris.MediaPlayer2.spotifyd', 'org.mpris.MediaPlayer2.librespot']
+            if self.instance_id:
+                # Get spotifyd PID for this instance
+                instance_pid = get_spotifyd_pid(self.instance_id)
 
-            for name in all_names:
-                for prefix in prefixes:
-                    if name.startswith(prefix):
-                        try:
-                            player_obj = self.bus.get_object(name, '/org/mpris/MediaPlayer2')
-                            player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+                if instance_pid:
+                    # Try PID-based name first (instance 2+)
+                    pid_based_name = f"org.mpris.MediaPlayer2.spotifyd.instance{instance_pid}"
+                    mpris_names_to_try.append(pid_based_name)
+                    log(f"[DBus] Trying PID-based MPRIS name: {pid_based_name}")
 
-                            log(f"[DBus] ✓ Found Spotify player: {name}")
+                # Fallback to base name (instance 1)
+                base_name = "org.mpris.MediaPlayer2.spotifyd"
+                mpris_names_to_try.append(base_name)
+                log(f"[DBus] Fallback to base MPRIS name: {base_name}")
+            else:
+                # Single-instance mode: Try common names
+                mpris_names_to_try = [
+                    "org.mpris.MediaPlayer2.spotifyd",
+                    "org.mpris.MediaPlayer2.librespot"
+                ]
 
-                            # Get current playback status
-                            try:
-                                status = player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
-                                playback_status = str(status).lower()
-                                self.current_playback_status = playback_status
-                                log(f"[DBus] Current playback status: {playback_status}")
+            # Try each potential MPRIS name
+            for mpris_name in mpris_names_to_try:
+                try:
+                    player_obj = self.bus.get_object(mpris_name, '/org/mpris/MediaPlayer2')
+                    player_properties = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
 
-                                # If already playing, trigger stream creation
-                                if playback_status == 'playing':
-                                    log(f"[DBus] Spotify already playing - creating stream")
-                                    self.manager.on_playback_started()
+                    log(f"[DBus] ✓ Connected to player: {mpris_name}")
 
-                            except Exception as e:
-                                log(f"[DBus] Failed to get current playback status: {e}")
+                    # Store the MPRIS name we connected to so we can filter signals
+                    self.expected_mpris_name = mpris_name
+                    log(f"[DBus] Will only process signals from: {self.expected_mpris_name}")
 
-                            return
+                    # Get current playback status
+                    try:
+                        status = player_properties.Get('org.mpris.MediaPlayer2.Player', 'PlaybackStatus')
+                        playback_status = str(status).lower()
+                        self.current_playback_status = playback_status
+                        log(f"[DBus] Current playback status: {playback_status}")
 
-                        except dbus.DBusException as e:
-                            log(f"[DBus] Failed to connect to {name}: {e}")
-                            continue
+                        # If already playing, trigger stream creation
+                        if playback_status == 'playing':
+                            log(f"[DBus] Spotify already playing - creating stream")
+                            self.manager.on_playback_started()
+
+                    except Exception as e:
+                        log(f"[DBus] Failed to get current playback status: {e}")
+
+                    return  # Successfully connected
+
+                except dbus.DBusException as e:
+                    log(f"[DBus] Couldn't connect to {mpris_name}: {e}")
+                    continue
 
             log("[DBus] No Spotify player found yet (will monitor for connections)")
 
         except Exception as e:
             log(f"[Error] Player scan failed: {e}")
+
+    def _name_owner_changed_handler(self, name, old_owner, new_owner):
+        """Handle D-Bus NameOwnerChanged signals to detect client connects/disconnects"""
+        try:
+            # Log all spotifyd-related name changes for debugging
+            if 'spotifyd' in name.lower():
+                log(f"[DBus] NameOwnerChanged: {name} | old={old_owner} new={new_owner}")
+
+            # We only care about MPRIS spotifyd services
+            if not name.startswith('org.mpris.MediaPlayer2.spotifyd'):
+                return
+
+            log(f"[DBus] MPRIS service change detected: {name}")
+
+            # Check if this is our instance's MPRIS service
+            if self.instance_id:
+                instance_pid = get_spotifyd_pid(self.instance_id)
+                expected_name = f"org.mpris.MediaPlayer2.spotifyd.instance{instance_pid}" if instance_pid else None
+                base_name = "org.mpris.MediaPlayer2.spotifyd"
+
+                log(f"[DBus] Checking ownership - expected={expected_name}, base={base_name}, actual={name}")
+
+                # Not our instance - ignore
+                if name != expected_name and not (self.instance_id == "1" and name == base_name):
+                    log(f"[DBus] Not our instance - ignoring")
+                    return
+
+            # Service appeared (client connected)
+            if old_owner == "" and new_owner != "":
+                log(f"[DBus] Spotify client connected - MPRIS service appeared: {name}")
+                # Store this as our expected service name
+                self.expected_mpris_name = name
+                # Scan to get initial state
+                self._scan_for_players()
+
+            # Service disappeared (client disconnected)
+            elif old_owner != "" and new_owner == "":
+                log(f"[DBus] Spotify client disconnected - MPRIS service disappeared: {name}")
+
+                # Only act if this was our service
+                if self.expected_mpris_name == name:
+                    self.expected_mpris_name = None
+                    self.current_playback_status = None
+
+                    # Client disconnected - immediately remove stream (no timeout)
+                    log(f"[DBus] Client disconnect detected - removing stream immediately")
+                    self.manager.on_client_disconnected()
+                else:
+                    log(f"[DBus] Not our service (expected={self.expected_mpris_name}) - ignoring")
+
+        except Exception as e:
+            log(f"[Error] NameOwnerChanged handler failed: {e}")
+            import traceback
+            log(f"[Error] Traceback: {traceback.format_exc()}")
 
     def start(self):
         """Start monitoring D-Bus for Spotify playback state changes"""
@@ -669,7 +867,15 @@ class SpotifyPlaybackMonitor:
                 sender_keyword='sender'
             )
 
-            log("[Spotify] Subscribed to MPRIS D-Bus signals")
+            # Subscribe to NameOwnerChanged signals to detect client connects/disconnects
+            # This signal is emitted by the D-Bus daemon when service names are registered/unregistered
+            self.bus.add_signal_receiver(
+                self._name_owner_changed_handler,
+                dbus_interface='org.freedesktop.DBus',
+                signal_name='NameOwnerChanged'
+            )
+
+            log("[Spotify] Subscribed to MPRIS D-Bus signals and NameOwnerChanged")
 
             # Scan for already running Spotify player
             self._scan_for_players()
@@ -754,8 +960,8 @@ def main():
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
     ws_monitor.start()
 
-    # Create and start Spotify playback monitor
-    spotify_monitor = SpotifyPlaybackMonitor(lifecycle)
+    # Create and start Spotify playback monitor (pass instance_id for multi-instance filtering)
+    spotify_monitor = SpotifyPlaybackMonitor(lifecycle, instance_id=instance_id)
 
     # Run monitor (blocks)
     try:

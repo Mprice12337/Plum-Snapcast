@@ -89,7 +89,7 @@ class MetadataStore:
             "duration": None,
             "position": 0,
             "last_updated": None,
-            "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
+            "playback_status": "stopped",  # "playing", "paused", or "stopped" (lowercase for Snapcast)
         }
 
     def update(self, **kwargs):
@@ -245,14 +245,15 @@ class SpotifyMetadataMonitor:
         return result
 
     def _extract_playback_status(self, status_str: str) -> str:
-        """Convert MPRIS playback status to our format"""
-        # MPRIS statuses: "Playing", "Paused", "Stopped"
+        """Convert MPRIS playback status to Snapcast format (lowercase)"""
+        # MPRIS sends: "Playing", "Paused", "Stopped"
+        # Snapcast expects: "playing", "paused", "stopped"
         status_map = {
-            "playing": "Playing",
-            "paused": "Paused",
-            "stopped": "Stopped",
+            "playing": "playing",
+            "paused": "paused",
+            "stopped": "stopped",
         }
-        return status_map.get(status_str.lower(), "Stopped")
+        return status_map.get(status_str.lower(), "stopped")
 
     def _properties_changed_handler(self, interface, changed, invalidated, sender):
         """Handle D-Bus PropertiesChanged signals"""
@@ -289,6 +290,18 @@ class SpotifyMetadataMonitor:
                 log(f"[DBus] Status changed: {status}")
                 self.store.update(playback_status=status)
                 updated = True
+
+                # When transitioning to "playing", force immediate position read
+                # This catches position changes that occurred during pause/disconnect
+                # (spotifyd doesn't send Position property change when resuming)
+                if status == "playing" and self.player_properties:
+                    try:
+                        position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
+                        position_s = int(position_us) // 1_000_000
+                        log(f"[DBus] Force position read on play: {position_s}s")
+                        self.store.update(position=position_s)
+                    except Exception as e:
+                        log(f"[DBus] Failed to read position on play: {e}")
 
             # Check if position changed
             if 'Position' in changed:
@@ -376,80 +389,25 @@ class SpotifyMetadataMonitor:
     def _poll_position(self):
         """Background thread that polls position updates from D-Bus
 
-        IMPORTANT: spotifyd has a bug where PlaybackStatus property doesn't update
-        when pausing/resuming from remote Spotify clients (phone/desktop app).
-        See: https://github.com/Spotifyd/spotifyd/issues/668
-
-        Workaround: Infer playback state from position changes:
-        - If position stops advancing for 2+ seconds → Paused
-        - If position starts advancing again → Playing
+        Note: Playback state (Playing/Paused/Stopped) is handled by D-Bus property
+        change signals in _on_property_changed(). This method only tracks position
+        for timeline updates.
         """
-        log("[DBus] Position polling thread started (with playback state inference)")
+        log("[DBus] Position polling thread started")
         last_position_value = None
-        last_position_change_time = time.time()
-        position_stall_count = 0
 
         while True:
             try:
-                current_status_in_store = self.store.get_all().get("playback_status", "Stopped")
-
                 if self.player_properties:
                     try:
-                        # Always poll position (even when paused, to detect resume)
+                        # Poll current position
                         position_us = self.player_properties.Get('org.mpris.MediaPlayer2.Player', 'Position')
                         position_s = int(position_us) // 1_000_000
-
-                        # Detect playback state from position changes (spotifyd bug workaround)
-                        position_is_advancing = False
-                        if last_position_value is not None:
-                            position_delta = position_s - last_position_value
-
-                            # DEBUG: Log every position poll to track resume behavior
-                            log(f"[Position Poll] pos={position_s}s, delta={position_delta}s, status={current_status_in_store}, stall_count={position_stall_count}")
-
-                            # Position advanced by ~1 second (accounting for poll interval)
-                            if 0 < position_delta <= 2:
-                                position_is_advancing = True
-                                position_stall_count = 0
-                                last_position_change_time = time.time()
-                                log(f"[Position] Advancing detected (delta={position_delta}s)")
-                            # Position jumped (seek/track change)
-                            elif abs(position_delta) > 2:
-                                position_is_advancing = True
-                                position_stall_count = 0
-                                last_position_change_time = time.time()
-                                log(f"[Position] Jump detected (delta={position_delta}s)")
-                            # Position stalled (not advancing)
-                            else:
-                                position_stall_count += 1
-                                log(f"[Position] Stalled (delta={position_delta}s, stall_count={position_stall_count})")
-
-                        # Infer playback state from position behavior
-                        inferred_status = current_status_in_store
-
-                        if position_is_advancing and current_status_in_store != "Playing":
-                            # Position is advancing but we think it's paused → must be playing
-                            inferred_status = "Playing"
-                            log(f"[State] INFERENCE: Position advancing → Playing (current={current_status_in_store})")
-                        elif position_stall_count >= 2 and current_status_in_store == "Playing":
-                            # Position stalled for 2+ seconds while playing → must be paused
-                            inferred_status = "Paused"
-                            log(f"[State] INFERENCE: Position stalled {position_stall_count}s → Paused (current={current_status_in_store})")
-
-                        # Update playback state if it changed
-                        if inferred_status != current_status_in_store:
-                            log(f"[State] STATE CHANGE: {current_status_in_store} → {inferred_status}, calling on_update()")
-                            self.store.update(playback_status=inferred_status)
-                            if self.on_update:
-                                self.on_update()
-                            else:
-                                log("[State] WARNING: on_update callback is None!")
-                            current_status_in_store = inferred_status
 
                         # Update position in store
                         self.store.update(position=position_s)
 
-                        # Send position update to frontend if it changed significantly
+                        # Send position update to frontend on significant changes
                         if last_position_value is None:
                             # Initial connection
                             log(f"[DBus] Position: {position_s}s (initial)")
@@ -674,7 +632,7 @@ class SnapcastControlScript:
                 # Return COMPLETE properties object
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
                 state_data = self.store.get_all()
-                playback_status = state_data.get("playback_status", "Stopped")
+                playback_status = state_data.get("playback_status", "stopped")
                 position = state_data.get("position", 0)
                 can_control = self.spotify_monitor.is_available()
 
@@ -817,18 +775,45 @@ if __name__ == "__main__":
     # Parse command line arguments passed by Snapcast
     parser = argparse.ArgumentParser(description='Spotify metadata control script for Snapcast')
     parser.add_argument('--instance-id', required=False, help='Instance ID for multi-instance mode (1, 2, 3, etc.)')
-    parser.add_argument('--stream', required=False, default='Spotify', help='Stream ID')
+    parser.add_argument('--stream', required=False, help='Stream ID (auto-generated from instance-id if not provided)')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    # Multi-instance support: override log file path
+    # Multi-instance support: override log file path and construct stream ID
     if args.instance_id:
-        globals()['LOG_FILE'] = f"/tmp/spotify-control-script-{args.instance_id}.log"
-        log(f"[Init] Multi-instance control script: instance={args.instance_id}")
+        instance_id = args.instance_id
+        globals()['LOG_FILE'] = f"/tmp/spotify-control-script-{instance_id}.log"
+        log(f"[Init] Multi-instance control script: instance={instance_id}")
 
-    log(f"[Main] Starting with args: stream={args.stream}, instance={args.instance_id or 'default'}, host={args.snapcast_host}, port={args.snapcast_port}")
+        # Get endpoint name from settings.json for stream display name (must match lifecycle manager)
+        endpoint_name = None
+        try:
+            with open('/app/data/settings.json', 'r') as f:
+                settings = json.load(f)
+                endpoints = settings.get('integrations', {}).get('spotify', {}).get('endpoints', [])
+                for endpoint in endpoints:
+                    if endpoint.get('id') == instance_id:
+                        endpoint_name = endpoint.get('deviceName', f'Endpoint {instance_id}')
+                        break
+        except Exception as e:
+            log(f"[Init] WARNING: Could not read endpoint name from settings: {e}")
+            endpoint_name = f'Endpoint {instance_id}'
 
-    script = SnapcastControlScript(stream_id=args.stream, instance_id=args.instance_id)
+        # Generate stream ID to match lifecycle manager format: "Spotify - [device name]"
+        # This MUST match what the lifecycle manager uses when creating the stream
+        # Always use constructed name in multi-instance mode (ignore --stream arg)
+        stream_id = f"Spotify - {endpoint_name}" if endpoint_name else f"Spotify-{instance_id}"
+
+        log(f"[Init] Multi-instance mode: instance={instance_id}, stream={stream_id}")
+        log(f"[Init] Endpoint name: {endpoint_name}")
+    else:
+        # Single-instance mode (original behavior)
+        stream_id = args.stream if args.stream else 'Spotify'
+        log(f"[Init] Single-instance mode: stream={stream_id}")
+
+    log(f"[Main] Starting with args: stream={stream_id}, instance={args.instance_id or 'default'}, host={args.snapcast_host}, port={args.snapcast_port}")
+
+    script = SnapcastControlScript(stream_id=stream_id, instance_id=args.instance_id)
     script.run()
