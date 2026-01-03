@@ -47,6 +47,19 @@ class FederationAPI:
             """Health check endpoint"""
             return jsonify({"status": "healthy", "service": "federation"})
 
+        @self.app.route("/api/federation/info", methods=["GET"])
+        def get_info():
+            """Get local server information"""
+            try:
+                info = {
+                    "id": self.data_aggregator.local_server_id,
+                    "name": self.data_aggregator.local_server_name
+                }
+                return jsonify(info)
+            except Exception as e:
+                logger.error(f"Get info failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/api/federation/servers", methods=["GET"])
         def get_servers():
             """Get all discovered servers"""
@@ -320,12 +333,6 @@ class DataAggregator:
 
             for stream in server_streams:
                 stream_id = stream.get("id", "")
-
-                # Filter out none-* streams from remote servers
-                # Local none stream is kept, remote ones are hidden to avoid clutter
-                is_local_server = (conn.server_id == self.local_server_id)
-                if stream_id.startswith("none-") and not is_local_server:
-                    continue  # Skip remote none streams
 
                 federated_id = f"{conn.server_id}-{stream_id}"
 

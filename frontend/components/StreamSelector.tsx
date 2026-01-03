@@ -45,12 +45,15 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
     };
 
     const groupedStreams = React.useMemo(() => {
+        // Filter out none-* streams from dropdown (they're used internally but not selectable here)
+        const selectableStreams = streams.filter(s => !s.id.includes('none-'));
+
         if (!federationEnabled) {
-            return { ungrouped: streams };
+            return { ungrouped: selectableStreams };
         }
 
         const groups: { [serverName: string]: Stream[] } = {};
-        streams.forEach(stream => {
+        selectableStreams.forEach(stream => {
             const serverName = stream.serverName || 'Unknown Server';
             if (!groups[serverName]) {
                 groups[serverName] = [];

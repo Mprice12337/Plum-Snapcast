@@ -41,10 +41,10 @@ class ServerInfo:
 class AvahiDiscovery:
     """
     Discovers Snapcast servers using Avahi/mDNS
-    Looks for _snapcast-jsonrpc._tcp services
+    Looks for _snapcast-http._tcp services
     """
 
-    SERVICE_TYPE = "_snapcast-jsonrpc._tcp"
+    SERVICE_TYPE = "_snapcast-http._tcp"
     SCAN_INTERVAL = 30  # Rescan every 30 seconds
     STALE_TIMEOUT = 120  # Consider server stale after 2 minutes
 
@@ -106,18 +106,23 @@ class AvahiDiscovery:
         """Perform one scan for Snapcast servers"""
         try:
             # Use avahi-browse to discover services
-            # -t: terminate after timeout
             # -p: parseable output
             # -r: resolve host names
+            # Note: Not using -t to allow time for service resolution
+            # Using Python timeout instead for overall operation timeout
             result = subprocess.run(
-                ["avahi-browse", "-t", "-p", "-r", self.SERVICE_TYPE],
+                ["timeout", "8", "avahi-browse", "-p", "-r", self.SERVICE_TYPE],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
 
             if result.returncode != 0:
-                logger.warning(f"avahi-browse failed: {result.stderr}")
+                # Check if Avahi daemon is not running yet (common during startup)
+                if "Daemon not running" in result.stderr:
+                    logger.debug("Avahi daemon not ready yet, will retry on next scan")
+                else:
+                    logger.warning(f"avahi-browse failed: {result.stderr}")
                 return
 
             discovered = self._parse_avahi_output(result.stdout)
@@ -153,7 +158,8 @@ class AvahiDiscovery:
         Format: =;interface;protocol;name;type;domain;hostname;address;port;txt
         Example: =;eth0;IPv4;Snapcast;_snapcast-jsonrpc._tcp;local;raspberrypi.local;192.168.1.100;1780;"version=0.34.0"
         """
-        servers = []
+        # Use dict to deduplicate by hostname, preferring routable IPv4 addresses
+        servers_by_hostname = {}
 
         for line in output.splitlines():
             if not line.startswith("="):
@@ -170,6 +176,17 @@ class AvahiDiscovery:
                 address = parts[7]
                 port = int(parts[8])
 
+                # Skip unwanted addresses
+                # Skip IPv6 link-local (fe80::)
+                if address.startswith("fe80:"):
+                    continue
+                # Skip localhost
+                if address in ("127.0.0.1", "::1"):
+                    continue
+                # Skip Docker bridge IPs
+                if address.startswith("172.17.") or address.startswith("172.18."):
+                    continue
+
                 # Parse TXT records if present
                 txt_records = {}
                 if len(parts) > 9:
@@ -180,20 +197,45 @@ class AvahiDiscovery:
                             key, value = record.split("=", 1)
                             txt_records[key] = value
 
-                # Snapcast advertises port 1705 (control port) via mDNS,
-                # but we need port 1780 (HTTP/WebSocket port)
+                # Determine if this is a good address (prefer IPv4, especially private networks)
+                is_ipv4 = ":" not in address
+                is_private_ipv4 = is_ipv4 and (
+                    address.startswith("192.168.") or
+                    address.startswith("10.") or
+                    address.startswith("172.")
+                )
+
+                # Create server info
                 server = ServerInfo(
                     host=address,
                     port=1780,  # Always use HTTP port for WebSocket connections
                     name=service_name or hostname,
                     txt_records=txt_records
                 )
-                servers.append(server)
+
+                # If we haven't seen this hostname, add it
+                if hostname not in servers_by_hostname:
+                    servers_by_hostname[hostname] = server
+                else:
+                    # If we have seen it, prefer private IPv4 > IPv4 > IPv6
+                    existing = servers_by_hostname[hostname]
+                    existing_is_ipv4 = ":" not in existing.host
+                    existing_is_private = existing_is_ipv4 and (
+                        existing.host.startswith("192.168.") or
+                        existing.host.startswith("10.") or
+                        existing.host.startswith("172.")
+                    )
+
+                    # Replace if new address is better
+                    if is_private_ipv4 and not existing_is_private:
+                        servers_by_hostname[hostname] = server
+                    elif is_ipv4 and not existing_is_ipv4:
+                        servers_by_hostname[hostname] = server
 
             except Exception as e:
                 logger.warning(f"Failed to parse avahi line: {line} - {e}")
 
-        return servers
+        return list(servers_by_hostname.values())
 
     def add_manual_server(self, host: str, port: int, name: str) -> ServerInfo:
         """Manually add a server (for static configuration)"""

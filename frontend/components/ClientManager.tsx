@@ -43,14 +43,29 @@ const ClientDevice: React.FC<{
         setIsSelectorOpen(false);
     };
 
+    // Find the none stream for this client's server
+    const getNoneStreamForClient = (): string | null => {
+        if (!client.serverId) return null;
+        const noneStream = streams.find(s =>
+            s.serverId === client.serverId && s.id.includes('none-')
+        );
+        return noneStream?.id || null;
+    };
+
+    const handleSelectNone = () => {
+        const noneStreamId = getNoneStreamForClient();
+        onStreamChange(client.id, noneStreamId);
+        setIsSelectorOpen(false);
+    };
+
     const volumePercentage = client.volume;
     const sliderStyle = {
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
-    // Filter out "none" streams from dropdown options (they're just fallback streams)
+    // Filter out "none" streams from dropdown options (they're used internally but shown via "None" button)
     const selectableStreams = React.useMemo(() => {
-        return streams.filter(s => !s.id.startsWith('none-'));
+        return streams.filter(s => !s.id.includes('none-'));
     }, [streams]);
 
     const groupedStreams = React.useMemo(() => {
@@ -98,10 +113,10 @@ const ClientDevice: React.FC<{
                         <ul className="py-1 text-sm text-[var(--text-primary)] max-h-40 overflow-auto">
                             <li role="option">
                                 <button
-                                    onClick={() => handleSelectStream(null)}
+                                    onClick={handleSelectNone}
                                     className="block w-full text-left px-3 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-secondary-hover)]"
                                 >
-                                    Disconnect
+                                    None
                                 </button>
                             </li>
                             {federationEnabled ? (

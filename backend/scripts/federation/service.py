@@ -151,17 +151,38 @@ class FederationService:
                 logger.info(f"Skipping local server: {server.name}")
                 continue
 
+            # Get actual server name from federation API (not Avahi service name)
+            actual_name = server.name
+            try:
+                import urllib.request
+                import json
+
+                # Run blocking urllib call in thread pool
+                def fetch_name():
+                    info_url = f"http://{server.host}:5001/api/federation/info"
+                    with urllib.request.urlopen(info_url, timeout=2) as response:
+                        if response.status == 200:
+                            return json.loads(response.read().decode()).get("name")
+                    return None
+
+                fetched_name = await asyncio.to_thread(fetch_name)
+                if fetched_name:
+                    actual_name = fetched_name
+                    logger.info(f"Got server name from API: {actual_name} (was: {server.name})")
+            except Exception as e:
+                logger.debug(f"Could not fetch server name from API, using Avahi name: {e}")
+
             # Connect to new server
             try:
                 await self.ws_manager.add_server(
                     server_id=server.id,
                     host=server.host,
                     port=server.port,
-                    name=server.name,
+                    name=actual_name,
                     use_https=False
                 )
             except Exception as e:
-                logger.error(f"Failed to connect to {server.name}: {e}")
+                logger.error(f"Failed to connect to {actual_name}: {e}")
 
     async def _on_server_event(self, server_id: str, method: str, params: Dict):
         """Handle events from servers"""
