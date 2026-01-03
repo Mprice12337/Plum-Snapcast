@@ -170,7 +170,8 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                                                 federationEnabled = false,
                                                             }) => {
     const groupedClients = clients.reduce((acc, client) => {
-        const streamId = client.currentStreamId ?? 'idle';
+        // Treat none streams as idle (no stream selected)
+        const streamId = (client.currentStreamId?.includes('none-')) ? 'idle' : (client.currentStreamId ?? 'idle');
         if (!acc[streamId]) {
             acc[streamId] = [];
         }

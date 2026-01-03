@@ -611,9 +611,13 @@ const App: React.FC = () => {
         );
 
     // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
+    // Clients on none streams are never considered "synced" (they have no stream)
+    const myClientIsOnNoneStream = myClient?.currentStreamId?.includes('none-') ?? false;
     const syncedClients = filteredClients.filter(c =>
         c.id !== myClient?.id &&
+        !myClientIsOnNoneStream && // If myClient is on none stream, no synced clients
         c.currentStreamId === myClient?.currentStreamId &&
+        !c.currentStreamId?.includes('none-') && // Clients on none streams are never synced
         !shouldHideClient(c)
     );
 
