@@ -7,6 +7,7 @@ interface StreamSelectorProps {
     currentStreamId: string | null;
     onSelectStream: (streamId: string | null) => void;
     federationEnabled?: boolean;
+    localServerId?: string;  // Local server ID for finding the correct none stream
     openUpward?: boolean;
 }
 
@@ -22,7 +23,7 @@ const getStreamDisplayName = (stream: Stream, isMainTitle: boolean = false): str
     return stream.name;
 };
 
-export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false, openUpward = false}) => {
+export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentStreamId, onSelectStream, federationEnabled = false, localServerId, openUpward = false}) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const currentStream = streams.find(s => s.id === currentStreamId);
@@ -43,6 +44,24 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
         onSelectStream(streamId);
         setIsOpen(false);
     };
+
+    // Find the local none stream for the "None" option
+    const getLocalNoneStream = (): string | null => {
+        if (!localServerId) return null;
+        const noneStream = streams.find(s =>
+            s.serverId === localServerId && s.id.includes('none-')
+        );
+        return noneStream?.id || null;
+    };
+
+    const handleSelectNone = () => {
+        const noneStreamId = getLocalNoneStream();
+        onSelectStream(noneStreamId);
+        setIsOpen(false);
+    };
+
+    // Check if current stream is a none stream
+    const isCurrentStreamNone = currentStreamId?.includes('none-') || false;
 
     const groupedStreams = React.useMemo(() => {
         // Filter out none-* streams from dropdown (they're used internally but not selectable here)
@@ -73,7 +92,7 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                 aria-label="Select audio stream source"
             >
         <span className="text-3xl font-bold text-[var(--accent-color)] truncate pr-4">
-          {currentStream ? getStreamDisplayName(currentStream, true) : 'Select a Source'}
+          {isCurrentStreamNone ? 'Select a Source' : (currentStream ? getStreamDisplayName(currentStream, true) : 'Select a Source')}
         </span>
                 <Icon name="chevron-down" className={`text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} style={{ color: 'inherit' }} aria-hidden />
             </button>
@@ -86,6 +105,14 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                     role="listbox"
                 >
                     <ul className="py-2 text-base text-[var(--text-primary)] max-h-60 overflow-auto">
+                        <li role="option">
+                            <button
+                                onClick={handleSelectNone}
+                                className={`block w-full text-left px-4 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-secondary-hover)] ${isCurrentStreamNone ? 'font-semibold' : ''}`}
+                            >
+                                None
+                            </button>
+                        </li>
                         {federationEnabled ? (
                             Object.entries(groupedStreams).map(([serverName, serverStreams]) => (
                                 <React.Fragment key={serverName}>
@@ -105,16 +132,18 @@ export const StreamSelector: React.FC<StreamSelectorProps> = ({streams, currentS
                                 </React.Fragment>
                             ))
                         ) : (
-                            streams.map(s => (
-                                <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
-                                    <button
-                                        onClick={() => handleSelect(s.id)}
-                                        className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
-                                    >
-                                        {getStreamDisplayName(s)}
-                                    </button>
-                                </li>
-                            ))
+                            Object.entries(groupedStreams).map(([_, serverStreams]) =>
+                                serverStreams.map(s => (
+                                    <li key={s.id} role="option" aria-selected={currentStreamId === s.id}>
+                                        <button
+                                            onClick={() => handleSelect(s.id)}
+                                            className={`block w-full text-left px-4 py-2 hover:bg-[var(--bg-secondary-hover)] transition-colors ${currentStreamId === s.id ? 'font-semibold text-[var(--accent-color)]' : ''}`}
+                                        >
+                                            {getStreamDisplayName(s)}
+                                        </button>
+                                    </li>
+                                ))
+                            )
                         )}
                     </ul>
                 </div>

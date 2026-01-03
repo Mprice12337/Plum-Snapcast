@@ -2038,6 +2038,7 @@ const App: React.FC = () => {
                             currentStreamId={myClient.currentStreamId}
                             onSelectStream={(streamId) => handleStreamChange(myClient.id, streamId)}
                             federationEnabled={settings.federation.enabled}
+                            localServerId={getLocalServer()?.id}
                         />
                     </div>
                     {shouldShowControls ? (
