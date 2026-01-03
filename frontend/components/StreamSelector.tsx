@@ -14,9 +14,10 @@ interface StreamSelectorProps {
 /**
  * Helper function to get display name for a stream
  * Converts none-* streams to "None" for cleaner UI
+ * In multi-server mode, none stream IDs are like "server-192-168-201-133-none-snapserver"
  */
 const getStreamDisplayName = (stream: Stream, isMainTitle: boolean = false): string => {
-    if (stream.id.startsWith('none-')) {
+    if (stream.id.includes('none-')) {
         // In main title, show "Select a Source", in dropdown show "None"
         return isMainTitle ? 'Select a Source' : 'None';
     }

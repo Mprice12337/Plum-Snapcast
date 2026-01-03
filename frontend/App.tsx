@@ -342,7 +342,8 @@ const App: React.FC = () => {
     ) || clients.find(c => c.id !== browserClientId);
     const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
     // Treat none-* streams the same as no stream selected (hide controls)
-    const isNoneStream = currentStream?.id?.startsWith('none-') ?? false;
+    // In multi-server mode, none stream IDs are like "server-192-168-201-133-none-snapserver"
+    const isNoneStream = currentStream?.id?.includes('none-') ?? false;
     const shouldShowControls = currentStream && !isNoneStream;
 
     // Auto-assign browser audio client to user's current stream when it connects
@@ -399,8 +400,8 @@ const App: React.FC = () => {
             return;
         }
 
-        // Stop if assigned to the none-snapserver stream (fallback when source stream is removed)
-        if (browserClient.currentStreamId === 'none-snapserver') {
+        // Stop if assigned to a none stream (fallback when source stream is removed)
+        if (browserClient.currentStreamId?.includes('none-')) {
             browserAudio.stop();
             return;
         }
@@ -1013,10 +1014,10 @@ const App: React.FC = () => {
         const syncStreamState = async () => {
             try {
                 // Fetch both Snapcast stream data and our playback API data in parallel
-                // Skip playback API for "none-snapserver" stream (it doesn't have position data)
+                // Skip playback API for none streams (they don't have position data)
                 const [serverStream, playbackData] = await Promise.all([
                     snapcastService.getStreamStatus(currentStream.id),
-                    currentStream.id === 'none-snapserver' ? Promise.resolve(null) : getStreamPlayback(currentStream.id)
+                    currentStream.id.includes('none-') ? Promise.resolve(null) : getStreamPlayback(currentStream.id)
                 ]);
 
                 if (serverStream) {
