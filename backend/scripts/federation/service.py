@@ -20,6 +20,7 @@ from .discovery import AvahiDiscovery, ServerInfo
 from .websocket_manager import WebSocketManager
 from .router import FederationRouter
 from .api import FederationAPI, DataAggregator
+from .remote_snapclient_manager import RemoteSnapclientManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class FederationService:
         self.router = None
         self.data_aggregator = None
         self.api = None
+        self.remote_snapclient_manager = None
 
         # Async loop
         self.loop = None
@@ -184,6 +186,41 @@ class FederationService:
             except Exception as e:
                 logger.error(f"Failed to connect to {actual_name}: {e}")
 
+    def _on_server_added(self, server: ServerInfo):
+        """Handle new server discovered (callback from discovery)"""
+        # Skip local server (don't create snapclient to ourselves)
+        if server.id == self.local_server_id:
+            logger.info(f"Skipping local server for remote snapclient: {server.name}")
+            return
+
+        logger.info(f"Server added, spawning remote snapclient: {server.name} ({server.id})")
+
+        # Spawn remote snapclient for this server
+        if self.remote_snapclient_manager:
+            try:
+                self.remote_snapclient_manager.add_remote_server(
+                    server_id=server.id,
+                    host=server.host,
+                    port=1704  # Snapclient port
+                )
+            except Exception as e:
+                logger.error(f"Failed to spawn remote snapclient for {server.id}: {e}")
+
+    def _on_server_removed(self, server: ServerInfo):
+        """Handle server removed (callback from discovery)"""
+        # Skip local server
+        if server.id == self.local_server_id:
+            return
+
+        logger.info(f"Server removed, terminating remote snapclient: {server.name} ({server.id})")
+
+        # Remove remote snapclient for this server
+        if self.remote_snapclient_manager:
+            try:
+                self.remote_snapclient_manager.remove_remote_server(server.id)
+            except Exception as e:
+                logger.error(f"Failed to remove remote snapclient for {server.id}: {e}")
+
     async def _on_server_event(self, server_id: str, method: str, params: Dict):
         """Handle events from servers"""
         logger.debug(f"Event from {server_id}: {method}")
@@ -197,8 +234,20 @@ class FederationService:
         self.ws_manager = WebSocketManager()
         self.ws_manager.add_event_callback(self._on_server_event)
 
-        # Initialize router
-        self.router = FederationRouter(self.ws_manager, self.local_server_id)
+        # Initialize remote snapclient manager (load audio settings)
+        audio_device = self.config.get("audio_device", "hw:Headphones")
+        latency = self.config.get("latency", 0)
+        self.remote_snapclient_manager = RemoteSnapclientManager(
+            audio_device=audio_device,
+            latency=latency
+        )
+
+        # Initialize router (pass snapclient manager for endpoint lockout)
+        self.router = FederationRouter(
+            self.ws_manager,
+            self.local_server_id,
+            self.remote_snapclient_manager
+        )
 
         # Initialize data aggregator
         self.data_aggregator = DataAggregator(
@@ -254,6 +303,10 @@ class FederationService:
         self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
             self._on_servers_discovered(servers), self.loop
         ))
+
+        # Register server lifecycle callbacks for remote snapclient management
+        self.discovery.set_server_added_callback(self._on_server_added)
+        self.discovery.set_server_removed_callback(self._on_server_removed)
 
         # Start discovery if enabled
         if self.auto_discover:
@@ -311,6 +364,11 @@ class FederationService:
         # Stop discovery
         if self.discovery:
             self.discovery.stop()
+
+        # Cleanup remote snapclients
+        if self.remote_snapclient_manager:
+            logger.info("Cleaning up remote snapclients")
+            self.remote_snapclient_manager.cleanup_all()
 
         # Close WebSocket connections
         if self.loop and self.ws_manager:

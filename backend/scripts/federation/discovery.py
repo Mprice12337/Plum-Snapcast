@@ -55,6 +55,10 @@ class AvahiDiscovery:
         self.thread = None
         self._lock = threading.Lock()
 
+        # New callbacks for server lifecycle events
+        self.on_server_added_callback: Optional[Callable[[ServerInfo], None]] = None
+        self.on_server_removed_callback: Optional[Callable[[ServerInfo], None]] = None
+
     def start(self):
         """Start background discovery thread"""
         if self.running:
@@ -83,8 +87,16 @@ class AvahiDiscovery:
                 if now - server.last_seen > self.STALE_TIMEOUT
             ]
             for sid in stale_ids:
-                logger.info(f"Removing stale server: {self.servers[sid]}")
+                server_info = self.servers[sid]
+                logger.info(f"Removing stale server: {server_info}")
                 del self.servers[sid]
+
+                # Notify callback of server removal
+                if self.on_server_removed_callback:
+                    try:
+                        self.on_server_removed_callback(server_info)
+                    except Exception as e:
+                        logger.error(f"Server removed callback failed: {e}")
 
             return list(self.servers.values())
 
@@ -138,7 +150,14 @@ class AvahiDiscovery:
                         logger.info(f"Discovered new server: {server}")
                         self.servers[server.id] = server
 
-                # Notify callback if provided
+                        # Notify callback of new server
+                        if self.on_server_added_callback:
+                            try:
+                                self.on_server_added_callback(server)
+                            except Exception as e:
+                                logger.error(f"Server added callback failed: {e}")
+
+                # Notify general callback if provided
                 if self.callback:
                     try:
                         self.callback(list(self.servers.values()))
@@ -263,8 +282,26 @@ class AvahiDiscovery:
         """Remove a manually added server"""
         with self._lock:
             if server_id in self.servers:
-                logger.info(f"Removing server: {self.servers[server_id]}")
+                server_info = self.servers[server_id]
+                logger.info(f"Removing server: {server_info}")
                 del self.servers[server_id]
+
+                # Notify callback of server removal
+                if self.on_server_removed_callback:
+                    try:
+                        self.on_server_removed_callback(server_info)
+                    except Exception as e:
+                        logger.error(f"Server removed callback failed: {e}")
+
+    def set_server_added_callback(self, callback: Callable[[ServerInfo], None]):
+        """Set callback for when a new server is discovered"""
+        self.on_server_added_callback = callback
+        logger.info("Server added callback registered")
+
+    def set_server_removed_callback(self, callback: Callable[[ServerInfo], None]):
+        """Set callback for when a server is removed"""
+        self.on_server_removed_callback = callback
+        logger.info("Server removed callback registered")
 
 
 # For testing

@@ -14,18 +14,26 @@ logger = logging.getLogger(__name__)
 
 class FederationRouter:
     """
-    Manages cross-server client routing
+    Manages cross-server client routing with endpoint lockout.
 
-    When a client needs to connect to a stream on a different server:
-    1. Identify target server for the stream
-    2. Reconfigure snapclient to connect to target server
-    3. Wait for client to appear on target server
-    4. Assign client to requested stream
+    New architecture:
+    - Multiple snapclients run simultaneously (one local, one per remote server)
+    - All output to the same audio device
+    - Only ONE is "active" (routed to actual stream) at a time
+    - Others are "inactive" (routed to 'none' stream - silence)
+
+    This eliminates the need for snapclient reconnection and provides
+    instant stream switching.
     """
 
-    def __init__(self, ws_manager, local_server_id: str):
+    def __init__(self, ws_manager, local_server_id: str, snapclient_manager=None):
         self.ws_manager = ws_manager
         self.local_server_id = local_server_id
+        self.snapclient_manager = snapclient_manager  # RemoteSnapclientManager
+
+        # Track active endpoint (server_id, client_id, stream_id)
+        # Only one endpoint can be active at a time
+        self.active_endpoint: Optional[Tuple[str, str, str]] = None
 
     def parse_federated_id(self, federated_id: str) -> Tuple[str, str]:
         """
@@ -44,11 +52,19 @@ class FederationRouter:
 
     async def route_client(self, client_id: str, stream_id: str) -> Dict:
         """
-        Route a client to a stream
+        Route a client to a stream with endpoint lockout.
+
+        For output clients (local or remote snapclients outputting to audio):
+        - Deactivate current active endpoint (route to 'none')
+        - Activate new endpoint (route to desired stream)
+
+        For non-output clients (browser clients, third-party clients):
+        - Route normally without lockout logic
 
         Args:
             client_id: Federated client ID (e.g., "server-192-168-7-122-living-room")
-            stream_id: Federated stream ID (e.g., "server-192-168-7-226-ma-stream")
+            stream_id: Federated stream ID (e.g., "server-192-168-7-226-spotify1")
+                       Can be None or "none" to deactivate
 
         Returns:
             Dict with success status and message
@@ -56,29 +72,20 @@ class FederationRouter:
         try:
             # Parse IDs
             client_server_id, client_local_id = self.parse_federated_id(client_id)
-            stream_server_id, stream_local_id = self.parse_federated_id(stream_id)
+            stream_server_id, stream_local_id = self.parse_federated_id(stream_id) if stream_id else (None, None)
 
             # Get connections
             client_conn = self.ws_manager.get_connection(client_server_id)
-            stream_conn = self.ws_manager.get_connection(stream_server_id)
-
             if not client_conn or not client_conn.connected:
                 return {
                     "success": False,
                     "message": f"Client server not connected: {client_server_id}"
                 }
 
-            if not stream_conn or not stream_conn.connected:
-                return {
-                    "success": False,
-                    "message": f"Stream server not connected: {stream_server_id}"
-                }
-
-            # Find the client and stream in server status
+            # Find the client in server status
             client_status = await client_conn.get_status()
-            stream_status = await stream_conn.get_status()
 
-            # Find the actual client
+            # Find the actual client and its group
             actual_client = None
             client_group_id = None
             for group in client_status.get("server", {}).get("groups", []):
@@ -96,41 +103,69 @@ class FederationRouter:
                     "message": f"Client not found: {client_local_id}"
                 }
 
-            # Find the actual stream
-            actual_stream = None
-            for stream in stream_status.get("server", {}).get("streams", []):
-                if stream.get("id") == stream_local_id:
-                    actual_stream = stream
-                    break
+            # Determine if this is an output client (hardware snapclient)
+            is_output_client = self._is_output_client(client_server_id, client_local_id)
 
-            if not actual_stream:
-                return {
-                    "success": False,
-                    "message": f"Stream not found: {stream_local_id}"
-                }
-
-            # Check if cross-server routing is needed
-            if client_server_id == stream_server_id:
-                # Same server - simple group stream change
-                await self._route_same_server(
+            if not is_output_client:
+                # Non-output client (browser, third-party) - route normally without lockout
+                return await self._route_simple(
                     client_conn,
                     client_group_id,
-                    stream_local_id
+                    stream_local_id if stream_local_id else "none"
                 )
+
+            # Output client - apply endpoint lockout logic
+
+            # Step 1: Deactivate current active endpoint (if any)
+            if self.active_endpoint:
+                old_server, old_client, old_stream = self.active_endpoint
+                logger.info(f"Deactivating endpoint: {old_server}/{old_client}/{old_stream}")
+                await self._route_to_none(old_server, old_client)
+
+            # Step 2: Activate new endpoint (if not routing to none)
+            if stream_id and stream_id != "none":
+                # Verify stream exists
+                stream_conn = self.ws_manager.get_connection(stream_server_id)
+                if not stream_conn or not stream_conn.connected:
+                    return {
+                        "success": False,
+                        "message": f"Stream server not connected: {stream_server_id}"
+                    }
+
+                stream_status = await stream_conn.get_status()
+                actual_stream = None
+                for stream in stream_status.get("server", {}).get("streams", []):
+                    if stream.get("id") == stream_local_id:
+                        actual_stream = stream
+                        break
+
+                if not actual_stream:
+                    return {
+                        "success": False,
+                        "message": f"Stream not found: {stream_local_id}"
+                    }
+
+                # Route to desired stream
+                await self._route_simple(client_conn, client_group_id, stream_local_id)
+
+                # Update active endpoint tracking
+                self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
+                logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
+
                 return {
                     "success": True,
-                    "message": f"Client routed to stream on same server"
+                    "message": f"Client routed to stream with lockout"
                 }
             else:
-                # Cross-server routing - reconfigure snapclient
-                result = await self._route_cross_server(
-                    client_server_id,
-                    client_local_id,
-                    stream_server_id,
-                    stream_local_id,
-                    stream_conn
-                )
-                return result
+                # Route to none (deactivate)
+                await self._route_to_none(client_server_id, client_local_id)
+                self.active_endpoint = None
+                logger.info("All endpoints deactivated")
+
+                return {
+                    "success": True,
+                    "message": "Client routed to none (deactivated)"
+                }
 
         except Exception as e:
             logger.error(f"Routing failed: {e}")
@@ -139,8 +174,37 @@ class FederationRouter:
                 "message": f"Routing error: {str(e)}"
             }
 
-    async def _route_same_server(self, conn, group_id: str, stream_id: str):
-        """Route client to stream on the same server"""
+    def _is_output_client(self, server_id: str, client_id: str) -> bool:
+        """
+        Check if client is an output client (hardware snapclient).
+
+        Output clients are hardware snapclients that output to audio devices.
+        Non-output clients are browser clients, third-party clients, etc.
+
+        Args:
+            server_id: Server ID
+            client_id: Local client ID
+
+        Returns:
+            True if output client, False otherwise
+        """
+        # Output clients have MAC address format
+        # Browser clients have UUID format
+        # This is a simple heuristic - could be improved with server status check
+        return self._is_mac_address(client_id)
+
+    async def _route_simple(self, conn, group_id: str, stream_id: str) -> Dict:
+        """
+        Route client to stream (simple, no lockout logic).
+
+        Args:
+            conn: WebSocket connection to server
+            group_id: Group ID
+            stream_id: Stream ID
+
+        Returns:
+            Dict with success status
+        """
         await conn.send_request("Group.SetStream", {
             "id": group_id,
             "stream_id": stream_id
@@ -149,105 +213,81 @@ class FederationRouter:
         await conn.get_status()
         logger.info(f"Routed group {group_id} to stream {stream_id}")
 
-    async def _route_cross_server(
-        self,
-        client_server_id: str,
-        client_id: str,
-        stream_server_id: str,
-        stream_id: str,
-        stream_conn
-    ) -> Dict:
+        return {
+            "success": True,
+            "message": f"Routed to stream {stream_id}"
+        }
+
+    async def _route_to_none(self, server_id: str, client_id: str):
         """
-        Route client to stream on a different server
+        Route client to 'none' stream (silence).
 
-        This requires reconfiguring the snapclient to connect to the target server.
-        Currently only supports local snapclient (running in same container).
+        Args:
+            server_id: Server ID
+            client_id: Local client ID
         """
-        # Check if this is the local server's snapclient
-        if client_server_id != self.local_server_id:
-            return {
-                "success": False,
-                "message": "Cross-server routing only supported for local snapclient"
-            }
+        # Get connection
+        conn = self.ws_manager.get_connection(server_id)
+        if not conn or not conn.connected:
+            logger.warning(f"Cannot route to none: server {server_id} not connected")
+            return
 
-        try:
-            # Get target server connection info
-            target_host = stream_conn.host
-            target_port = 1704  # Snapclient connection port
+        # Get server status to find client's group
+        status = await conn.get_status()
 
-            logger.info(f"Reconfiguring local snapclient to connect to {target_host}:{target_port}")
-
-            # Update snapclient configuration
-            # This requires modifying supervisord config and restarting snapclient
-            # For now, we'll use environment variable and restart via supervisord
-
-            # Set environment variable for snapclient host
-            os.environ["SNAPCLIENT_HOST"] = target_host
-
-            # Restart snapclient via supervisord
-            result = subprocess.run(
-                ["supervisorctl", "-c", "/app/supervisord/supervisord.conf", "restart", "snapclient"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            if result.returncode != 0:
-                logger.error(f"Failed to restart snapclient: {result.stderr}")
-                return {
-                    "success": False,
-                    "message": f"Failed to restart snapclient: {result.stderr}"
-                }
-
-            logger.info("Snapclient restarted successfully")
-
-            # Wait a moment for client to reconnect
-            import asyncio
-            await asyncio.sleep(2)
-
-            # Now route to the stream on the new server
-            # Get updated status to find the group the client is in
-            target_status = await stream_conn.get_status()
-
-            # Find the group containing our client
-            target_group_id = None
-            for group in target_status.get("server", {}).get("groups", []):
-                for client in group.get("clients", []):
-                    # Match by MAC address or hostname
-                    if client.get("id") == client_id or client.get("host", {}).get("name") == client_id:
-                        target_group_id = group.get("id")
-                        break
-                if target_group_id:
+        # Find client's group
+        client_group_id = None
+        for group in status.get("server", {}).get("groups", []):
+            for client in group.get("clients", []):
+                if client.get("id") == client_id:
+                    client_group_id = group.get("id")
                     break
+            if client_group_id:
+                break
 
-            if target_group_id:
-                # Route to the requested stream
-                await stream_conn.send_request("Group.SetStream", {
-                    "id": target_group_id,
-                    "stream_id": stream_id
-                })
+        if not client_group_id:
+            logger.warning(f"Client {client_id} not found on server {server_id}")
+            return
 
-                return {
-                    "success": True,
-                    "message": f"Client routed to {stream_id} on {stream_conn.name}"
-                }
-            else:
-                return {
-                    "success": False,
-                    "message": "Client not found on target server after reconnection"
-                }
+        # Find 'none' stream ID for this server
+        none_stream_id = self._get_none_stream_id(status)
 
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "message": "Snapclient restart timed out"
-            }
-        except Exception as e:
-            logger.error(f"Cross-server routing failed: {e}")
-            return {
-                "success": False,
-                "message": f"Cross-server routing error: {str(e)}"
-            }
+        if not none_stream_id:
+            logger.warning(f"No 'none' stream found on server {server_id}")
+            return
+
+        # Route to none stream
+        await conn.send_request("Group.SetStream", {
+            "id": client_group_id,
+            "stream_id": none_stream_id
+        })
+
+        logger.info(f"Routed {client_id} to none stream (silent)")
+
+    def _get_none_stream_id(self, server_status: Dict) -> Optional[str]:
+        """
+        Find the 'none' stream ID on a server.
+
+        Args:
+            server_status: Server status dict
+
+        Returns:
+            None stream ID or None if not found
+        """
+        for stream in server_status.get("server", {}).get("streams", []):
+            stream_id = stream.get("id", "")
+            # None streams are named "none-*" (e.g., "none-hostname")
+            if stream_id.startswith("none-"):
+                return stream_id
+
+        return None
+
+
+    def _is_mac_address(self, client_id: str) -> bool:
+        """Check if client_id is a MAC address format (hardware client)"""
+        import re
+        mac_pattern = r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$'
+        return bool(re.match(mac_pattern, client_id))
 
     async def set_client_volume(self, client_id: str, volume: int, muted: bool = False) -> Dict:
         """Set volume for a client"""
