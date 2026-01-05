@@ -393,11 +393,21 @@ class DataAggregator:
                     volume = config.get("volume", {})
                     host_info = client.get("host", {})
 
+                    # Get client name, with fallback to hostname
+                    client_name = config.get("name") or host_info.get("name", client_id)
+
+                    # If client name is generic (snapserver, snapclient, localhost, etc), use server name instead
+                    generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+                    if client_name.lower() in generic_names or client_name == client_id:
+                        display_name = conn.name
+                    else:
+                        display_name = client_name
+
                     clients.append({
                         "id": federated_id,
                         "serverId": conn.server_id,
                         "serverName": conn.name,
-                        "name": config.get("name") or host_info.get("name", client_id),
+                        "name": display_name,
                         "connected": client.get("connected", False),
                         "currentStreamId": federated_stream_id,
                         "volume": volume.get("percent", 100),
