@@ -201,10 +201,59 @@ class FederationService:
                 self.remote_snapclient_manager.add_remote_server(
                     server_id=server.id,
                     host=server.host,
-                    port=1704  # Snapclient port
+                    port=1705  # Snapclient port (same as local)
                 )
+
+                # Schedule async task to discover client ID
+                if self.loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._discover_remote_client_id(server.id, server.host),
+                        self.loop
+                    )
             except Exception as e:
                 logger.error(f"Failed to spawn remote snapclient for {server.id}: {e}")
+
+    async def _discover_remote_client_id(self, server_id: str, host: str):
+        """Discover the client ID of our remote snapclient on a server"""
+        try:
+            # Wait a bit for client to connect
+            await asyncio.sleep(3)
+
+            # Get connection to remote server
+            conn = self.ws_manager.get_connection(server_id)
+            if not conn or not conn.connected:
+                logger.warning(f"Cannot discover client ID: server {server_id} not connected")
+                return
+
+            # Get server status
+            status = await conn.get_status()
+
+            # Find client with client ID matching our remote snapclient
+            # We use --hostID which sets the client ID to "remote-<server-id>"
+            expected_client_id = f"remote-{server_id}"
+            remote_client_id = None
+
+            for group in status.get("server", {}).get("groups", []):
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+
+                    # Check if this client's ID matches our expected pattern
+                    if client_id == expected_client_id:
+                        remote_client_id = client_id
+                        logger.info(f"Found remote client by client ID: {remote_client_id}")
+                        break
+
+                if remote_client_id:
+                    break
+
+            if remote_client_id:
+                self.remote_snapclient_manager.set_client_id(server_id, remote_client_id)
+                logger.info(f"Discovered remote client ID for {server_id}: {remote_client_id}")
+            else:
+                logger.warning(f"Could not find remote client ID for {server_id} with expected client ID {expected_client_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to discover client ID for {server_id}: {e}")
 
     def _on_server_removed(self, server: ServerInfo):
         """Handle server removed (callback from discovery)"""

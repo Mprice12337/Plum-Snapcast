@@ -43,7 +43,9 @@ class RemoteSnapclientManager:
             audio_device: ALSA audio device for output (default: hw:Headphones)
             latency: Snapclient latency in milliseconds (default: 0)
         """
-        self.audio_device = audio_device
+        # Use dmix device for remote snapclients to allow multiple outputs
+        # The 'default' device in ALSA typically has dmix enabled
+        self.audio_device = "default"
         self.latency = latency
         self.processes: Dict[str, subprocess.Popen] = {}  # {server_id: process}
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
@@ -66,28 +68,36 @@ class RemoteSnapclientManager:
 
         log(f"Adding remote server: {server_id} ({host}:{port})")
 
-        # Build snapclient command
+        # Build snapclient command with unique hostID
+        # Use format: remote-from-<local-server-id>
+        # This makes it easy to identify which client is our remote snapclient
+        host_id = f"remote-{server_id}"
+
         cmd = [
             "/usr/bin/snapclient",
             "--host", host,
             "--port", str(port or 1704),
+            "--hostID", host_id,
             "--soundcard", self.audio_device,
             "--latency", str(self.latency)
         ]
 
         try:
-            # Spawn snapclient process
+            # Spawn snapclient process with logging
             # Federation service already runs as snapcast user, so subprocess inherits
+            log_file = f"/tmp/remote-snapclient-{server_id}.log"
+            log_fd = open(log_file, "w")
+
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdout=log_fd,
+                stderr=subprocess.STDOUT
             )
 
             self.processes[server_id] = proc
             self.server_hosts[server_id] = (host, port)
 
-            log(f"Remote snapclient spawned for {server_id} (PID: {proc.pid})")
+            log(f"Remote snapclient spawned for {server_id} (PID: {proc.pid}, log: {log_file})")
 
             # Wait briefly for client to connect
             time.sleep(2)

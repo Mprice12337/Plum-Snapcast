@@ -74,6 +74,10 @@ class FederationRouter:
             client_server_id, client_local_id = self.parse_federated_id(client_id)
             stream_server_id, stream_local_id = self.parse_federated_id(stream_id) if stream_id else (None, None)
 
+            logger.info(f"route_client called: client_id={client_id}, stream_id={stream_id}")
+            logger.info(f"Parsed client: server={client_server_id}, local={client_local_id}")
+            logger.info(f"Parsed stream: server={stream_server_id}, local={stream_local_id}")
+
             # Get connections
             client_conn = self.ws_manager.get_connection(client_server_id)
             if not client_conn or not client_conn.connected:
@@ -134,23 +138,76 @@ class FederationRouter:
 
                 stream_status = await stream_conn.get_status()
                 actual_stream = None
+                available_streams = [s.get("id") for s in stream_status.get("server", {}).get("streams", [])]
+                logger.info(f"Available streams on {stream_server_id}: {available_streams}")
+                logger.info(f"Looking for stream: {repr(stream_local_id)}")
+
                 for stream in stream_status.get("server", {}).get("streams", []):
-                    if stream.get("id") == stream_local_id:
+                    stream_id_from_server = stream.get("id")
+                    logger.info(f"Comparing {repr(stream_id_from_server)} == {repr(stream_local_id)}")
+                    if stream_id_from_server == stream_local_id:
                         actual_stream = stream
                         break
 
                 if not actual_stream:
+                    logger.error(f"Stream {repr(stream_local_id)} not found in {available_streams}")
                     return {
                         "success": False,
                         "message": f"Stream not found: {stream_local_id}"
                     }
 
-                # Route to desired stream
-                await self._route_simple(client_conn, client_group_id, stream_local_id)
+                # Check if this is cross-server routing (client and stream on different servers)
+                if client_server_id != stream_server_id:
+                    logger.info(f"Cross-server routing: {client_server_id} -> {stream_server_id}")
 
-                # Update active endpoint tracking
-                self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
-                logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
+                    # Step 1: Route local client to 'none' on its server
+                    await self._route_to_none(client_server_id, client_local_id)
+
+                    # Step 2: Find our remote snapclient on the stream's server
+                    if not self.snapclient_manager:
+                        return {
+                            "success": False,
+                            "message": "Remote snapclient manager not available"
+                        }
+
+                    remote_client_id = self.snapclient_manager.get_client_id(stream_server_id)
+                    if not remote_client_id:
+                        return {
+                            "success": False,
+                            "message": f"No remote snapclient found for {stream_server_id}"
+                        }
+
+                    logger.info(f"Routing remote snapclient {remote_client_id} on {stream_server_id} to stream {stream_local_id}")
+
+                    # Step 3: Find the remote client's group on the stream server
+                    remote_group_id = None
+                    for group in stream_status.get("server", {}).get("groups", []):
+                        for client in group.get("clients", []):
+                            if client.get("id") == remote_client_id:
+                                remote_group_id = group.get("id")
+                                break
+                        if remote_group_id:
+                            break
+
+                    if not remote_group_id:
+                        return {
+                            "success": False,
+                            "message": f"Remote client {remote_client_id} group not found on {stream_server_id}"
+                        }
+
+                    # Step 4: Route the remote client to the desired stream
+                    await self._route_simple(stream_conn, remote_group_id, stream_local_id)
+
+                    # Update active endpoint tracking (track the REMOTE client as active)
+                    self.active_endpoint = (stream_server_id, remote_client_id, stream_local_id)
+                    logger.info(f"Activated endpoint: {stream_server_id}/{remote_client_id}/{stream_local_id}")
+                else:
+                    # Same-server routing: route directly
+                    await self._route_simple(client_conn, client_group_id, stream_local_id)
+
+                    # Update active endpoint tracking
+                    self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
+                    logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
 
                 return {
                     "success": True,
