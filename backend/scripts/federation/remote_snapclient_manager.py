@@ -49,17 +49,6 @@ class RemoteSnapclientManager:
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
         self.server_hosts: Dict[str, tuple] = {}  # {server_id: (host, port)}
 
-        # Track snapcast user UID/GID for subprocess
-        try:
-            import pwd
-            import grp
-            self.snapcast_user = pwd.getpwnam("snapcast")
-            self.audio_gid = grp.getgrnam("audio").gr_gid
-        except (KeyError, ImportError):
-            log("Warning: Could not find snapcast user or audio group")
-            self.snapcast_user = None
-            self.audio_gid = None
-
         log(f"Initialized (audio_device={audio_device}, latency={latency})")
 
     def add_remote_server(self, server_id: str, host: str, port: int):
@@ -88,18 +77,11 @@ class RemoteSnapclientManager:
 
         try:
             # Spawn snapclient process
-            # Note: preexec_fn is used to set user/group in subprocess
-            def demote():
-                """Demote process to snapcast user"""
-                if self.snapcast_user and self.audio_gid:
-                    os.setgid(self.audio_gid)
-                    os.setuid(self.snapcast_user.pw_uid)
-
+            # Federation service already runs as snapcast user, so subprocess inherits
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=demote if self.snapcast_user else None
+                stderr=subprocess.PIPE
             )
 
             self.processes[server_id] = proc
