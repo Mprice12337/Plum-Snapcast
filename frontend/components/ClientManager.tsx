@@ -247,12 +247,12 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                     <div className="space-y-2">
                         {idleClients.map(client => (
                             <div key={client.id}
-                                 className="flex items-center justify-between p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
-                                <span className="font-semibold">{client.name}</span>
+                                 className="flex items-center justify-between gap-3 p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
+                                <span className="font-semibold truncate flex-1">{client.name}</span>
                                 <button
                                     onClick={() => onStreamChange(client.id, myClientStreamId)}
                                     disabled={!myClientStreamId}
-                                    className="text-sm bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+                                    className="text-sm bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed flex-shrink-0"
                                     title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
                                 >
                                     <Icon name="plus" className="mr-1" />
