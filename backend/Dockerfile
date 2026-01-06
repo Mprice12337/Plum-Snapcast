@@ -214,10 +214,14 @@ COPY config/shairport-sync.conf.template /app/config/
 COPY config/spotifyd.conf /app/config/
 COPY config/spotifyd.conf.template /app/config/
 COPY config/mosquitto.conf /app/config/
+COPY config/asoundrc /etc/asound.conf
 
 # Make avahi config writable by snapcast user (for hostname updates via settings API)
 RUN chown snapcast:snapcast /etc/avahi/avahi-daemon.conf && \
     chmod 644 /etc/avahi/avahi-daemon.conf
+
+# Make ALSA config readable by all users (enables dmix for multiple snapclients)
+RUN chmod 644 /etc/asound.conf
 
 # Make mosquitto config readable by mosquitto user
 RUN chmod 644 /app/config/mosquitto.conf

@@ -287,6 +287,7 @@ class FederationService:
         audio_device = self.config.get("audio_device", "hw:Headphones")
         latency = self.config.get("latency", 0)
         self.remote_snapclient_manager = RemoteSnapclientManager(
+            local_server_id=self.local_server_id,
             audio_device=audio_device,
             latency=latency
         )
@@ -382,8 +383,12 @@ class FederationService:
                 self.loop.run_forever()
             except Exception as e:
                 logger.error(f"Async loop error: {e}")
+                import traceback
+                traceback.print_exc()
             finally:
-                self.loop.close()
+                # Don't close the loop here - let stop() handle it
+                # This prevents "Event loop is closed" errors if Flask is still running
+                logger.info("Async loop exited")
 
         async_thread = threading.Thread(target=run_async_loop, daemon=True)
         async_thread.start()
@@ -424,8 +429,14 @@ class FederationService:
             asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
 
         # Stop async loop
-        if self.loop:
+        if self.loop and not self.loop.is_closed():
             self.loop.call_soon_threadsafe(self.loop.stop)
+            # Give it time to stop gracefully
+            import time
+            time.sleep(0.5)
+            # Now close the loop
+            if not self.loop.is_closed():
+                self.loop.close()
 
         logger.info("Federation Service stopped")
 

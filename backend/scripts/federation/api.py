@@ -90,6 +90,24 @@ class FederationAPI:
                 logger.error(f"Get clients failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/api/federation/active-endpoint", methods=["GET"])
+        def get_active_endpoint():
+            """Get the currently active endpoint (server/client/stream)"""
+            try:
+                if self.router.active_endpoint:
+                    server_id, client_id, stream_id = self.router.active_endpoint
+                    return jsonify({
+                        "active": True,
+                        "serverId": server_id,
+                        "clientId": client_id,
+                        "streamId": stream_id
+                    })
+                else:
+                    return jsonify({"active": False})
+            except Exception as e:
+                logger.error(f"Get active endpoint failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/api/federation/route", methods=["POST"])
         def route_client():
             """Route a client to a stream"""
@@ -100,6 +118,11 @@ class FederationAPI:
 
                 if not client_id or not stream_id:
                     return jsonify({"error": "clientId and streamId required"}), 400
+
+                # Check if event loop is running
+                if self.loop.is_closed():
+                    logger.error("Event loop is closed, cannot route client")
+                    return jsonify({"error": "Service not ready"}), 503
 
                 # Schedule coroutine on the background event loop
                 future = asyncio.run_coroutine_threadsafe(
@@ -232,6 +255,11 @@ class FederationAPI:
 
                 if not server_id:
                     return jsonify({"error": "serverId required"}), 400
+
+                # Check if event loop is running
+                if self.loop.is_closed():
+                    logger.error("Event loop is closed, cannot remove server")
+                    return jsonify({"error": "Service not ready"}), 503
 
                 # Schedule coroutine on the background event loop
                 future = asyncio.run_coroutine_threadsafe(

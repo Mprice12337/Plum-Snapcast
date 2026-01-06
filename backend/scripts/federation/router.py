@@ -160,21 +160,78 @@ class FederationRouter:
                 if client_server_id != stream_server_id:
                     logger.info(f"Cross-server routing: {client_server_id} -> {stream_server_id}")
 
-                    # Step 1: Route local client to 'none' on its server
-                    await self._route_to_none(client_server_id, client_local_id)
+                    # Determine if client is local or remote
+                    client_is_local = (client_server_id == self.local_server_id)
+                    stream_is_local = (stream_server_id == self.local_server_id)
 
-                    # Step 2: Find our remote snapclient on the stream's server
-                    if not self.snapclient_manager:
+                    if client_is_local and not stream_is_local:
+                        # Case 1: Local client, remote stream
+                        # Route our local client to none, then use our remote snapclient
+                        logger.info("Case 1: Routing local client to remote stream")
+
+                        # Step 1: Route local client to 'none' on its server
+                        await self._route_to_none(client_server_id, client_local_id)
+
+                        # Step 2: Find our remote snapclient on the stream's server
+                        if not self.snapclient_manager:
+                            return {
+                                "success": False,
+                                "message": "Remote snapclient manager not available"
+                            }
+
+                        remote_client_id = self.snapclient_manager.get_client_id(stream_server_id)
+                        if not remote_client_id:
+                            return {
+                                "success": False,
+                                "message": f"No remote snapclient found for {stream_server_id}"
+                            }
+                    elif not client_is_local and stream_is_local:
+                        # Case 2: Remote client, local stream
+                        # Find the remote snapclient from their server that connects to us
+                        # That remote snapclient appears on OUR (local) server
+                        logger.info("Case 2: Routing remote client to local stream")
+
+                        # Find the remote snapclient that belongs to the client's server
+                        # It will have ID like "remote-{client_server_id}" and appears on our local server
+                        expected_remote_client_id = f"remote-{client_server_id}"
+
+                        # Get our local server status to find this remote snapclient
+                        local_status = await stream_conn.get_status()
+                        remote_client_group_id = None
+
+                        for group in local_status.get("server", {}).get("groups", []):
+                            for client in group.get("clients", []):
+                                # Check both client ID and hostname (snapclient uses hostID as hostname)
+                                if (client.get("id") == expected_remote_client_id or
+                                    client.get("host", {}).get("name") == expected_remote_client_id):
+                                    remote_client_group_id = group.get("id")
+                                    logger.info(f"Found remote snapclient: {expected_remote_client_id} in group {remote_client_group_id}")
+                                    break
+                            if remote_client_group_id:
+                                break
+
+                        if not remote_client_group_id:
+                            return {
+                                "success": False,
+                                "message": f"Remote snapclient {expected_remote_client_id} not found on local server"
+                            }
+
+                        # Route the remote snapclient (on our local server) to our local stream
+                        await self._route_simple(stream_conn, remote_client_group_id, stream_local_id)
+
+                        # Update active endpoint tracking
+                        self.active_endpoint = (stream_server_id, expected_remote_client_id, stream_local_id)
+                        logger.info(f"Activated endpoint: {stream_server_id}/{expected_remote_client_id}/{stream_local_id}")
+
                         return {
-                            "success": False,
-                            "message": "Remote snapclient manager not available"
+                            "success": True,
+                            "message": f"Remote client routed to local stream"
                         }
-
-                    remote_client_id = self.snapclient_manager.get_client_id(stream_server_id)
-                    if not remote_client_id:
+                    else:
+                        # Case 3: Remote client, remote stream (not currently supported)
                         return {
                             "success": False,
-                            "message": f"No remote snapclient found for {stream_server_id}"
+                            "message": "Routing between two remote servers not supported"
                         }
 
                     logger.info(f"Routing remote snapclient {remote_client_id} on {stream_server_id} to stream {stream_local_id}")

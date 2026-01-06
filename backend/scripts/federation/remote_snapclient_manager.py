@@ -35,23 +35,25 @@ class RemoteSnapclientManager:
     "active" at a time (others are routed to 'none' stream).
     """
 
-    def __init__(self, audio_device: str = "hw:Headphones", latency: int = 0):
+    def __init__(self, local_server_id: str, audio_device: str = "hw:Headphones", latency: int = 0):
         """
         Initialize remote snapclient manager.
 
         Args:
+            local_server_id: ID of the local server (e.g., "server-192-168-201-133")
             audio_device: ALSA audio device for output (default: hw:Headphones)
             latency: Snapclient latency in milliseconds (default: 0)
         """
-        # Use dmix device for remote snapclients to allow multiple outputs
-        # The 'default' device in ALSA typically has dmix enabled
-        self.audio_device = "default"
+        # Use default device with explicit card specification for remote snapclients
+        # This allows ALSA's built-in dmix to handle device sharing
+        self.local_server_id = local_server_id
+        self.audio_device = "default:CARD=Headphones"
         self.latency = latency
         self.processes: Dict[str, subprocess.Popen] = {}  # {server_id: process}
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
         self.server_hosts: Dict[str, tuple] = {}  # {server_id: (host, port)}
 
-        log(f"Initialized (audio_device={audio_device}, latency={latency})")
+        log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device}, latency={latency})")
 
     def add_remote_server(self, server_id: str, host: str, port: int):
         """
@@ -69,9 +71,11 @@ class RemoteSnapclientManager:
         log(f"Adding remote server: {server_id} ({host}:{port})")
 
         # Build snapclient command with unique hostID
-        # Use format: remote-from-<local-server-id>
-        # This makes it easy to identify which client is our remote snapclient
-        host_id = f"remote-{server_id}"
+        # Use format: remote-<local-server-id> (indicates WHERE the client is FROM)
+        # When this client appears on the remote server, it will be identifiable as coming from us
+        # Example: If local_server_id is "server-192-168-201-138" and we're connecting to .133,
+        # the client will appear on .133's server as "remote-server-192-168-201-138"
+        host_id = f"remote-{self.local_server_id}"
 
         cmd = [
             "/usr/bin/snapclient",

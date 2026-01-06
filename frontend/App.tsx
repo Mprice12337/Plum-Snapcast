@@ -91,6 +91,9 @@ const App: React.FC = () => {
     // Store group mappings for clients
     const [clientGroupMap, setClientGroupMap] = useState<Record<string, string>>({});
 
+    // Federation active endpoint (for multi-server stream routing)
+    const [activeEndpoint, setActiveEndpoint] = useState<{ active: boolean; serverId?: string; clientId?: string; streamId?: string }>({ active: false });
+
     // Update streamsRef when streams changes
     useEffect(() => {
         streamsRef.current = streams;
@@ -340,7 +343,45 @@ const App: React.FC = () => {
         c.id !== browserClientId &&
         /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
     ) || clients.find(c => c.id !== browserClientId);
-    const currentStream = streams.find(s => s.id === myClient?.currentStreamId);
+
+    // Determine current stream:
+    // In federation mode, we need to detect which client is actually playing
+    let currentStreamId: string | undefined;
+    if (settings.federation.enabled) {
+        // Priority 1: Use active endpoint from API if available
+        if (activeEndpoint.active && activeEndpoint.streamId) {
+            currentStreamId = `${activeEndpoint.serverId}-${activeEndpoint.streamId}`;
+        } else {
+            // Priority 2: Auto-detect from client states
+            // Find any client (local or remote snapclient) that's NOT on a none stream
+            const localServer = servers.find(s => s.isLocal);
+            const localServerId = localServer?.id;
+
+            // Find all clients that could be our output (local or remote snapclients)
+            const outputClients = clients.filter(c => {
+                // Include local hardware client
+                if (c.id === myClient?.id) return true;
+                // Include remote snapclients (these have federated IDs containing "-remote-server-")
+                if (c.id.includes('-remote-server-')) return true;
+                return false;
+            });
+
+            // Find the first client that's NOT on a none stream
+            const activeClient = outputClients.find(c => !c.currentStreamId?.includes('none-'));
+
+            if (activeClient) {
+                currentStreamId = activeClient.currentStreamId;
+            } else {
+                // All output clients are on none - use myClient's stream
+                currentStreamId = myClient?.currentStreamId;
+            }
+        }
+    } else {
+        // Non-federation mode: use myClient's stream
+        currentStreamId = myClient?.currentStreamId;
+    }
+    const currentStream = streams.find(s => s.id === currentStreamId);
+
     // Treat none-* streams the same as no stream selected (hide controls)
     // In multi-server mode, none stream IDs are like "server-192-168-201-133-none-snapserver"
     const isNoneStream = currentStream?.id?.includes('none-') ?? false;
@@ -610,21 +651,28 @@ const App: React.FC = () => {
             c.connected || (c.id === browserClientId && browserAudio.state.isActive)
         );
 
-    // Synced clients: same stream as myClient, excluding myClient itself, applying same hiding rules
+    // Filter out remote snapclients from user-visible lists (these are infrastructure, not devices)
+    // Remote snapclient IDs contain "remote-server-" after the server prefix
+    // e.g., "server-192-168-201-133-remote-server-192-168-201-133"
+    const userVisibleClients = filteredClients.filter(c =>
+        !c.id.includes('-remote-server-')
+    );
+
+    // Synced clients: same stream as current stream, excluding myClient itself
     // Clients on none streams are never considered "synced" (they have no stream)
-    const myClientIsOnNoneStream = myClient?.currentStreamId?.includes('none-') ?? false;
-    const syncedClients = filteredClients.filter(c =>
+    const currentStreamIsNone = currentStreamId?.includes('none-') ?? false;
+    const syncedClients = userVisibleClients.filter(c =>
         c.id !== myClient?.id &&
-        !myClientIsOnNoneStream && // If myClient is on none stream, no synced clients
-        c.currentStreamId === myClient?.currentStreamId &&
+        !currentStreamIsNone && // If current stream is none, no synced clients
+        c.currentStreamId === currentStreamId &&
         !c.currentStreamId?.includes('none-') && // Clients on none streams are never synced
         !shouldHideClient(c)
     );
 
     // Other clients: all clients EXCEPT myClient and synced clients
-    const otherClients = filteredClients.filter(c =>
+    const otherClients = userVisibleClients.filter(c =>
         c.id !== myClient?.id &&
-        c.currentStreamId !== myClient?.currentStreamId &&
+        c.currentStreamId !== currentStreamId &&
         !shouldHideClient(c)
     );
 
@@ -1398,6 +1446,16 @@ const App: React.FC = () => {
 
                 setServers(data.servers);
 
+                // Also fetch active endpoint to determine current stream in multi-server mode
+                federationService.getActiveEndpoint().then(endpoint => {
+                    setActiveEndpoint(endpoint);
+                    if (endpoint.active) {
+                        console.log('[Federation] Active endpoint:', endpoint);
+                    }
+                }).catch(err => {
+                    console.error('[Federation] Failed to fetch active endpoint:', err);
+                });
+
                 // Check if we should ignore polling updates due to recent user changes
                 // Use ref to avoid stale closure
                 const now = Date.now();
@@ -1675,10 +1733,40 @@ const App: React.FC = () => {
         setRecentUserChanges({type: 'routing', timestamp, data: {clientId, streamId}});
 
         // Check if this is a local client (use WebSocket) or remote client (use Federation API)
-        const isLocal = isLocalId(clientId);
+        const isClientLocal = isLocalId(clientId);
+        const isStreamLocal = streamId ? isLocalId(streamId) : true;
 
-        // If federation is enabled and client is REMOTE, use federation API
-        if (settings.federation.enabled && !isLocal) {
+        console.log('[StreamChange] Locality check:', {
+            clientId,
+            streamId,
+            isClientLocal,
+            isStreamLocal,
+            localServer: getLocalServer(),
+            federationEnabled: settings.federation.enabled
+        });
+
+        // Check if browser audio client is trying to access remote stream
+        // Browser clients connect via WebSocket to local server - they cannot play remote streams
+        const isBrowserClient = clientId === browserClientId || clientId === getBrowserAudioClientId();
+        if (settings.federation.enabled && isClientLocal && !isStreamLocal && streamId && isBrowserClient) {
+            console.error('[StreamChange] ERROR: Browser audio cannot play remote streams');
+            alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
+            // Revert local state
+            setClients(prevClients =>
+                prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
+            );
+            return;
+        }
+
+        // Use federation API for:
+        // 1. Remote clients (any stream)
+        // 2. Local hardware clients accessing remote streams (snapclient redirection)
+        const needsFederationRouting = settings.federation.enabled && (
+            !isClientLocal || // Remote client
+            (!isStreamLocal && !isBrowserClient) // Local hardware client + remote stream
+        );
+
+        if (needsFederationRouting) {
             if (!streamId) {
                 return;
             }
@@ -1687,7 +1775,7 @@ const App: React.FC = () => {
                 const result = await federationService.routeClient(clientId, streamId);
 
                 if (result.success) {
-                    console.log('[StreamChange] SUCCESS: Remote federated client routed');
+                    console.log('[StreamChange] SUCCESS: Federated routing completed');
                 } else {
                     console.error('[StreamChange] Federation routing failed:', result.message);
                     // Revert local state on error
@@ -1715,7 +1803,8 @@ const App: React.FC = () => {
             localClientId,
             originalStreamId: streamId,
             localStreamId,
-            isLocal,
+            isClientLocal,
+            isStreamLocal,
             localServerId: getLocalServer()?.id
         });
 
@@ -2040,7 +2129,7 @@ const App: React.FC = () => {
                         </div>
                         <StreamSelector
                             streams={streams}
-                            currentStreamId={myClient.currentStreamId}
+                            currentStreamId={currentStreamId}
                             onSelectStream={(streamId) => handleStreamChange(myClient.id, streamId)}
                             federationEnabled={settings.federation.enabled}
                             localServerId={getLocalServer()?.id}
@@ -2096,6 +2185,11 @@ const App: React.FC = () => {
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={() => {
                                 const targetStream = myClient?.currentStreamId || null;
+                                // Block browser audio if current stream is remote
+                                if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
+                                    alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
+                                    return;
+                                }
                                 setTargetStreamForBrowserAudio(targetStream);
                                 browserAudio.start();
                             }}
@@ -2164,6 +2258,11 @@ const App: React.FC = () => {
                 }}
                 onStartBrowserAudio={() => {
                     const targetStream = myClient?.currentStreamId || null;
+                    // Block browser audio if current stream is remote
+                    if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
+                        alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
+                        return;
+                    }
                     setTargetStreamForBrowserAudio(targetStream);
                     browserAudio.start(true); // Start muted for visualizer mode
                 }}
