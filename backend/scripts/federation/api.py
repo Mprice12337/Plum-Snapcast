@@ -92,8 +92,14 @@ class FederationAPI:
 
         @self.app.route("/api/federation/active-endpoint", methods=["GET"])
         def get_active_endpoint():
-            """Get the currently active endpoint (server/client/stream)"""
+            """
+            Get the currently active endpoint (server/client/stream).
+
+            Uses the router's tracked active_endpoint if available, otherwise
+            queries all servers to find output clients NOT on none streams.
+            """
             try:
+                # First check if we have a tracked active endpoint (from recent routing)
                 if self.router.active_endpoint:
                     server_id, client_id, stream_id = self.router.active_endpoint
                     return jsonify({
@@ -102,8 +108,10 @@ class FederationAPI:
                         "clientId": client_id,
                         "streamId": stream_id
                     })
-                else:
-                    return jsonify({"active": False})
+
+                # Otherwise query all servers to find active output clients
+                result = asyncio.run(self.router._find_active_endpoint())
+                return jsonify(result)
             except Exception as e:
                 logger.error(f"Get active endpoint failed: {e}")
                 return jsonify({"error": str(e)}), 500

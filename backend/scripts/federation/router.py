@@ -257,8 +257,9 @@ class FederationRouter:
                             logger.warning("No local output client found to route to stream")
 
                         # Update active endpoint tracking
-                        self.active_endpoint = (stream_server_id, expected_remote_client_id, stream_local_id)
-                        logger.info(f"Activated endpoint: {stream_server_id}/{expected_remote_client_id}/{stream_local_id}")
+                        # Track the ORIGINAL client that was commanded to join, not the remote snapclient
+                        self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
+                        logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
 
                         return {
                             "success": True,
