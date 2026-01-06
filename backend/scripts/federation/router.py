@@ -120,14 +120,15 @@ class FederationRouter:
 
             # Output client - apply endpoint lockout logic
 
-            # Step 1: Deactivate current active endpoint (if any)
-            if self.active_endpoint:
-                old_server, old_client, old_stream = self.active_endpoint
-                logger.info(f"Deactivating endpoint: {old_server}/{old_client}/{old_stream}")
-                await self._route_to_none(old_server, old_client)
+            # Step 1: ALWAYS deactivate ALL active endpoints across ALL servers
+            # This ensures true lockout - only one output client active at a time across federation
+            # Query all servers to find output clients NOT on none streams and route them all to none
+            await self._deactivate_all_endpoints()
 
             # Step 2: Activate new endpoint (if not routing to none)
-            if stream_id and stream_id != "none":
+            # Check if stream_local_id contains "none-" to detect none streams in federation mode
+            is_none_stream = not stream_local_id or "none-" in stream_local_id
+            if stream_id and not is_none_stream:
                 # Verify stream exists
                 stream_conn = self.ws_manager.get_connection(stream_server_id)
                 if not stream_conn or not stream_conn.connected:
@@ -219,6 +220,17 @@ class FederationRouter:
                         # Route the remote snapclient (on our local server) to our local stream
                         await self._route_simple(stream_conn, remote_client_group_id, stream_local_id)
 
+                        # ALSO route our LOCAL output client to the same stream
+                        # This ensures the server hosting the stream also plays it locally
+                        local_output_client = await self._find_local_output_client(local_status)
+                        if local_output_client:
+                            local_client_id = local_output_client.get("id")
+                            local_group_id = local_output_client.get("group_id")
+                            logger.info(f"Also routing local output client {local_client_id} to {stream_local_id}")
+                            await self._route_simple(stream_conn, local_group_id, stream_local_id)
+                        else:
+                            logger.warning("No local output client found to route to stream")
+
                         # Update active endpoint tracking
                         self.active_endpoint = (stream_server_id, expected_remote_client_id, stream_local_id)
                         logger.info(f"Activated endpoint: {stream_server_id}/{expected_remote_client_id}/{stream_local_id}")
@@ -272,8 +284,8 @@ class FederationRouter:
                 }
             else:
                 # Route to none (deactivate)
+                # Also route the requesting client to none (in case it's not the active endpoint)
                 await self._route_to_none(client_server_id, client_local_id)
-                self.active_endpoint = None
                 logger.info("All endpoints deactivated")
 
                 return {
@@ -332,6 +344,107 @@ class FederationRouter:
             "message": f"Routed to stream {stream_id}"
         }
 
+    async def _find_active_endpoint(self) -> Dict:
+        """
+        Find the currently active endpoint across ALL servers in the federation.
+
+        Queries all servers to find output clients NOT on none streams.
+        Returns the first active endpoint found.
+
+        Returns:
+            Dict with active/serverId/clientId/streamId or active=False
+        """
+        # Get all connected servers
+        all_servers = self.ws_manager.get_all_connections()
+
+        for conn in all_servers:
+            if not conn.connected:
+                continue
+
+            try:
+                # Get server status
+                status = await conn.get_status()
+
+                # Find all output clients NOT on none streams
+                for group in status.get("server", {}).get("groups", []):
+                    group_stream_id = group.get("stream_id", "")
+
+                    # Skip if group is on a none stream
+                    if "none-" in group_stream_id:
+                        continue
+
+                    # Check each client in this group
+                    for client in group.get("clients", []):
+                        client_id = client.get("id")
+
+                        # Check if this is an output client (MAC address or remote snapclient)
+                        is_output = (self._is_mac_address(client_id) or
+                                   client_id.startswith("remote-"))
+
+                        if is_output:
+                            # Found an active output client!
+                            logger.debug(f"Active endpoint found: {conn.server_id}/{client_id} on {group_stream_id}")
+                            return {
+                                "active": True,
+                                "serverId": conn.server_id,
+                                "clientId": client_id,
+                                "streamId": group_stream_id
+                            }
+
+            except Exception as e:
+                logger.error(f"Error finding active endpoint on {conn.server_id}: {e}")
+
+        # No active endpoint found
+        return {"active": False}
+
+    async def _deactivate_all_endpoints(self):
+        """
+        Deactivate ALL active endpoints across ALL servers in the federation.
+
+        This queries all servers to find output clients NOT on none streams
+        and routes them all to none. Ensures true endpoint lockout across federation.
+        """
+        logger.info("Deactivating all active endpoints across all servers")
+
+        # Get all connected servers
+        all_servers = self.ws_manager.get_all_connections()
+
+        for conn in all_servers:
+            if not conn.connected:
+                continue
+
+            try:
+                # Get server status
+                status = await conn.get_status()
+
+                # Find all output clients NOT on none streams
+                for group in status.get("server", {}).get("groups", []):
+                    group_stream_id = group.get("stream_id", "")
+
+                    # Skip if group is already on a none stream
+                    if "none-" in group_stream_id:
+                        continue
+
+                    # Check each client in this group
+                    for client in group.get("clients", []):
+                        client_id = client.get("id")
+
+                        # Check if this is an output client (MAC address or remote snapclient)
+                        is_output = (self._is_mac_address(client_id) or
+                                   client_id.startswith("remote-"))
+
+                        if is_output:
+                            # Route this output client to none
+                            logger.info(f"Deactivating output client: {conn.server_id}/{client_id} (was on {group_stream_id})")
+                            await self._route_to_none(conn.server_id, client_id)
+
+            except Exception as e:
+                logger.error(f"Error deactivating endpoints on {conn.server_id}: {e}")
+
+        # Clear local active endpoint tracking
+        self.active_endpoint = None
+        logger.info("All endpoints deactivated")
+
     async def _route_to_none(self, server_id: str, client_id: str):
         """
         Route client to 'none' stream (silence).
@@ -377,6 +490,36 @@ class FederationRouter:
         })
 
         logger.info(f"Routed {client_id} to none stream (silent)")
+
+    async def _find_local_output_client(self, server_status: Dict) -> Optional[Dict]:
+        """
+        Find the local output client (hardware snapclient) on a server.
+
+        This finds the client with MAC address format that is NOT a remote snapclient.
+
+        Args:
+            server_status: Server status dict
+
+        Returns:
+            Dict with client info (id, group_id) or None if not found
+        """
+        for group in server_status.get("server", {}).get("groups", []):
+            for client in group.get("clients", []):
+                client_id = client.get("id")
+
+                # Check if this is a MAC address (output client)
+                if self._is_mac_address(client_id):
+                    # Exclude remote snapclients (they also have MAC addresses)
+                    # Remote snapclients have hostnames like "remote-server-..."
+                    hostname = client.get("host", {}).get("name", "")
+                    if not hostname.startswith("remote-"):
+                        # Found local output client!
+                        return {
+                            "id": client_id,
+                            "group_id": group.get("id")
+                        }
+
+        return None
 
     def _get_none_stream_id(self, server_status: Dict) -> Optional[str]:
         """
