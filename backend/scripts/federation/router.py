@@ -69,6 +69,8 @@ class FederationRouter:
         Returns:
             Dict with success status and message
         """
+        import asyncio
+
         try:
             # Parse IDs
             client_server_id, client_local_id = self.parse_federated_id(client_id)
@@ -86,8 +88,14 @@ class FederationRouter:
                     "message": f"Client server not connected: {client_server_id}"
                 }
 
-            # Find the client in server status
-            client_status = await client_conn.get_status()
+            # Find the client in server status with timeout
+            try:
+                client_status = await asyncio.wait_for(client_conn.get_status(), timeout=3.0)
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "message": f"Timeout getting status from client server {client_server_id}"
+                }
 
             # Find the actual client and its group
             actual_client = None
@@ -123,7 +131,10 @@ class FederationRouter:
             # Step 1: ALWAYS deactivate ALL active endpoints across ALL servers
             # This ensures true lockout - only one output client active at a time across federation
             # Query all servers to find output clients NOT on none streams and route them all to none
+            logger.info("=== Step 1: Deactivating all endpoints ===")
             await self._deactivate_all_endpoints()
+            logger.info("=== Step 1: Deactivation complete ===")
+
 
             # Step 2: Activate new endpoint (if not routing to none)
             # Check if stream_local_id contains "none-" to detect none streams in federation mode
@@ -137,7 +148,13 @@ class FederationRouter:
                         "message": f"Stream server not connected: {stream_server_id}"
                     }
 
-                stream_status = await stream_conn.get_status()
+                try:
+                    stream_status = await asyncio.wait_for(stream_conn.get_status(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    return {
+                        "success": False,
+                        "message": f"Timeout getting status from stream server {stream_server_id}"
+                    }
                 actual_stream = None
                 available_streams = [s.get("id") for s in stream_status.get("server", {}).get("streams", [])]
                 logger.info(f"Available streams on {stream_server_id}: {available_streams}")
@@ -190,14 +207,22 @@ class FederationRouter:
                         # Case 2: Remote client, local stream
                         # Find the remote snapclient from their server that connects to us
                         # That remote snapclient appears on OUR (local) server
-                        logger.info("Case 2: Routing remote client to local stream")
+                        logger.info("=== CASE 2: Routing remote client to local stream ===")
+                        logger.info(f"Client server: {client_server_id}, Stream server: {stream_server_id}")
+                        logger.info(f"Local server: {self.local_server_id}")
 
                         # Find the remote snapclient that belongs to the client's server
                         # It will have ID like "remote-{client_server_id}" and appears on our local server
                         expected_remote_client_id = f"remote-{client_server_id}"
 
                         # Get our local server status to find this remote snapclient
-                        local_status = await stream_conn.get_status()
+                        try:
+                            local_status = await asyncio.wait_for(stream_conn.get_status(), timeout=3.0)
+                        except asyncio.TimeoutError:
+                            return {
+                                "success": False,
+                                "message": f"Timeout getting local server status"
+                            }
                         remote_client_group_id = None
 
                         for group in local_status.get("server", {}).get("groups", []):
@@ -331,12 +356,17 @@ class FederationRouter:
         Returns:
             Dict with success status
         """
+        import asyncio
+
         await conn.send_request("Group.SetStream", {
             "id": group_id,
             "stream_id": stream_id
         })
         # Refresh status after routing (important for servers that don't send events)
-        await conn.get_status()
+        try:
+            await asyncio.wait_for(conn.get_status(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("Timeout refreshing status after routing, continuing anyway")
         logger.info(f"Routed group {group_id} to stream {stream_id}")
 
         return {
@@ -354,6 +384,8 @@ class FederationRouter:
         Returns:
             Dict with active/serverId/clientId/streamId or active=False
         """
+        import asyncio
+
         # Get all connected servers
         all_servers = self.ws_manager.get_all_connections()
 
@@ -362,8 +394,8 @@ class FederationRouter:
                 continue
 
             try:
-                # Get server status
-                status = await conn.get_status()
+                # Get server status with timeout to prevent hanging
+                status = await asyncio.wait_for(conn.get_status(), timeout=2.0)
 
                 # Find all output clients NOT on none streams
                 for group in status.get("server", {}).get("groups", []):
@@ -391,8 +423,12 @@ class FederationRouter:
                                 "streamId": group_stream_id
                             }
 
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout querying {conn.server_id} for active endpoint, skipping")
+                continue
             except Exception as e:
                 logger.error(f"Error finding active endpoint on {conn.server_id}: {e}")
+                continue
 
         # No active endpoint found
         return {"active": False}
@@ -404,6 +440,8 @@ class FederationRouter:
         This queries all servers to find output clients NOT on none streams
         and routes them all to none. Ensures true endpoint lockout across federation.
         """
+        import asyncio
+
         logger.info("Deactivating all active endpoints across all servers")
 
         # Get all connected servers
@@ -414,8 +452,8 @@ class FederationRouter:
                 continue
 
             try:
-                # Get server status
-                status = await conn.get_status()
+                # Get server status with timeout to prevent hanging
+                status = await asyncio.wait_for(conn.get_status(), timeout=2.0)
 
                 # Find all output clients NOT on none streams
                 for group in status.get("server", {}).get("groups", []):
@@ -438,8 +476,12 @@ class FederationRouter:
                             logger.info(f"Deactivating output client: {conn.server_id}/{client_id} (was on {group_stream_id})")
                             await self._route_to_none(conn.server_id, client_id)
 
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout querying {conn.server_id} for deactivation, skipping")
+                continue
             except Exception as e:
                 logger.error(f"Error deactivating endpoints on {conn.server_id}: {e}")
+                continue
 
         # Clear local active endpoint tracking
         self.active_endpoint = None
@@ -453,14 +495,20 @@ class FederationRouter:
             server_id: Server ID
             client_id: Local client ID
         """
+        import asyncio
+
         # Get connection
         conn = self.ws_manager.get_connection(server_id)
         if not conn or not conn.connected:
             logger.warning(f"Cannot route to none: server {server_id} not connected")
             return
 
-        # Get server status to find client's group
-        status = await conn.get_status()
+        try:
+            # Get server status to find client's group with timeout
+            status = await asyncio.wait_for(conn.get_status(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout getting status from {server_id} for route to none")
+            return
 
         # Find client's group
         client_group_id = None
@@ -503,22 +551,30 @@ class FederationRouter:
         Returns:
             Dict with client info (id, group_id) or None if not found
         """
+        logger.info("=== Looking for local output client ===")
         for group in server_status.get("server", {}).get("groups", []):
             for client in group.get("clients", []):
                 client_id = client.get("id")
+                hostname = client.get("host", {}).get("name", "")
+                is_mac = self._is_mac_address(client_id)
+
+                logger.info(f"  Client: {client_id}, hostname: {hostname}, is_mac: {is_mac}")
 
                 # Check if this is a MAC address (output client)
-                if self._is_mac_address(client_id):
+                if is_mac:
                     # Exclude remote snapclients (they also have MAC addresses)
                     # Remote snapclients have hostnames like "remote-server-..."
-                    hostname = client.get("host", {}).get("name", "")
                     if not hostname.startswith("remote-"):
                         # Found local output client!
+                        logger.info(f"  → Found local output client: {client_id} in group {group.get('id')}")
                         return {
                             "id": client_id,
                             "group_id": group.get("id")
                         }
+                    else:
+                        logger.info(f"  → Skipping remote snapclient: {client_id}")
 
+        logger.warning("  → No local output client found!")
         return None
 
     def _get_none_stream_id(self, server_status: Dict) -> Optional[str]:
@@ -570,7 +626,10 @@ class FederationRouter:
             })
 
             # Refresh status after volume change (important for servers that don't send events)
-            await conn.get_status()
+            try:
+                await asyncio.wait_for(conn.get_status(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout refreshing status after volume change, continuing anyway")
 
             return {
                 "success": True,
@@ -605,7 +664,10 @@ class FederationRouter:
             })
 
             # Refresh status after control command (important for servers that don't send events)
-            await conn.get_status()
+            try:
+                await asyncio.wait_for(conn.get_status(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout refreshing status after stream control, continuing anyway")
 
             return {
                 "success": True,
