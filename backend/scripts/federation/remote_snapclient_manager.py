@@ -44,16 +44,57 @@ class RemoteSnapclientManager:
             audio_device: ALSA audio device for output (default: hw:Headphones)
             latency: Snapclient latency in milliseconds (default: 0)
         """
-        # Use default device with explicit card specification for remote snapclients
+        # Convert hw:X,Y format to default:CARD=name for remote snapclients
         # This allows ALSA's built-in dmix to handle device sharing
         self.local_server_id = local_server_id
-        self.audio_device = "default:CARD=Headphones"
+        self.audio_device = self._convert_to_dmix_device(audio_device)
         self.latency = latency
         self.processes: Dict[str, subprocess.Popen] = {}  # {server_id: process}
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
         self.server_hosts: Dict[str, tuple] = {}  # {server_id: (host, port)}
 
-        log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device}, latency={latency})")
+        log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device} -> {self.audio_device}, latency={latency})")
+
+    def _convert_to_dmix_device(self, audio_device: str) -> str:
+        """
+        Convert hw:X,Y format to default:CARD=name for dmix support.
+
+        Remote snapclients need to use the 'default' device with explicit card
+        specification to enable ALSA's dmix (device mixing), which allows multiple
+        snapclient processes to share the same audio device.
+
+        Args:
+            audio_device: Device in hw:X,Y or hw:NAME format
+
+        Returns:
+            Device in default:CARD=NAME format
+        """
+        # Already in correct format
+        if audio_device.startswith("default:"):
+            return audio_device
+
+        # Convert hw:X,Y or hw:NAME to default:CARD=NAME
+        if audio_device.startswith("hw:"):
+            device_spec = audio_device[3:]  # Remove "hw:" prefix
+
+            # Map common device specifications to card names
+            # hw:1,0 -> HiFiBerry DAC+ (snd_rpi_hifiberry_dacplus)
+            # hw:0,0 or hw:Headphones -> bcm2835 Headphones
+            if device_spec in ["1,0", "1"]:
+                return "default:CARD=sndrpihifiberry"
+            elif device_spec in ["0,0", "0", "Headphones"]:
+                return "default:CARD=Headphones"
+            elif "," in device_spec:
+                # Generic hw:X,Y format - use card number
+                card_num = device_spec.split(",")[0]
+                return f"default:CARD={card_num}"
+            else:
+                # hw:NAME format - use name directly
+                return f"default:CARD={device_spec}"
+
+        # Fallback - return as-is
+        log(f"Warning: Unknown audio device format '{audio_device}', using as-is")
+        return audio_device
 
     def add_remote_server(self, server_id: str, host: str, port: int):
         """

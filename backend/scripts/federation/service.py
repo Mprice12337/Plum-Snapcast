@@ -125,6 +125,18 @@ class FederationService:
                         conn.name = new_local_name
                         logger.info(f"Updated local server connection name to: {new_local_name}")
 
+            # Check for audio device changes (requires restart to apply to remote snapclients)
+            audio_settings = settings.get("audio", {})
+            audio_output = audio_settings.get("output", {})
+            new_audio_device = audio_output.get("device", "hw:Headphones")
+            current_audio_device = self.config.get("audio_device", "hw:Headphones")
+            if new_audio_device != current_audio_device:
+                logger.warning(f"Audio device changed: {current_audio_device} -> {new_audio_device}")
+                logger.warning("Restarting federation service to apply audio device change")
+                logger.warning("Service will restart automatically via supervisord")
+                self.stop()
+                sys.exit(0)
+
         except Exception as e:
             logger.error(f"Failed to check settings changes: {e}")
 
@@ -229,8 +241,9 @@ class FederationService:
             status = await conn.get_status()
 
             # Find client with client ID matching our remote snapclient
-            # We use --hostID which sets the client ID to "remote-<server-id>"
-            expected_client_id = f"remote-{server_id}"
+            # We use --hostID which sets the client ID to "remote-<local-server-id>"
+            # This indicates WHERE the client is FROM, not where it's connecting TO
+            expected_client_id = f"remote-{self.local_server_id}"
             remote_client_id = None
 
             for group in status.get("server", {}).get("groups", []):
@@ -304,7 +317,8 @@ class FederationService:
             self.ws_manager,
             self.discovery,
             self.local_server_id,
-            self.local_server_name
+            self.local_server_name,
+            self.loop
         )
 
         # Add local server connection (localhost)
@@ -470,7 +484,9 @@ def load_config() -> Dict:
         "local_name": os.getenv("DEVICE_NAME", "Plum Snapcast"),
         "local_host": default_local_host,
         "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
-        "manual_servers": []
+        "manual_servers": [],
+        "audio_device": os.getenv("AUDIO_OUTPUT_DEVICE", "hw:Headphones"),
+        "latency": int(os.getenv("SNAPCLIENT_LATENCY", "0"))
     }
 
     # Override with settings.json if it exists (user preferences take precedence)
@@ -504,6 +520,14 @@ def load_config() -> Dict:
             logger.info(f"Local server name from settings.json deviceName: {config['local_name']}")
         else:
             logger.warning(f"deviceName not found in settings! Using env var fallback: {config['local_name']}")
+
+        # Load audio output device settings for remote snapclients
+        audio_settings = settings.get("audio", {})
+        audio_output = audio_settings.get("output", {})
+        if "device" in audio_output:
+            config["audio_device"] = audio_output["device"]
+            logger.info(f"Audio device from settings.json: {config['audio_device']}")
+        # Note: latency remains from env var default set in initial config
 
     except Exception as e:
         import traceback
