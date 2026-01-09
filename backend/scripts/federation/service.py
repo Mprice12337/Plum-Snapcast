@@ -20,6 +20,7 @@ from .discovery import AvahiDiscovery, ServerInfo
 from .websocket_manager import WebSocketManager
 from .router import FederationRouter
 from .api import FederationAPI, DataAggregator
+from .remote_snapclient_manager import RemoteSnapclientManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,12 @@ class FederationService:
         self.router = None
         self.data_aggregator = None
         self.api = None
+        self.remote_snapclient_manager = None
 
-        # Async loop
+        # Async loop and thread management
         self.loop = None
+        self.async_thread = None
+        self.loop_ready = threading.Event()  # Signals when loop is ready
 
         # Settings monitoring
         self.settings_file = "/app/data/settings.json"
@@ -123,6 +127,18 @@ class FederationService:
                         conn.name = new_local_name
                         logger.info(f"Updated local server connection name to: {new_local_name}")
 
+            # Check for audio device changes (requires restart to apply to remote snapclients)
+            audio_settings = settings.get("audio", {})
+            audio_output = audio_settings.get("output", {})
+            new_audio_device = audio_output.get("device", "hw:Headphones")
+            current_audio_device = self.config.get("audio_device", "hw:Headphones")
+            if new_audio_device != current_audio_device:
+                logger.warning(f"Audio device changed: {current_audio_device} -> {new_audio_device}")
+                logger.warning("Restarting federation service to apply audio device change")
+                logger.warning("Service will restart automatically via supervisord")
+                self.stop()
+                sys.exit(0)
+
         except Exception as e:
             logger.error(f"Failed to check settings changes: {e}")
 
@@ -151,17 +167,125 @@ class FederationService:
                 logger.info(f"Skipping local server: {server.name}")
                 continue
 
+            # Get actual server name from federation API (not Avahi service name)
+            actual_name = server.name
+            try:
+                import urllib.request
+                import json
+
+                # Run blocking urllib call in thread pool
+                def fetch_name():
+                    info_url = f"http://{server.host}:5001/api/federation/info"
+                    with urllib.request.urlopen(info_url, timeout=2) as response:
+                        if response.status == 200:
+                            return json.loads(response.read().decode()).get("name")
+                    return None
+
+                fetched_name = await asyncio.to_thread(fetch_name)
+                if fetched_name:
+                    actual_name = fetched_name
+                    logger.info(f"Got server name from API: {actual_name} (was: {server.name})")
+            except Exception as e:
+                logger.debug(f"Could not fetch server name from API, using Avahi name: {e}")
+
             # Connect to new server
             try:
                 await self.ws_manager.add_server(
                     server_id=server.id,
                     host=server.host,
                     port=server.port,
-                    name=server.name,
+                    name=actual_name,
                     use_https=False
                 )
             except Exception as e:
-                logger.error(f"Failed to connect to {server.name}: {e}")
+                logger.error(f"Failed to connect to {actual_name}: {e}")
+
+    def _on_server_added(self, server: ServerInfo):
+        """Handle new server discovered (callback from discovery)"""
+        # Skip local server (don't create snapclient to ourselves)
+        if server.id == self.local_server_id:
+            logger.info(f"Skipping local server for remote snapclient: {server.name}")
+            return
+
+        logger.info(f"Server added, spawning remote snapclient: {server.name} ({server.id})")
+
+        # Spawn remote snapclient for this server
+        if self.remote_snapclient_manager:
+            try:
+                self.remote_snapclient_manager.add_remote_server(
+                    server_id=server.id,
+                    host=server.host,
+                    port=1705  # Snapclient port (same as local)
+                )
+
+                # Schedule async task to discover client ID (only if loop is healthy)
+                if self.is_loop_healthy():
+                    asyncio.run_coroutine_threadsafe(
+                        self._discover_remote_client_id(server.id, server.host),
+                        self.loop
+                    )
+                else:
+                    logger.warning(f"Cannot discover client ID for {server.id}: async loop not healthy")
+            except Exception as e:
+                logger.error(f"Failed to spawn remote snapclient for {server.id}: {e}")
+
+    async def _discover_remote_client_id(self, server_id: str, host: str):
+        """Discover the client ID of our remote snapclient on a server"""
+        try:
+            # Wait a bit for client to connect
+            await asyncio.sleep(3)
+
+            # Get connection to remote server
+            conn = self.ws_manager.get_connection(server_id)
+            if not conn or not conn.connected:
+                logger.warning(f"Cannot discover client ID: server {server_id} not connected")
+                return
+
+            # Get server status
+            status = await conn.get_status()
+
+            # Find client with client ID matching our remote snapclient
+            # We use --hostID which sets the client ID to "remote-<local-server-id>"
+            # This indicates WHERE the client is FROM, not where it's connecting TO
+            expected_client_id = f"remote-{self.local_server_id}"
+            remote_client_id = None
+
+            for group in status.get("server", {}).get("groups", []):
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+
+                    # Check if this client's ID matches our expected pattern
+                    if client_id == expected_client_id:
+                        remote_client_id = client_id
+                        logger.info(f"Found remote client by client ID: {remote_client_id}")
+                        break
+
+                if remote_client_id:
+                    break
+
+            if remote_client_id:
+                self.remote_snapclient_manager.set_client_id(server_id, remote_client_id)
+                logger.info(f"Discovered remote client ID for {server_id}: {remote_client_id}")
+            else:
+                logger.warning(f"Could not find remote client ID for {server_id} with expected client ID {expected_client_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to discover client ID for {server_id}: {e}")
+
+    def _on_server_removed(self, server: ServerInfo):
+        """Handle server removed (callback from discovery)"""
+        # Skip local server
+        if server.id == self.local_server_id:
+            return
+
+        logger.info(f"Server removed, terminating remote snapclient: {server.name} ({server.id})")
+
+        # Remove remote snapclient for this server
+        if self.remote_snapclient_manager:
+            try:
+                self.remote_snapclient_manager.remove_remote_server(server.id)
+            except Exception as e:
+                logger.error(f"Failed to remove remote snapclient for {server.id}: {e}")
 
     async def _on_server_event(self, server_id: str, method: str, params: Dict):
         """Handle events from servers"""
@@ -176,15 +300,29 @@ class FederationService:
         self.ws_manager = WebSocketManager()
         self.ws_manager.add_event_callback(self._on_server_event)
 
-        # Initialize router
-        self.router = FederationRouter(self.ws_manager, self.local_server_id)
+        # Initialize remote snapclient manager (load audio settings)
+        audio_device = self.config.get("audio_device", "hw:Headphones")
+        latency = self.config.get("latency", 0)
+        self.remote_snapclient_manager = RemoteSnapclientManager(
+            local_server_id=self.local_server_id,
+            audio_device=audio_device,
+            latency=latency
+        )
+
+        # Initialize router (pass snapclient manager for endpoint lockout)
+        self.router = FederationRouter(
+            self.ws_manager,
+            self.local_server_id,
+            self.remote_snapclient_manager
+        )
 
         # Initialize data aggregator
         self.data_aggregator = DataAggregator(
             self.ws_manager,
             self.discovery,
             self.local_server_id,
-            self.local_server_name
+            self.local_server_name,
+            self.loop
         )
 
         # Add local server connection (localhost)
@@ -220,6 +358,17 @@ class FederationService:
 
         logger.info("Federation Service async components started")
 
+    def is_loop_healthy(self) -> bool:
+        """Check if the async event loop is healthy and running"""
+        if self.loop is None:
+            return False
+        if self.loop.is_closed():
+            return False
+        if self.async_thread is None or not self.async_thread.is_alive():
+            return False
+        # Loop exists, isn't closed, and thread is alive
+        return True
+
     def start(self):
         """Start the federation service"""
         if self.running:
@@ -229,17 +378,15 @@ class FederationService:
         self.running = True
         logger.info("Starting Federation Service")
 
-        # Initialize discovery (start it later based on settings)
+        # Initialize discovery FIRST (but don't start it yet)
+        # This ensures DataAggregator has a valid reference
         self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
             self._on_servers_discovered(servers), self.loop
-        ))
+        ) if self.is_loop_healthy() else None)
 
-        # Start discovery if enabled
-        if self.auto_discover:
-            logger.info("Starting Avahi discovery")
-            self.discovery.start()
-        else:
-            logger.info("Auto-discovery disabled")
+        # Register server lifecycle callbacks for remote snapclient management
+        self.discovery.set_server_added_callback(self._on_server_added)
+        self.discovery.set_server_removed_callback(self._on_server_removed)
 
         # Start settings monitor thread
         settings_thread = threading.Thread(target=self._settings_monitor_loop, daemon=True)
@@ -254,23 +401,48 @@ class FederationService:
             # Start async components
             self.loop.run_until_complete(self.start_async_components())
 
-            # Keep loop running
-            try:
-                self.loop.run_forever()
-            except Exception as e:
-                logger.error(f"Async loop error: {e}")
-            finally:
-                self.loop.close()
+            # Signal that loop is ready
+            self.loop_ready.set()
+            logger.info("Async event loop is ready")
 
-        async_thread = threading.Thread(target=run_async_loop, daemon=True)
-        async_thread.start()
+            # Keep loop running with exception handling
+            while self.running:
+                try:
+                    self.loop.run_forever()
+                except Exception as e:
+                    logger.error(f"Async loop error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    if self.running:
+                        logger.warning("Async loop crashed, attempting recovery...")
+                        time.sleep(1)
+                        continue
+                    break
 
-        # Wait for async components to initialize
-        import time
-        time.sleep(2)
+            logger.info("Async loop exited")
+
+        self.async_thread = threading.Thread(target=run_async_loop, daemon=True, name="AsyncEventLoop")
+        self.async_thread.start()
+
+        # Wait for async loop to be ready (with timeout)
+        if not self.loop_ready.wait(timeout=10):
+            logger.error("Async loop failed to start within 10 seconds")
+            self.stop()
+            sys.exit(1)
+
+        logger.info("Async loop initialized successfully")
+
+        # NOW start discovery (after loop is ready)
+        # This prevents race conditions where callbacks fire before loop exists
+        if self.auto_discover:
+            logger.info("Starting Avahi discovery")
+            self.discovery.start()
+        else:
+            logger.info("Auto-discovery disabled")
 
         # Start REST API (blocks in main thread)
-        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port)
+        # Pass self reference so API can check loop health
+        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port, service=self)
         logger.info(f"Starting REST API on port {self.api_port}")
 
         try:
@@ -291,13 +463,37 @@ class FederationService:
         if self.discovery:
             self.discovery.stop()
 
+        # Cleanup remote snapclients
+        if self.remote_snapclient_manager:
+            logger.info("Cleaning up remote snapclients")
+            self.remote_snapclient_manager.cleanup_all()
+
         # Close WebSocket connections
-        if self.loop and self.ws_manager:
-            asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
+        if self.loop and not self.loop.is_closed() and self.ws_manager:
+            try:
+                asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
+            except Exception as e:
+                logger.warning(f"Failed to close WebSocket connections: {e}")
 
         # Stop async loop
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.loop.stop)
+        if self.loop and not self.loop.is_closed():
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except Exception as e:
+                logger.warning(f"Failed to stop async loop: {e}")
+
+            # Wait for async thread to finish
+            if self.async_thread and self.async_thread.is_alive():
+                self.async_thread.join(timeout=2.0)
+                if self.async_thread.is_alive():
+                    logger.warning("Async thread did not stop gracefully")
+
+            # Now close the loop
+            if not self.loop.is_closed():
+                try:
+                    self.loop.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close async loop: {e}")
 
         logger.info("Federation Service stopped")
 
@@ -331,7 +527,9 @@ def load_config() -> Dict:
         "local_name": os.getenv("DEVICE_NAME", "Plum Snapcast"),
         "local_host": default_local_host,
         "api_port": int(os.getenv("FEDERATION_API_PORT", "5000")),
-        "manual_servers": []
+        "manual_servers": [],
+        "audio_device": os.getenv("AUDIO_OUTPUT_DEVICE", "hw:Headphones"),
+        "latency": int(os.getenv("SNAPCLIENT_LATENCY", "0"))
     }
 
     # Override with settings.json if it exists (user preferences take precedence)
@@ -365,6 +563,14 @@ def load_config() -> Dict:
             logger.info(f"Local server name from settings.json deviceName: {config['local_name']}")
         else:
             logger.warning(f"deviceName not found in settings! Using env var fallback: {config['local_name']}")
+
+        # Load audio output device settings for remote snapclients
+        audio_settings = settings.get("audio", {})
+        audio_output = audio_settings.get("output", {})
+        if "device" in audio_output:
+            config["audio_device"] = audio_output["device"]
+            logger.info(f"Audio device from settings.json: {config['audio_device']}")
+        # Note: latency remains from env var default set in initial config
 
     except Exception as e:
         import traceback

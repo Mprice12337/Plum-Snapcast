@@ -178,6 +178,10 @@ class MetadataStore:
             "position_timestamp": None,  # When position was last updated (for interpolation)
             "last_gui_pause_time": None,  # Track when pause command was sent from GUI
             "last_pend_time": None,  # Track when stream ended gracefully (pend event)
+            # RTP reference values for position calculation from frame_position_and_time
+            "start_rtp": None,  # RTP frame at track start (from prgr event)
+            "end_rtp": None,    # RTP frame at track end (from prgr event)
+            "last_frame_rtp": None,  # Last received RTP frame (for seek detection)
         }
 
     def update(self, **kwargs):
@@ -423,18 +427,26 @@ class MetadataParser:
                 # ===== PLAYBACK STATE EVENTS (ssnc) =====
                 elif code == "pbeg":
                     # Play stream begin - clear GUI pause timestamp (new session)
+                    # IMPORTANT: Don't reset position to 0 - preserve existing position for resume
+                    # Actual position will come from prgr or frame_position_and_time events
                     log(f"[Session] Play stream BEGIN")
-                    current_state = self.store.get_all().get("playback_status", "stopped")
-                    if current_state != "playing":
-                        # MQTT: Position from metadata pipe only (no query API)
-                        position_ms = 0
-                        duration_ms = 0
+                    current_state = self.store.get_all()
+
+                    # Check for recent GUI pause - don't flip back to playing if user just paused
+                    last_gui_pause_time = current_state.get("last_gui_pause_time")
+                    if last_gui_pause_time and (time.time() - last_gui_pause_time) < 5:
+                        log(f"[Session] Ignoring pbeg - recent GUI pause ({time.time() - last_gui_pause_time:.1f}s ago)")
+                        return False
+
+                    if current_state.get("playback_status", "stopped") != "playing":
+                        # Preserve existing position and duration (for resume scenarios)
+                        existing_position = current_state.get("position", 0)
+                        existing_duration = current_state.get("duration", 0)
 
                         # Start interpolation immediately and clear old GUI pause timestamp
+                        # Don't reset position - keep what we had (for resume from pause)
                         self.store.update(
                             playback_status="playing",
-                            position=position_ms,
-                            duration=duration_ms,
                             position_timestamp=time.time(),
                             last_gui_pause_time=None,
                             last_pend_time=None
@@ -444,11 +456,11 @@ class MetadataParser:
                         if self.on_state_change:
                             self.on_state_change()
 
-                        # Update playback API immediately with starting position
+                        # Update playback API with EXISTING position (not 0) to preserve state
                         if self.on_position_update:
-                            self.on_position_update(position_ms, duration_ms, "playing")
+                            self.on_position_update(existing_position, existing_duration, "playing")
 
-                        log(f"[State] Playback state → playing (stream begin, position={position_ms}ms) - notified")
+                        log(f"[State] Playback state → playing (stream begin, preserving position={existing_position}ms) - notified")
                         return False  # Don't trigger duplicate notification
                     return False
 
@@ -479,6 +491,7 @@ class MetadataParser:
                 elif code == "prgr":
                     # Progress information: "start_rtp/current_rtp/end_rtp" (RTP timestamps at 44.1kHz)
                     # Position updates POST to playback API (not Snapcast) to avoid audio stuttering
+                    # IMPORTANT: Store start_rtp/end_rtp for frame_position_and_time processing
                     if data_text:
                         try:
                             decoded = base64.b64decode(data_text).decode('utf-8')
@@ -487,6 +500,11 @@ class MetadataParser:
                                 start_rtp = int(parts[0])
                                 current_rtp = int(parts[1])
                                 end_rtp = int(parts[2])
+
+                                # Store RTP reference values for frame_position_and_time processing
+                                # This enables seek detection from continuous RTP frame updates
+                                self.store.update(start_rtp=start_rtp, end_rtp=end_rtp, last_frame_rtp=current_rtp)
+                                log(f"[Progress] Stored RTP refs: start={start_rtp}, end={end_rtp}, current={current_rtp}")
 
                                 # Convert RTP frames to milliseconds (44.1kHz = 44100 samples/sec)
                                 duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
@@ -598,7 +616,13 @@ class MetadataParser:
                 elif code == "prsm":
                     # Play stream resume
                     log(f"[Session] Play stream RESUME")
-                    current_state = self.store.get_all().get("playback_status", "playing")
+                    state_data = self.store.get_all()
+
+                    # Check for recent GUI pause - don't flip back to playing if user just paused
+                    last_gui_pause_time = state_data.get("last_gui_pause_time")
+                    if last_gui_pause_time and (time.time() - last_gui_pause_time) < 5:
+                        log(f"[Session] Ignoring prsm - recent GUI pause ({time.time() - last_gui_pause_time:.1f}s ago)")
+                        return False
 
                     # Get actual position from D-Bus before resuming (for accuracy)
                     # MQTT: Position from metadata pipe only (no query API)
@@ -791,10 +815,11 @@ class MQTTControl:
     Subscribes to shairport-sync MQTT topics for metadata and publishes remote control commands.
     """
 
-    def __init__(self, store: MetadataStore, instance_id: str, on_state_change_callback):
+    def __init__(self, store: MetadataStore, instance_id: str, on_state_change_callback, on_position_update=None):
         self.store = store
         self.instance_id = instance_id
         self.on_state_change = on_state_change_callback
+        self.on_position_update = on_position_update  # Callback for position updates (seek detection)
         self.mqtt_client = None
         self.topic_prefix = f"plum-snapcast/airplay/{instance_id}"
         self._connection_complete = threading.Event()
@@ -807,6 +832,9 @@ class MQTTControl:
         self.mqtt_activity_monitor_active = False
         self.mqtt_activity_monitor_thread = None
         self.mqtt_activity_lock = threading.Lock()
+
+        # Seek detection state
+        self.last_position_post_time = 0  # Rate limit position updates
 
         if not MQTT_AVAILABLE:
             log("[MQTT] paho-mqtt not available - controls disabled")
@@ -959,8 +987,10 @@ class MQTTControl:
                 if self.mqtt_activity_monitor_active:
                     self.last_mqtt_activity_time = time.time()
 
-            # Skip logging for noisy frame position updates
+            # Process frame_position_and_time for seek detection
+            # Format: "<rtp_frame>/<timestamp_ns>" (e.g., "2439812407/93410840076297")
             if subtopic == "frame_position_and_time":
+                self._process_frame_position(payload)
                 return
 
             # Handle metadata topics
@@ -1003,16 +1033,32 @@ class MQTTControl:
 
             # Handle playback event topics
             elif subtopic == "play_start":
-                # Clear pause timestamps when new playback session starts
+                # Playback started - clear pause timestamps but PRESERVE position for resume
+                # Don't reset position to 0 - actual position comes from frame_position_and_time
+                state_data = self.store.get_all()
+
+                # Check for recent GUI pause - don't flip back to playing if user just paused
+                last_gui_pause_time = state_data.get("last_gui_pause_time")
+                if last_gui_pause_time and (time.time() - last_gui_pause_time) < 5:
+                    log(f"[MQTT] Ignoring play_start - recent GUI pause ({time.time() - last_gui_pause_time:.1f}s ago)")
+                    return
+
+                existing_position = state_data.get("position", 0)
+                existing_duration = state_data.get("duration", 0)
+
                 self.store.update(
                     playback_status="playing",
-                    position=0,
                     position_timestamp=time.time(),
                     last_gui_pause_time=None,
                     last_pend_time=None
                 )
-                log("[MQTT] Playback started")
+                log(f"[MQTT] Playback started (preserving position={existing_position}ms)")
                 self._start_mqtt_activity_monitor()
+
+                # Post existing position to playback API (not 0)
+                if self.on_position_update:
+                    self.on_position_update(existing_position, existing_duration, "playing")
+
                 if self.on_state_change:
                     self.on_state_change()
 
@@ -1020,10 +1066,25 @@ class MQTTControl:
                 self.store.update(playback_status="paused")
                 log("[MQTT] Playback flushed (pause/skip)")
                 self._stop_mqtt_activity_monitor()
+                # POST current position to playback API so frontend gets correct position on pause
+                state_data = self.store.get_all()
+                if self.on_position_update:
+                    self.on_position_update(
+                        state_data.get("position", 0),
+                        state_data.get("duration", 0),
+                        "paused"
+                    )
                 if self.on_state_change:
                     self.on_state_change()
 
             elif subtopic == "play_resume":
+                # Check for recent GUI pause - don't flip back to playing if user just paused
+                state_data = self.store.get_all()
+                last_gui_pause_time = state_data.get("last_gui_pause_time")
+                if last_gui_pause_time and (time.time() - last_gui_pause_time) < 5:
+                    log(f"[MQTT] Ignoring play_resume - recent GUI pause ({time.time() - last_gui_pause_time:.1f}s ago)")
+                    return
+
                 # Don't clear GUI pause timestamp - let it age naturally
                 # This handles pause → resume → pause sequences from GUI
                 self.store.update(
@@ -1041,6 +1102,14 @@ class MQTTControl:
                 # DON'T stop activity monitor yet - let it detect if MQTT stops (disconnect)
                 # or continues (graceful pause with metadata/volume updates)
                 # Monitor will be stopped on active_end when we determine it's graceful
+                # POST current position to playback API so frontend gets correct position on pause
+                state_data = self.store.get_all()
+                if self.on_position_update:
+                    self.on_position_update(
+                        state_data.get("position", 0),
+                        state_data.get("duration", 0),
+                        "paused"
+                    )
                 if self.on_state_change:
                     self.on_state_change()
 
@@ -1074,6 +1143,91 @@ class MQTTControl:
 
         except Exception as e:
             log(f"[MQTT] Error processing message on {msg.topic}: {e}")
+
+    def _process_frame_position(self, payload: str):
+        """
+        Process frame_position_and_time MQTT message for seek detection.
+
+        Format: "<rtp_frame>/<timestamp_ns>" (e.g., "2439812407/93410840076297")
+
+        Seek detection:
+        - Uses start_rtp from prgr event to calculate position
+        - Compares position change to expected (~1 second per second)
+        - If position jumps significantly (>3s), it's a seek
+        """
+        try:
+            # Parse the payload
+            parts = payload.split('/')
+            if len(parts) < 1:
+                return
+
+            current_rtp = int(parts[0])
+
+            # Get RTP reference values from store
+            state_data = self.store.get_all()
+            start_rtp = state_data.get("start_rtp")
+            end_rtp = state_data.get("end_rtp")
+            last_frame_rtp = state_data.get("last_frame_rtp")
+            playback_status = state_data.get("playback_status", "stopped")
+
+            # Skip processing when paused - don't overwrite paused state
+            # MQTT frame messages can continue briefly after pause is initiated
+            if playback_status != "playing":
+                return
+
+            # Can't calculate position without start_rtp (need prgr event first)
+            if start_rtp is None:
+                return
+
+            # Calculate position in milliseconds (44.1kHz = 44100 samples/sec)
+            position_ms = int(((current_rtp - start_rtp) / 44100.0) * 1000)
+            duration_ms = state_data.get("duration", 0)
+            if end_rtp and start_rtp:
+                duration_ms = int(((end_rtp - start_rtp) / 44100.0) * 1000)
+
+            # Clamp position to valid range
+            if position_ms < 0:
+                position_ms = 0
+            if duration_ms > 0 and position_ms > duration_ms:
+                position_ms = duration_ms
+
+            # Detect seek: compare to last frame position
+            # Normal playback: ~44100 frames per second difference
+            # Seek: significantly different
+            is_seek = False
+            if last_frame_rtp is not None and playback_status == "playing":
+                # Expected RTP change for ~1 second (with some tolerance for timing)
+                rtp_diff = current_rtp - last_frame_rtp
+                expected_rtp_diff = 44100  # ~1 second of frames
+
+                # If RTP diff is significantly different from expected (>3 seconds worth),
+                # and it's not a small backward jump (< 1 second), it's a seek
+                # Note: Small backward jumps can happen due to packet timing
+                if abs(rtp_diff) > 3 * expected_rtp_diff or rtp_diff < -expected_rtp_diff:
+                    is_seek = True
+                    old_position_ms = state_data.get("position", 0)
+                    log(f"[MQTT] Seek detected! RTP diff: {rtp_diff} (expected ~{expected_rtp_diff})")
+                    log(f"[MQTT] Position: {old_position_ms}ms → {position_ms}ms")
+
+            # Update store with new frame position
+            self.store.update(last_frame_rtp=current_rtp, position=position_ms, position_timestamp=time.time())
+
+            # Post position update on seek or periodically (every 5 seconds)
+            current_time = time.time()
+            time_since_last_post = current_time - self.last_position_post_time
+
+            if is_seek or time_since_last_post >= 5.0:
+                self.last_position_post_time = current_time
+                if self.on_position_update:
+                    self.on_position_update(position_ms, duration_ms, playback_status)
+                    if is_seek:
+                        log(f"[MQTT] Posted seek position: {position_ms}ms / {duration_ms}ms")
+
+        except (ValueError, TypeError) as e:
+            # Don't log for every failed parse - too noisy
+            pass
+        except Exception as e:
+            log(f"[MQTT] Error processing frame position: {e}")
 
     def play(self):
         """Send play command via MQTT"""
@@ -1281,11 +1435,12 @@ class SnapcastControlScript:
         self.store = MetadataStore()
         instance_id = globals().get('INSTANCE_ID', '1')
 
-        # MQTT for metadata only
+        # MQTT for metadata and position tracking (including seek detection)
         self.mqtt_control = MQTTControl(
             self.store,
             instance_id,
-            self.send_playback_state_update
+            self.send_playback_state_update,
+            on_position_update=self._on_position_update
         )
 
         # D-Bus/MPRIS for playback control
@@ -1323,7 +1478,10 @@ class SnapcastControlScript:
 
     def send_playback_state_update(self):
         """Send playback state update to Snapcast (called when MQTT state changes)"""
-        playback_status = self.store.get_all().get("playback_status", "stopped")
+        state_data = self.store.get_all()
+        playback_status = state_data.get("playback_status", "stopped")
+        position_ms = state_data.get("position", 0)
+        duration_ms = state_data.get("duration", 0)
         can_control = self.dbus_control.is_available()
         current_time = time.time()
 
@@ -1336,8 +1494,12 @@ class SnapcastControlScript:
             # State didn't change and it's been less than 1 second - skip this update
             return
 
+        # Include position in properties so frontend can show correct position when paused
+        # Position is in SECONDS for Snapcast properties (matches frontend expectations)
         params = {
             "playbackStatus": playback_status,
+            "position": position_ms / 1000 if position_ms else 0,  # Convert ms to seconds
+            "duration": duration_ms / 1000 if duration_ms else 0,  # Convert ms to seconds
             "canGoNext": can_control,
             "canGoPrevious": can_control,
             "canPlay": can_control,
@@ -1345,7 +1507,7 @@ class SnapcastControlScript:
             "canControl": can_control,
         }
         self.send_notification("Plugin.Stream.Player.Properties", params)
-        log(f"[Snapcast] Playback state → {playback_status} (stream={self.stream_id})")
+        log(f"[Snapcast] Playback state → {playback_status} (position={position_ms}ms, stream={self.stream_id})")
 
         # Update tracking
         self.last_playback_state = playback_status
@@ -1471,10 +1633,27 @@ class SnapcastControlScript:
                     log("[Command] Play command sent via D-Bus")
 
                 elif command == "pause":
-                    # Record GUI pause time to distinguish from source disconnect
-                    self.store.update(last_gui_pause_time=time.time())
+                    # Record GUI pause time and IMMEDIATELY set status to paused
+                    # Don't wait for MQTT events which can take several seconds
+                    state_data = self.store.get_all()
+                    current_position = state_data.get("position", 0)
+                    current_duration = state_data.get("duration", 0)
+
+                    self.store.update(
+                        last_gui_pause_time=time.time(),
+                        playback_status="paused"
+                    )
+
+                    # Send D-Bus pause command
                     self.dbus_control.pause()
-                    log("[Command] Pause command sent via D-Bus (GUI-initiated)")
+
+                    # Immediately notify Snapcast of paused state
+                    self.send_playback_state_update()
+
+                    # Immediately post paused position to playback API
+                    self._on_position_update(current_position, current_duration, "paused")
+
+                    log(f"[Command] Pause command sent via D-Bus (GUI-initiated, position={current_position}ms)")
 
                 elif command == "playPause":
                     self.dbus_control.play_pause()

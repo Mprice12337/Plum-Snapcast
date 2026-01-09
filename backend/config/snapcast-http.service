@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!--
+  Avahi service file for Snapcast HTTP/JSON-RPC API
+  Enables federation discovery between Snapcast servers
+-->
+
+<service-group>
+
+  <name replace-wildcards="yes">%h Snapcast</name>
+
+  <service>
+    <type>_snapcast-http._tcp</type>
+    <port>1780</port>
+    <txt-record>version=1.0</txt-record>
+  </service>
+
+</service-group>

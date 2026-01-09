@@ -43,14 +43,29 @@ const ClientDevice: React.FC<{
         setIsSelectorOpen(false);
     };
 
+    // Find the none stream for this client's server
+    const getNoneStreamForClient = (): string | null => {
+        if (!client.serverId) return null;
+        const noneStream = streams.find(s =>
+            s.serverId === client.serverId && s.id.includes('none-')
+        );
+        return noneStream?.id || null;
+    };
+
+    const handleSelectNone = () => {
+        const noneStreamId = getNoneStreamForClient();
+        onStreamChange(client.id, noneStreamId);
+        setIsSelectorOpen(false);
+    };
+
     const volumePercentage = client.volume;
     const sliderStyle = {
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
     };
 
-    // Filter out "none" streams from dropdown options (they're just fallback streams)
+    // Filter out "none" streams from dropdown options (they're used internally but shown via "None" button)
     const selectableStreams = React.useMemo(() => {
-        return streams.filter(s => !s.id.startsWith('none-'));
+        return streams.filter(s => !s.id.includes('none-'));
     }, [streams]);
 
     const groupedStreams = React.useMemo(() => {
@@ -98,10 +113,10 @@ const ClientDevice: React.FC<{
                         <ul className="py-1 text-sm text-[var(--text-primary)] max-h-40 overflow-auto">
                             <li role="option">
                                 <button
-                                    onClick={() => handleSelectStream(null)}
+                                    onClick={handleSelectNone}
                                     className="block w-full text-left px-3 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-secondary-hover)]"
                                 >
-                                    Disconnect
+                                    None
                                 </button>
                             </li>
                             {federationEnabled ? (
@@ -155,7 +170,8 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                                                                 federationEnabled = false,
                                                             }) => {
     const groupedClients = clients.reduce((acc, client) => {
-        const streamId = client.currentStreamId ?? 'idle';
+        // Treat none streams as idle (no stream selected)
+        const streamId = (client.currentStreamId?.includes('none-')) ? 'idle' : (client.currentStreamId ?? 'idle');
         if (!acc[streamId]) {
             acc[streamId] = [];
         }
@@ -231,12 +247,12 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                     <div className="space-y-2">
                         {idleClients.map(client => (
                             <div key={client.id}
-                                 className="flex items-center justify-between p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
-                                <span className="font-semibold">{client.name}</span>
+                                 className="flex items-center justify-between gap-3 p-2 rounded-lg hover:bg-[var(--bg-tertiary-hover)]">
+                                <span className="font-semibold truncate flex-1">{client.name}</span>
                                 <button
                                     onClick={() => onStreamChange(client.id, myClientStreamId)}
                                     disabled={!myClientStreamId}
-                                    className="text-sm bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+                                    className="text-sm bg-[var(--accent-color)] accent-button-text font-bold py-1 px-3 rounded-full hover:bg-[var(--accent-color-hover)] transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed flex-shrink-0"
                                     title={myClientStreamId ? 'Join your current stream' : 'Select a stream first'}
                                 >
                                     <Icon name="plus" className="mr-1" />

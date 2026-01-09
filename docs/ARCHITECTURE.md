@@ -32,7 +32,14 @@ Plum-Snapcast/
 │       ├── spotify-fifo-keeper.sh              # Spotify FIFO keeper
 │       ├── dlna-fifo-keeper.sh                 # DLNA FIFO keeper
 │       ├── airplay-control-script.py  # AirPlay metadata & control handler
-│       └── plexamp-control-script.py  # Plexamp metadata & control handler
+│       ├── plexamp-control-script.py  # Plexamp metadata & control handler
+│       └── federation/                # Multi-server federation
+│           ├── api.py                 # REST API endpoints
+│           ├── router.py              # Cross-server routing logic
+│           ├── service.py             # Federation service orchestration
+│           ├── discovery.py           # Avahi/mDNS server discovery
+│           ├── websocket_manager.py   # WebSocket connections to servers
+│           └── remote_snapclient_manager.py  # Remote snapclient lifecycle
 ├── frontend/                  # React/TypeScript web interface
 │   ├── Dockerfile            # Nginx-based frontend container
 │   ├── App.tsx               # Main application component
@@ -46,7 +53,8 @@ Plum-Snapcast/
 │   │   └── SyncedDevices/    # Synchronized device display
 │   ├── services/             # API and data services
 │   │   ├── snapcastService.ts        # WebSocket communication
-│   │   └── snapcastDataService.ts    # Data transformation
+│   │   ├── snapcastDataService.ts    # Data transformation
+│   │   └── federationService.ts      # Multi-server federation API
 │   └── hooks/                # Custom React hooks
 │       └── useAudioSync.ts   # Audio synchronization hook
 ├── docker/                   # Deployment orchestration
@@ -59,9 +67,9 @@ Plum-Snapcast/
 │   ├── ARCHITECTURE.md      # This file
 │   ├── CLAUDE.md            # Claude Code configuration
 │   ├── DEV-SETUP.md         # Developer setup guide
-│   ├── QUICK-REFERENCE.md   # Quick reference guide
-│   └── original/            # Legacy documentation
+│   └── QUICK-REFERENCE.md   # Quick reference guide
 ├── _resources/              # Development references (NOT in git)
+│   ├── archived-docs/       # Historical implementation docs
 │   ├── Examples/            # Code samples, API responses
 │   ├── Research/            # Research docs, comparisons
 │   ├── Assets/              # Design files, mockups
@@ -528,6 +536,55 @@ Services: `airplay`, `bluetooth`, `spotify`, `dlna`
   "is_stale": false
 }
 ```
+
+#### Federation API
+
+**Port**: 5001 (internal only)
+**File**: `backend/scripts/federation/api.py`
+**Purpose**: Multi-server federation with cross-server routing
+
+The Federation API provides a unified control plane for multiple Snapcast servers, enabling:
+- **Unified View**: See all streams and clients from all servers in one interface
+- **Cross-Server Control**: Control volume and playback for clients on any server
+- **Cross-Server Routing**: Route any client to any stream across the federation
+
+**Key Endpoints**:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/federation/servers` | List all discovered servers and connection status |
+| GET | `/api/federation/status` | Aggregated streams and clients from all servers |
+| GET | `/api/federation/active-endpoint` | Get currently active output client and stream |
+| POST | `/api/federation/route` | Route a client to a stream (cross-server capable) |
+| POST | `/api/federation/volume` | Set client volume on any server |
+| POST | `/api/federation/control` | Send playback control commands to streams |
+
+**Architecture**:
+- **Discovery**: Avahi/mDNS discovers `_snapcast-http._tcp` services on the network
+- **WebSocket Connections**: Persistent JSON-RPC 2.0 connections to each discovered server
+- **Remote Snapclients**: Each server runs snapclients connected to remote servers for cross-server audio
+- **Endpoint Lockout**: Only one output client is active at a time across the entire federation
+
+**Cross-Server Routing Flow**:
+```
+User selects remote stream
+        ↓
+Frontend calls POST /api/federation/route
+        ↓
+FederationRouter.route_client()
+        ↓
+1. Deactivate all active endpoints (route to none)
+2. Find remote snapclient on target server
+3. Route remote snapclient to desired stream
+4. Also route local output client on target server
+        ↓
+Audio plays from remote server through local hardware
+```
+
+**ID Format**:
+- Federated IDs use `server-{ip}-{local-id}` format (e.g., `server-192-168-7-122-spotify1`)
+- Local IDs are the original Snapcast IDs (e.g., `spotify1`)
+- The router parses and translates between formats automatically
 
 ## 6. Deployment & Infrastructure
 

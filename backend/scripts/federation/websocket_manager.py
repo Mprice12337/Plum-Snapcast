@@ -88,9 +88,12 @@ class SnapcastConnection:
 
     async def reconnect(self):
         """Attempt to reconnect with exponential backoff"""
+        # Don't give up - keep trying with exponential backoff
+        # After max attempts, reset counter but keep trying at max delay
         if self.reconnect_attempts >= self.max_reconnect_attempts:
-            logger.error(f"Max reconnection attempts reached for {self.name}")
-            return False
+            logger.warning(f"[{self.name}] Exceeded max reconnection attempts, continuing at max delay interval")
+            # Reset attempts but continue trying (prevents permanent failure)
+            self.reconnect_attempts = self.max_reconnect_attempts - 1
 
         self.reconnect_attempts += 1
         delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
@@ -103,6 +106,8 @@ class SnapcastConnection:
             return True
         except Exception as e:
             logger.error(f"Reconnection failed for {self.name}: {e}")
+            # Schedule another reconnection attempt
+            asyncio.create_task(self.reconnect())
             return False
 
     async def _message_listener(self):

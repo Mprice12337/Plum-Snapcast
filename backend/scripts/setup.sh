@@ -87,6 +87,10 @@ if [ ! -f /app/config/snapserver.conf ]; then
 
     echo "Creating none stream: ${NONE_STREAM_ID}"
 
+    # Get device name from settings for zeroconf service name
+    # This ensures the Snapcast service advertises with the user-configured name
+    DEVICE_NAME="${DEVICE_NAME:-Plum Snapcast}"
+
     cat > /app/config/snapserver.conf << SNAPCONF
 [stream]
 port = 1705
@@ -114,6 +118,9 @@ port = 1704
 
 [server]
 datadir = /app/data
+# Use device name from settings for zeroconf/mDNS service advertising
+# This name will appear when discovering Snapcast servers on the network
+host_name = ${DEVICE_NAME}
 SNAPCONF
 
     # AirPlay source is now managed dynamically by stream-lifecycle-manager
@@ -153,6 +160,21 @@ SNAPCONF
         # Ensure autostart is disabled when Plexamp is not enabled
         sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
     fi
+else
+    # Config already exists - update host_name dynamically from settings
+    echo "Updating snapserver.conf with device name from settings..."
+    DEVICE_NAME="${DEVICE_NAME:-Plum Snapcast}"
+
+    # Check if host_name already exists in config
+    if grep -q "^host_name" /app/config/snapserver.conf; then
+        # Update existing host_name
+        sed -i "s/^host_name =.*/host_name = ${DEVICE_NAME}/" /app/config/snapserver.conf
+    else
+        # Add host_name to [server] section
+        sed -i "/^\[server\]/a host_name = ${DEVICE_NAME}" /app/config/snapserver.conf
+    fi
+
+    echo "Snapserver configured with device name: ${DEVICE_NAME}"
 fi
 
 # Note: ALSA configuration for Plexamp is handled in the separate Debian container

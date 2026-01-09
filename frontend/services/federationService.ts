@@ -90,6 +90,23 @@ export class FederationService {
   }
 
   /**
+   * Get currently active endpoint (server/client/stream)
+   */
+  async getActiveEndpoint(): Promise<{ active: boolean; serverId?: string; clientId?: string; streamId?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/active-endpoint`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch active endpoint: ${response.statusText}`);
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Failed to fetch active endpoint:', error);
+      return { active: false };
+    }
+  }
+
+  /**
    * Get all data (servers, streams, clients) in one call
    */
   async getAll(): Promise<{ servers: Server[]; streams: Stream[]; clients: Client[] }> {
@@ -315,6 +332,13 @@ export class FederationService {
     }
 
     console.log('Federation polling stopped');
+  }
+
+  /**
+   * Manually trigger an immediate poll (useful after state-changing operations)
+   */
+  async triggerPoll() {
+    await this.poll();
   }
 
   /**

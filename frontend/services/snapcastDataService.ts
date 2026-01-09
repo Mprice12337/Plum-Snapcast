@@ -219,7 +219,7 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
 
     // Try to get position from playback API (server-side interpolation)
     // This ensures page refreshes show correct position immediately
-    if (isPlaying && snapStream.id !== 'none-snapserver') {
+    if (isPlaying && !snapStream.id.includes('none-')) {
         try {
             const playbackData = await getStreamPlayback(snapStream.id);
             if (playbackData && !playbackData.is_stale) {
@@ -237,7 +237,7 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
             progress = getPositionFromProperties();
         }
     } else {
-        // Not playing or none-snapserver stream - use stream properties
+        // Not playing or none stream - use stream properties
         progress = getPositionFromProperties();
     }
 
