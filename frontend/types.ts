@@ -7,6 +7,31 @@ export interface Track {
     duration: number; // in seconds
 }
 
+// Volume Calibration Types
+export interface CalibrationReference {
+    volume: number;      // Hardware volume % where measurement was taken (e.g., 38 or 80)
+    measuredDb: number;  // User's dB reading at that volume
+}
+
+export interface CalibrationMaxLimit {
+    mode: 'percentage' | 'decibel';
+    value: number;  // Either hardware % (0-100) or dB level
+}
+
+export interface EndpointCalibration {
+    name: string;                    // Friendly name for the endpoint
+    calibrated: boolean;             // Whether calibration has been completed
+    lowRef?: CalibrationReference;   // Measurement at ~38% volume
+    highRef?: CalibrationReference;  // Measurement at ~80% volume
+    maxLimit: CalibrationMaxLimit;   // Maximum volume limit
+    defaultVolume: number;           // Default startup volume (0-100%)
+    lastCalibrated?: string;         // ISO timestamp of last calibration
+}
+
+export interface AudioCalibrationSettings {
+    [clientId: string]: EndpointCalibration;
+}
+
 // Federation: Server representation
 export interface Server {
     id: string;           // "server-192-168-7-122"
@@ -438,5 +463,20 @@ export interface Settings {
     federation: {
         enabled: boolean;
         autoDiscover: boolean;
+    };
+    audio?: {
+        output?: {
+            device: string;
+            device_type: string;
+            fallback_device: string;
+        };
+        input?: {
+            devices: Array<{
+                hw_id: string;
+                custom_name: string;
+                enabled: boolean;
+            }>;
+        };
+        calibration?: AudioCalibrationSettings;
     };
 }

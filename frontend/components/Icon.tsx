@@ -38,6 +38,12 @@ import waveformIcon from '../src/assets/icons/waveform.svg?raw';
 import snapcastIcon from '../src/assets/icons/snapcast.svg?raw';
 import snapcastColorIcon from '../src/assets/icons/snapcast-color.svg?raw';
 import plexampIcon from '../src/assets/icons/plexamp.svg?raw';
+import gaugeIcon from '../src/assets/icons/gauge.svg?raw';
+import slidersIcon from '../src/assets/icons/sliders.svg?raw';
+import stopIcon from '../src/assets/icons/stop.svg?raw';
+import circleCheckIcon from '../src/assets/icons/circle-check.svg?raw';
+import circleExclamationIcon from '../src/assets/icons/circle-exclamation.svg?raw';
+import microphoneIcon from '../src/assets/icons/microphone.svg?raw';
 
 export type IconName =
   | 'play'
@@ -76,7 +82,13 @@ export type IconName =
   | 'waveform'
   | 'snapcast'
   | 'snapcast-color'
-  | 'plexamp';
+  | 'plexamp'
+  | 'gauge'
+  | 'sliders'
+  | 'stop'
+  | 'circle-check'
+  | 'circle-exclamation'
+  | 'microphone';
 
 const iconMap: Record<IconName, string> = {
   'play': playIcon,
@@ -116,6 +128,12 @@ const iconMap: Record<IconName, string> = {
   'snapcast': snapcastIcon,
   'snapcast-color': snapcastColorIcon,
   'plexamp': plexampIcon,
+  'gauge': gaugeIcon,
+  'sliders': slidersIcon,
+  'stop': stopIcon,
+  'circle-check': circleCheckIcon,
+  'circle-exclamation': circleExclamationIcon,
+  'microphone': microphoneIcon,
 };
 
 interface IconProps {

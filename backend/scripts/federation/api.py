@@ -20,6 +20,7 @@ from settings_api import create_settings_blueprint, SettingsManager
 from integrations_api import create_integrations_blueprint, IntegrationController
 from audio_api import create_audio_blueprint, AudioConfigController
 from playback_api import create_playback_blueprint, playback_store
+from testtone_api import create_testtone_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class FederationAPI:
         self._setup_integrations_api()
         self._setup_audio_api()
         self._setup_playback_api()
+        self._setup_testtone_api()
 
     def _check_loop_health(self) -> bool:
         """Check if the async event loop is healthy"""
@@ -330,6 +332,12 @@ class FederationAPI:
         playback_bp = create_playback_blueprint()
         self.app.register_blueprint(playback_bp)
         logger.info("Playback API registered")
+
+    def _setup_testtone_api(self):
+        """Register test tone API routes (for volume calibration)"""
+        testtone_bp = create_testtone_blueprint()
+        self.app.register_blueprint(testtone_bp)
+        logger.info("Test Tone API registered")
 
     def run(self, debug: bool = False):
         """Run the Flask server"""

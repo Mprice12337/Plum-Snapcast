@@ -12,7 +12,8 @@ import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
 import {getStreamPlayback} from './services/playbackService';
-import type {Client, PlaybackData, Server, Settings, Stream, VisualizerPreset} from './types';
+import {calibrationService} from './services/calibrationService';
+import type {Client, PlaybackData, Server, Settings, Stream, VisualizerPreset, AudioCalibrationSettings} from './types';
 import {DEFAULT_VISUALIZER_SETTINGS, BUILT_IN_PRESETS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
@@ -74,6 +75,9 @@ const App: React.FC = () => {
     // Album art dual-color extraction state (background + accent)
     const [extractedAlbumArtColors, setExtractedAlbumArtColors] = useState<DualColorExtractionResult | null>(null);
     const [isExtractingColor, setIsExtractingColor] = useState(false);
+
+    // Volume calibration state
+    const [calibrations, setCalibrations] = useState<AudioCalibrationSettings>({});
 
     // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
@@ -581,13 +585,12 @@ const App: React.FC = () => {
         // If this is our browser audio client, ensure proper naming, local volume, and connection status
         if (browserAudio.state.isActive && c.id === browserClientId) {
             // Determine client name based on endpoint name or device name
-            const endpointName = settings.deviceName || 'Device';
-            const visualizerClientName = `${endpointName}-Visualizer`;
+            const clientName = settings.deviceName || 'Device';
 
             return {
                 ...c,
-                // Use visualizer-specific naming
-                name: visualizerClientName,
+                // Use device name for browser audio client
+                name: clientName,
                 // Override volume with local state (browser audio volume is local only)
                 volume: browserAudio.state.volume,
                 // Override connection status - if browser audio is active, it's connected
@@ -603,12 +606,11 @@ const App: React.FC = () => {
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
-            const endpointName = settings.deviceName || 'Device';
-            const visualizerClientName = `${endpointName}-Visualizer`;
+            const clientName = settings.deviceName || 'Device';
 
             const browserClient: Client = {
                 id: browserClientId,
-                name: `${visualizerClientName} (Connecting...)`,
+                name: `${clientName} (Connecting...)`,
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
                 connected: false
@@ -618,21 +620,15 @@ const App: React.FC = () => {
     }
 
     // Helper function to detect if a client should be hidden
-    // Hide clients ending with "-Visualizer" only when browser audio is muted (visualizer mode)
-    // Show them when unmuted (listening mode)
+    // Hide snapweb/browser clients that are auto-created by the server
     const shouldHideClient = (client: Client): boolean => {
-        // Check if this is our browser audio visualizer client
-        if (client.name.endsWith('-Visualizer')) {
-            // If browser audio is active, check if it's muted
-            if (browserAudio.state.isActive && client.id === browserClientId) {
-                // Hide if muted (visualizer-only mode), show if unmuted (listening mode)
-                return browserAudio.state.muted;
-            }
-            // Hide other visualizer clients
-            return true;
+        // Hide snapweb/browser clients (auto-created by server), but not our browser audio client
+        if (browserAudio.state.isActive && client.id === browserClientId) {
+            // Never hide our browser audio client
+            return false;
         }
 
-        // Also hide other snapweb/browser clients (auto-created by server)
+        // Hide other snapweb/browser clients (auto-created by server)
         const browserIndicators = ['snapweb', 'browser'];
         const clientName = client.name.toLowerCase();
         const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
@@ -1182,6 +1178,14 @@ const App: React.FC = () => {
                 setClientGroupMap(groupMap);
             } catch (error) {
                 console.error('[Init] Could not build client group mapping:', error);
+            }
+
+            // Load volume calibration settings
+            try {
+                const cals = await calibrationService.getAllCalibrations();
+                setCalibrations(cals);
+            } catch (error) {
+                console.error('[Init] Could not load calibration settings:', error);
             }
 
             // Check if we got error data (connection failed)
@@ -1735,6 +1739,11 @@ const App: React.FC = () => {
                 if (result.success) {
                     // Trigger immediate poll to refresh UI with backend state
                     await federationService.triggerPoll();
+
+                    // Apply dB-matched volume if joining a stream (not null/none)
+                    if (targetStreamId && !targetStreamId.includes('none-')) {
+                        await applyDbMatchedVolume(clientId, targetStreamId);
+                    }
                 } else {
                     console.error('[StreamChange] Routing failed:', result.message);
                     // Revert local state on error
@@ -1762,6 +1771,11 @@ const App: React.FC = () => {
 
             if (groupId && localStreamId) {
                 await snapcastService.setGroupStream(groupId, localStreamId);
+
+                // Apply dB-matched volume when joining a stream
+                if (streamId) {
+                    await applyDbMatchedVolume(clientId, streamId);
+                }
             } else if (groupId && localStreamId === null) {
                 // streamId is null - handled via local state update only
             } else {
@@ -1810,6 +1824,96 @@ const App: React.FC = () => {
         // Construct federated ID: server ID + local stream ID
         return `${localServer.id}-${localStreamId}`;
     };
+
+    /**
+     * Apply dB-matched volume when a client joins a stream.
+     * Finds existing clients on the stream, calculates matching volume using calibration data,
+     * and sets the joining client's volume to match the dB level.
+     */
+    const applyDbMatchedVolume = useCallback(async (joiningClientId: string, targetStreamId: string) => {
+        // Don't apply if no calibrations loaded
+        if (Object.keys(calibrations).length === 0) {
+            return;
+        }
+
+        // Find existing clients on the target stream (excluding the joining client)
+        const existingClientsOnStream = clients.filter(c =>
+            c.currentStreamId === targetStreamId &&
+            c.id !== joiningClientId &&
+            c.connected
+        );
+
+        if (existingClientsOnStream.length === 0) {
+            // No other clients on stream - nothing to match against
+            // Could apply default volume from calibration here
+            const joiningCal = calibrations[joiningClientId] || calibrations[stripServerPrefix(joiningClientId)];
+            if (joiningCal && joiningCal.defaultVolume !== undefined) {
+                console.log(`[dB-Match] No reference clients, applying default volume ${joiningCal.defaultVolume}% for ${joiningClientId}`);
+                // Set the default volume
+                const localClientId = stripServerPrefix(joiningClientId);
+                try {
+                    await snapcastService.setClientVolume(localClientId, joiningCal.defaultVolume);
+                } catch (error) {
+                    console.error('[dB-Match] Failed to set default volume:', error);
+                }
+            }
+            return;
+        }
+
+        // Find a reference client - prefer calibrated ones
+        let referenceClient = existingClientsOnStream.find(c => {
+            const cal = calibrations[c.id] || calibrations[stripServerPrefix(c.id)];
+            return cal?.calibrated;
+        });
+
+        // Fall back to first client if no calibrated ones
+        if (!referenceClient) {
+            referenceClient = existingClientsOnStream[0];
+        }
+
+        // Get calibrations for both clients
+        const refCal = calibrations[referenceClient.id] || calibrations[stripServerPrefix(referenceClient.id)];
+        const joiningCal = calibrations[joiningClientId] || calibrations[stripServerPrefix(joiningClientId)];
+
+        // Both clients need calibration for dB matching
+        if (!refCal?.calibrated || !joiningCal?.calibrated) {
+            console.log('[dB-Match] Skipping - one or both clients not calibrated');
+            // If joining client has a default, use that
+            if (joiningCal?.defaultVolume !== undefined) {
+                const localClientId = stripServerPrefix(joiningClientId);
+                try {
+                    await snapcastService.setClientVolume(localClientId, joiningCal.defaultVolume);
+                } catch (error) {
+                    console.error('[dB-Match] Failed to set default volume:', error);
+                }
+            }
+            return;
+        }
+
+        // Calculate matching volume
+        const matchingVolume = calibrationService.getMatchingSliderVolume(
+            referenceClient.volume,
+            refCal,
+            joiningCal
+        );
+
+        if (matchingVolume !== null && matchingVolume !== referenceClient.volume) {
+            console.log(`[dB-Match] Setting ${joiningClientId} volume to ${matchingVolume}% to match ${referenceClient.name} at ${referenceClient.volume}%`);
+
+            // Update local state
+            setClients(prevClients =>
+                prevClients.map(c => c.id === joiningClientId ? {...c, volume: matchingVolume} : c)
+            );
+
+            // Apply to Snapcast
+            const localClientId = stripServerPrefix(joiningClientId);
+            try {
+                await snapcastService.setClientVolume(localClientId, matchingVolume);
+            } catch (error) {
+                console.error('[dB-Match] Failed to set matched volume:', error);
+            }
+        }
+    }, [clients, calibrations]);
 
     // Track last play/pause command time to debounce rapid toggling
     // This prevents FIFO pipe issues when pause/play are sent too quickly
