@@ -275,7 +275,7 @@ export async function getTestToneStatus(): Promise<ToneStatus> {
  */
 export async function getAllCalibrations(): Promise<AudioCalibrationSettings> {
   try {
-    const settings = await settingsService.getSettings();
+    const settings = settingsService.getMergedSettings();
     return settings.audio?.calibration || {};
   } catch (error) {
     console.error('Failed to get calibrations:', error);
@@ -299,7 +299,7 @@ export async function saveCalibration(
   calibration: EndpointCalibration
 ): Promise<boolean> {
   try {
-    const settings = await settingsService.getSettings();
+    const settings = settingsService.getMergedSettings();
 
     // Ensure audio.calibration structure exists
     const updatedSettings = {
@@ -329,7 +329,7 @@ export async function saveCalibration(
  */
 export async function deleteCalibration(clientId: string): Promise<boolean> {
   try {
-    const settings = await settingsService.getSettings();
+    const settings = settingsService.getMergedSettings();
 
     if (settings.audio?.calibration?.[clientId]) {
       const calibration = {...settings.audio.calibration};

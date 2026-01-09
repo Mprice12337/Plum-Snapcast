@@ -2,6 +2,7 @@ import React, {useState, useEffect, useCallback} from 'react';
 import type {Settings as SettingsType, EndpointCalibration, AudioCalibrationSettings} from '../../types';
 import {audioService, type AudioDevice, type ConfiguredInputDevice, DeviceType} from '../../services/audioService';
 import {calibrationService} from '../../services/calibrationService';
+import {snapcastService} from '../../services/snapcastService';
 import {Icon} from '../Icon';
 import {CalibrationWizard} from './CalibrationWizard';
 
@@ -137,16 +138,25 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
     setCalibrationLoadingState('loading');
 
     try {
-      // Fetch Snapcast clients from the test tone API (which queries Snapcast)
-      const response = await fetch('/api/testtone/clients');
-      const data = await response.json();
+      // Fetch Snapcast clients directly via WebSocket
+      const serverStatus = await snapcastService.getServerStatus();
 
-      if (data.clients) {
-        setEndpoints(data.clients.map((c: any) => ({
-          id: c.id,
-          name: c.name || c.id,
-          connected: c.connected
-        })));
+      if (serverStatus?.server?.groups) {
+        const clientList: Array<{id: string; name: string; connected: boolean}> = [];
+
+        serverStatus.server.groups.forEach((group: any) => {
+          if (group.clients) {
+            group.clients.forEach((client: any) => {
+              clientList.push({
+                id: client.id,
+                name: client.config?.name || client.id,
+                connected: client.connected
+              });
+            });
+          }
+        });
+
+        setEndpoints(clientList);
       }
 
       // Load calibration settings
