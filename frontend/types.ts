@@ -17,6 +17,15 @@ export interface Server {
     isLocal: boolean;
 }
 
+// Playback position data from backend (server-side interpolation)
+export interface PlaybackData {
+    position: number;              // Last known position in milliseconds
+    duration: number;              // Total duration in milliseconds
+    interpolated_position: number; // Server-interpolated position in milliseconds
+    playback_status: 'playing' | 'paused' | 'stopped' | 'unknown';
+    is_stale: boolean;             // True if >30s without backend update
+}
+
 export interface Stream {
     id: string;                      // Federated ID: "server-192-168-7-122-airplay1"
     serverId?: string;               // "server-192-168-7-122" (for federation)
@@ -25,7 +34,8 @@ export interface Stream {
     sourceDevice: string;
     currentTrack: Track;
     isPlaying: boolean;
-    progress: number; // in seconds
+    progress: number;                // in seconds (legacy, frontend-tracked)
+    playback?: PlaybackData;         // Server-provided playback position (preferred)
 }
 
 export interface Client {

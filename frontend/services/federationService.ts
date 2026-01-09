@@ -335,6 +335,13 @@ export class FederationService {
   }
 
   /**
+   * Manually trigger an immediate poll (useful after state-changing operations)
+   */
+  async triggerPoll() {
+    await this.poll();
+  }
+
+  /**
    * Internal: Perform one poll
    */
   private async poll() {

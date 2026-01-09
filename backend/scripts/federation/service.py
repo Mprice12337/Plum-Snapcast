@@ -50,8 +50,10 @@ class FederationService:
         self.api = None
         self.remote_snapclient_manager = None
 
-        # Async loop
+        # Async loop and thread management
         self.loop = None
+        self.async_thread = None
+        self.loop_ready = threading.Event()  # Signals when loop is ready
 
         # Settings monitoring
         self.settings_file = "/app/data/settings.json"
@@ -216,12 +218,14 @@ class FederationService:
                     port=1705  # Snapclient port (same as local)
                 )
 
-                # Schedule async task to discover client ID
-                if self.loop:
+                # Schedule async task to discover client ID (only if loop is healthy)
+                if self.is_loop_healthy():
                     asyncio.run_coroutine_threadsafe(
                         self._discover_remote_client_id(server.id, server.host),
                         self.loop
                     )
+                else:
+                    logger.warning(f"Cannot discover client ID for {server.id}: async loop not healthy")
             except Exception as e:
                 logger.error(f"Failed to spawn remote snapclient for {server.id}: {e}")
 
@@ -354,6 +358,17 @@ class FederationService:
 
         logger.info("Federation Service async components started")
 
+    def is_loop_healthy(self) -> bool:
+        """Check if the async event loop is healthy and running"""
+        if self.loop is None:
+            return False
+        if self.loop.is_closed():
+            return False
+        if self.async_thread is None or not self.async_thread.is_alive():
+            return False
+        # Loop exists, isn't closed, and thread is alive
+        return True
+
     def start(self):
         """Start the federation service"""
         if self.running:
@@ -363,21 +378,15 @@ class FederationService:
         self.running = True
         logger.info("Starting Federation Service")
 
-        # Initialize discovery (start it later based on settings)
+        # Initialize discovery FIRST (but don't start it yet)
+        # This ensures DataAggregator has a valid reference
         self.discovery = AvahiDiscovery(callback=lambda servers: asyncio.run_coroutine_threadsafe(
             self._on_servers_discovered(servers), self.loop
-        ))
+        ) if self.is_loop_healthy() else None)
 
         # Register server lifecycle callbacks for remote snapclient management
         self.discovery.set_server_added_callback(self._on_server_added)
         self.discovery.set_server_removed_callback(self._on_server_removed)
-
-        # Start discovery if enabled
-        if self.auto_discover:
-            logger.info("Starting Avahi discovery")
-            self.discovery.start()
-        else:
-            logger.info("Auto-discovery disabled")
 
         # Start settings monitor thread
         settings_thread = threading.Thread(target=self._settings_monitor_loop, daemon=True)
@@ -392,27 +401,48 @@ class FederationService:
             # Start async components
             self.loop.run_until_complete(self.start_async_components())
 
-            # Keep loop running
-            try:
-                self.loop.run_forever()
-            except Exception as e:
-                logger.error(f"Async loop error: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                # Don't close the loop here - let stop() handle it
-                # This prevents "Event loop is closed" errors if Flask is still running
-                logger.info("Async loop exited")
+            # Signal that loop is ready
+            self.loop_ready.set()
+            logger.info("Async event loop is ready")
 
-        async_thread = threading.Thread(target=run_async_loop, daemon=True)
-        async_thread.start()
+            # Keep loop running with exception handling
+            while self.running:
+                try:
+                    self.loop.run_forever()
+                except Exception as e:
+                    logger.error(f"Async loop error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    if self.running:
+                        logger.warning("Async loop crashed, attempting recovery...")
+                        time.sleep(1)
+                        continue
+                    break
 
-        # Wait for async components to initialize
-        import time
-        time.sleep(2)
+            logger.info("Async loop exited")
+
+        self.async_thread = threading.Thread(target=run_async_loop, daemon=True, name="AsyncEventLoop")
+        self.async_thread.start()
+
+        # Wait for async loop to be ready (with timeout)
+        if not self.loop_ready.wait(timeout=10):
+            logger.error("Async loop failed to start within 10 seconds")
+            self.stop()
+            sys.exit(1)
+
+        logger.info("Async loop initialized successfully")
+
+        # NOW start discovery (after loop is ready)
+        # This prevents race conditions where callbacks fire before loop exists
+        if self.auto_discover:
+            logger.info("Starting Avahi discovery")
+            self.discovery.start()
+        else:
+            logger.info("Auto-discovery disabled")
 
         # Start REST API (blocks in main thread)
-        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port)
+        # Pass self reference so API can check loop health
+        self.api = FederationAPI(self.data_aggregator, self.router, self.loop, port=self.api_port, service=self)
         logger.info(f"Starting REST API on port {self.api_port}")
 
         try:
@@ -439,18 +469,31 @@ class FederationService:
             self.remote_snapclient_manager.cleanup_all()
 
         # Close WebSocket connections
-        if self.loop and self.ws_manager:
-            asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
+        if self.loop and not self.loop.is_closed() and self.ws_manager:
+            try:
+                asyncio.run_coroutine_threadsafe(self.ws_manager.close_all(), self.loop)
+            except Exception as e:
+                logger.warning(f"Failed to close WebSocket connections: {e}")
 
         # Stop async loop
         if self.loop and not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            # Give it time to stop gracefully
-            import time
-            time.sleep(0.5)
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except Exception as e:
+                logger.warning(f"Failed to stop async loop: {e}")
+
+            # Wait for async thread to finish
+            if self.async_thread and self.async_thread.is_alive():
+                self.async_thread.join(timeout=2.0)
+                if self.async_thread.is_alive():
+                    logger.warning("Async thread did not stop gracefully")
+
             # Now close the loop
             if not self.loop.is_closed():
-                self.loop.close()
+                try:
+                    self.loop.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close async loop: {e}")
 
         logger.info("Federation Service stopped")
 

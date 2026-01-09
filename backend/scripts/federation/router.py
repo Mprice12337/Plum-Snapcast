@@ -4,9 +4,9 @@ Cross-Server Routing Logic
 Handles routing clients to streams across different Snapcast servers
 """
 
+import asyncio
 import logging
-import os
-import subprocess
+import re
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -69,16 +69,14 @@ class FederationRouter:
         Returns:
             Dict with success status and message
         """
-        import asyncio
-
         try:
             # Parse IDs
             client_server_id, client_local_id = self.parse_federated_id(client_id)
             stream_server_id, stream_local_id = self.parse_federated_id(stream_id) if stream_id else (None, None)
 
             logger.info(f"route_client called: client_id={client_id}, stream_id={stream_id}")
-            logger.info(f"Parsed client: server={client_server_id}, local={client_local_id}")
-            logger.info(f"Parsed stream: server={stream_server_id}, local={stream_local_id}")
+            logger.debug(f"Parsed client: server={client_server_id}, local={client_local_id}")
+            logger.debug(f"Parsed stream: server={stream_server_id}, local={stream_local_id}")
 
             # Get connections
             client_conn = self.ws_manager.get_connection(client_server_id)
@@ -128,18 +126,94 @@ class FederationRouter:
 
             # Output client - apply endpoint lockout logic
 
-            # Step 1: ALWAYS deactivate ALL active endpoints across ALL servers
-            # This ensures true lockout - only one output client active at a time across federation
-            # Query all servers to find output clients NOT on none streams and route them all to none
-            logger.info("=== Step 1: Deactivating all endpoints ===")
-            await self._deactivate_all_endpoints()
-            logger.info("=== Step 1: Deactivation complete ===")
-
-
-            # Step 2: Activate new endpoint (if not routing to none)
+            # Check if routing to none stream first
             # Check if stream_local_id contains "none-" to detect none streams in federation mode
             is_none_stream = not stream_local_id or "none-" in stream_local_id
-            if stream_id and not is_none_stream:
+
+            if is_none_stream:
+                # Route to none (deactivate only this specific client)
+                # Don't deactivate all endpoints - only deactivate the client being switched
+                logger.info(f"Routing to none: {client_server_id}/{client_local_id}")
+
+                # Route the local client to none on its server
+                await self._route_to_none(client_server_id, client_local_id)
+
+                # ALSO: Route ALL other remote snapclients ON this client's server to none
+                # This handles the case where remote clients are playing through this server
+                logger.debug(f"Looking for remote snapclients on {client_server_id} to deactivate")
+
+                client_conn = self.ws_manager.get_connection(client_server_id)
+                if client_conn and client_conn.connected:
+                    try:
+                        client_status = await asyncio.wait_for(client_conn.get_status(), timeout=2.0)
+                        for group in client_status.get("server", {}).get("groups", []):
+                            stream_id = group.get("stream_id", "")
+                            # Skip if already on none
+                            if "none-" in stream_id:
+                                continue
+
+                            for client in group.get("clients", []):
+                                remote_id = client.get("id", "")
+                                # Check if this is a remote snapclient
+                                if remote_id.startswith("remote-server-"):
+                                    logger.debug(f"Found remote snapclient {remote_id} on {client_server_id}, routing to none")
+                                    await self._route_to_none(client_server_id, remote_id)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout checking for remote snapclients on {client_server_id}")
+
+                # Also find and deactivate any remote snapclient playing for this client
+                # Remote snapclient would have ID like "remote-{client_server_id}" on another server
+                remote_client_id = f"remote-{client_server_id}"
+                remote_server_id = None
+                logger.debug(f"Looking for remote snapclient: {remote_client_id}")
+
+                # Check all other servers for this remote snapclient
+                for conn in self.ws_manager.get_all_connections():
+                    if conn.server_id == client_server_id:
+                        # Skip the client's own server
+                        continue
+
+                    if not conn.connected:
+                        continue
+
+                    try:
+                        # Check if this server has our remote snapclient
+                        status = await asyncio.wait_for(conn.get_status(), timeout=2.0)
+
+                        # Look for the remote snapclient in this server's clients
+                        found_remote = False
+                        for group in status.get("server", {}).get("groups", []):
+                            for client in group.get("clients", []):
+                                if client.get("id") == remote_client_id or client.get("host", {}).get("name") == remote_client_id:
+                                    found_remote = True
+                                    remote_server_id = conn.server_id
+                                    logger.debug(f"Found remote snapclient {remote_client_id} on {conn.server_id}, routing to none")
+                                    await self._route_to_none(conn.server_id, remote_client_id)
+                                    break
+                            if found_remote:
+                                break
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout checking for remote snapclient on {conn.server_id}")
+                        continue
+
+                # Brief delay to let Snapcast process the routing
+                await asyncio.sleep(0.3)
+
+                # Clear active endpoint since we're deactivating
+                self.active_endpoint = None
+
+                return {
+                    "success": True,
+                    "message": "Client routed to none (deactivated)"
+                }
+
+            # Deactivate ALL active endpoints across ALL servers (only when activating a real stream)
+            # This ensures true lockout - only one output client active at a time across federation
+            await self._deactivate_all_endpoints()
+
+
+            # Step 2: Activate new endpoint
+            if stream_id:
                 # Verify stream exists
                 stream_conn = self.ws_manager.get_connection(stream_server_id)
                 if not stream_conn or not stream_conn.connected:
@@ -157,18 +231,14 @@ class FederationRouter:
                     }
                 actual_stream = None
                 available_streams = [s.get("id") for s in stream_status.get("server", {}).get("streams", [])]
-                logger.info(f"Available streams on {stream_server_id}: {available_streams}")
-                logger.info(f"Looking for stream: {repr(stream_local_id)}")
 
                 for stream in stream_status.get("server", {}).get("streams", []):
-                    stream_id_from_server = stream.get("id")
-                    logger.info(f"Comparing {repr(stream_id_from_server)} == {repr(stream_local_id)}")
-                    if stream_id_from_server == stream_local_id:
+                    if stream.get("id") == stream_local_id:
                         actual_stream = stream
                         break
 
                 if not actual_stream:
-                    logger.error(f"Stream {repr(stream_local_id)} not found in {available_streams}")
+                    logger.error(f"Stream {stream_local_id} not found. Available: {available_streams}")
                     return {
                         "success": False,
                         "message": f"Stream not found: {stream_local_id}"
@@ -176,7 +246,7 @@ class FederationRouter:
 
                 # Check if this is cross-server routing (client and stream on different servers)
                 if client_server_id != stream_server_id:
-                    logger.info(f"Cross-server routing: {client_server_id} -> {stream_server_id}")
+                    logger.debug(f"Cross-server routing: {client_server_id} -> {stream_server_id}")
 
                     # Determine if client is local or remote
                     client_is_local = (client_server_id == self.local_server_id)
@@ -185,7 +255,6 @@ class FederationRouter:
                     if client_is_local and not stream_is_local:
                         # Case 1: Local client, remote stream
                         # Route our local client to none, then use our remote snapclient
-                        logger.info("Case 1: Routing local client to remote stream")
 
                         # Step 1: Route local client to 'none' on its server
                         await self._route_to_none(client_server_id, client_local_id)
@@ -206,12 +275,6 @@ class FederationRouter:
                     elif not client_is_local and stream_is_local:
                         # Case 2: Remote client, local stream
                         # Find the remote snapclient from their server that connects to us
-                        # That remote snapclient appears on OUR (local) server
-                        logger.info("=== CASE 2: Routing remote client to local stream ===")
-                        logger.info(f"Client server: {client_server_id}, Stream server: {stream_server_id}")
-                        logger.info(f"Local server: {self.local_server_id}")
-
-                        # Find the remote snapclient that belongs to the client's server
                         # It will have ID like "remote-{client_server_id}" and appears on our local server
                         expected_remote_client_id = f"remote-{client_server_id}"
 
@@ -231,7 +294,6 @@ class FederationRouter:
                                 if (client.get("id") == expected_remote_client_id or
                                     client.get("host", {}).get("name") == expected_remote_client_id):
                                     remote_client_group_id = group.get("id")
-                                    logger.info(f"Found remote snapclient: {expected_remote_client_id} in group {remote_client_group_id}")
                                     break
                             if remote_client_group_id:
                                 break
@@ -251,15 +313,11 @@ class FederationRouter:
                         if local_output_client:
                             local_client_id = local_output_client.get("id")
                             local_group_id = local_output_client.get("group_id")
-                            logger.info(f"Also routing local output client {local_client_id} to {stream_local_id}")
                             await self._route_simple(stream_conn, local_group_id, stream_local_id)
-                        else:
-                            logger.warning("No local output client found to route to stream")
 
-                        # Update active endpoint tracking
-                        # Track the ORIGINAL client that was commanded to join, not the remote snapclient
-                        self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
-                        logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
+                        # Update active endpoint tracking (use federated stream ID format)
+                        self.active_endpoint = (client_server_id, client_local_id, f"{self.local_server_id}-{stream_local_id}")
+                        logger.info(f"Routed remote client to local stream: {stream_local_id}")
 
                         return {
                             "success": True,
@@ -272,9 +330,7 @@ class FederationRouter:
                             "message": "Routing between two remote servers not supported"
                         }
 
-                    logger.info(f"Routing remote snapclient {remote_client_id} on {stream_server_id} to stream {stream_local_id}")
-
-                    # Step 3: Find the remote client's group on the stream server
+                    # Find the remote client's group on the stream server
                     remote_group_id = None
                     for group in stream_status.get("server", {}).get("groups", []):
                         for client in group.get("clients", []):
@@ -290,33 +346,30 @@ class FederationRouter:
                             "message": f"Remote client {remote_client_id} group not found on {stream_server_id}"
                         }
 
-                    # Step 4: Route the remote client to the desired stream
+                    # Route the remote client to the desired stream
                     await self._route_simple(stream_conn, remote_group_id, stream_local_id)
 
-                    # Update active endpoint tracking (track the REMOTE client as active)
-                    self.active_endpoint = (stream_server_id, remote_client_id, stream_local_id)
-                    logger.info(f"Activated endpoint: {stream_server_id}/{remote_client_id}/{stream_local_id}")
+                    # ALSO route the stream server's local output client to the same stream
+                    # (preserving multi-listener capability - both local and remote can listen)
+                    stream_server_local_client = await self._find_local_output_client(stream_status)
+                    if stream_server_local_client:
+                        stream_local_group_id = stream_server_local_client.get("group_id")
+                        await self._route_simple(stream_conn, stream_local_group_id, stream_local_id)
+
+                    # Update active endpoint tracking (use federated stream ID format)
+                    self.active_endpoint = (client_server_id, client_local_id, f"{stream_server_id}-{stream_local_id}")
+                    logger.info(f"Routed local client to remote stream: {stream_local_id}")
                 else:
                     # Same-server routing: route directly
                     await self._route_simple(client_conn, client_group_id, stream_local_id)
 
-                    # Update active endpoint tracking
-                    self.active_endpoint = (client_server_id, client_local_id, stream_local_id)
-                    logger.info(f"Activated endpoint: {client_server_id}/{client_local_id}/{stream_local_id}")
+                    # Update active endpoint tracking (use federated stream ID format for consistency)
+                    self.active_endpoint = (client_server_id, client_local_id, f"{client_server_id}-{stream_local_id}")
+                    logger.info(f"Routed to stream: {stream_local_id}")
 
                 return {
                     "success": True,
                     "message": f"Client routed to stream with lockout"
-                }
-            else:
-                # Route to none (deactivate)
-                # Also route the requesting client to none (in case it's not the active endpoint)
-                await self._route_to_none(client_server_id, client_local_id)
-                logger.info("All endpoints deactivated")
-
-                return {
-                    "success": True,
-                    "message": "Client routed to none (deactivated)"
                 }
 
         except Exception as e:
@@ -357,8 +410,6 @@ class FederationRouter:
         Returns:
             Dict with success status
         """
-        import asyncio
-
         await conn.send_request("Group.SetStream", {
             "id": group_id,
             "stream_id": stream_id
@@ -367,8 +418,7 @@ class FederationRouter:
         try:
             await asyncio.wait_for(conn.get_status(), timeout=2.0)
         except asyncio.TimeoutError:
-            logger.warning("Timeout refreshing status after routing, continuing anyway")
-        logger.info(f"Routed group {group_id} to stream {stream_id}")
+            pass  # Timeout refreshing status, continue anyway
 
         return {
             "success": True,
@@ -385,8 +435,6 @@ class FederationRouter:
         Returns:
             Dict with active/serverId/clientId/streamId or active=False
         """
-        import asyncio
-
         # Get all connected servers
         all_servers = self.ws_manager.get_all_connections()
 
@@ -441,9 +489,7 @@ class FederationRouter:
         This queries all servers to find output clients NOT on none streams
         and routes them all to none. Ensures true endpoint lockout across federation.
         """
-        import asyncio
-
-        logger.info("Deactivating all active endpoints across all servers")
+        logger.debug("Deactivating all active endpoints")
 
         # Get all connected servers
         all_servers = self.ws_manager.get_all_connections()
@@ -473,8 +519,6 @@ class FederationRouter:
                                    client_id.startswith("remote-"))
 
                         if is_output:
-                            # Route this output client to none
-                            logger.info(f"Deactivating output client: {conn.server_id}/{client_id} (was on {group_stream_id})")
                             await self._route_to_none(conn.server_id, client_id)
 
             except asyncio.TimeoutError:
@@ -486,7 +530,6 @@ class FederationRouter:
 
         # Clear local active endpoint tracking
         self.active_endpoint = None
-        logger.info("All endpoints deactivated")
 
     async def _route_to_none(self, server_id: str, client_id: str):
         """
@@ -496,8 +539,6 @@ class FederationRouter:
             server_id: Server ID
             client_id: Local client ID
         """
-        import asyncio
-
         # Get connection
         conn = self.ws_manager.get_connection(server_id)
         if not conn or not conn.connected:
@@ -538,7 +579,11 @@ class FederationRouter:
             "stream_id": none_stream_id
         })
 
-        logger.info(f"Routed {client_id} to none stream (silent)")
+        # Refresh status after routing (important for servers that don't send events)
+        try:
+            await asyncio.wait_for(conn.get_status(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass  # Timeout refreshing status, continue anyway
 
     async def _find_local_output_client(self, server_status: Dict) -> Optional[Dict]:
         """
@@ -552,30 +597,20 @@ class FederationRouter:
         Returns:
             Dict with client info (id, group_id) or None if not found
         """
-        logger.info("=== Looking for local output client ===")
         for group in server_status.get("server", {}).get("groups", []):
             for client in group.get("clients", []):
                 client_id = client.get("id")
                 hostname = client.get("host", {}).get("name", "")
-                is_mac = self._is_mac_address(client_id)
-
-                logger.info(f"  Client: {client_id}, hostname: {hostname}, is_mac: {is_mac}")
 
                 # Check if this is a MAC address (output client)
-                if is_mac:
-                    # Exclude remote snapclients (they also have MAC addresses)
-                    # Remote snapclients have hostnames like "remote-server-..."
+                if self._is_mac_address(client_id):
+                    # Exclude remote snapclients (they have hostnames like "remote-server-...")
                     if not hostname.startswith("remote-"):
-                        # Found local output client!
-                        logger.info(f"  → Found local output client: {client_id} in group {group.get('id')}")
                         return {
                             "id": client_id,
                             "group_id": group.get("id")
                         }
-                    else:
-                        logger.info(f"  → Skipping remote snapclient: {client_id}")
 
-        logger.warning("  → No local output client found!")
         return None
 
     def _get_none_stream_id(self, server_status: Dict) -> Optional[str]:
@@ -599,7 +634,6 @@ class FederationRouter:
 
     def _is_mac_address(self, client_id: str) -> bool:
         """Check if client_id is a MAC address format (hardware client)"""
-        import re
         mac_pattern = r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$'
         return bool(re.match(mac_pattern, client_id))
 
@@ -630,7 +664,7 @@ class FederationRouter:
             try:
                 await asyncio.wait_for(conn.get_status(), timeout=2.0)
             except asyncio.TimeoutError:
-                logger.warning("Timeout refreshing status after volume change, continuing anyway")
+                pass  # Timeout refreshing status, continue anyway
 
             return {
                 "success": True,
@@ -668,7 +702,7 @@ class FederationRouter:
             try:
                 await asyncio.wait_for(conn.get_status(), timeout=2.0)
             except asyncio.TimeoutError:
-                logger.warning("Timeout refreshing status after stream control, continuing anyway")
+                pass  # Timeout refreshing status, continue anyway
 
             return {
                 "success": True,

@@ -209,6 +209,7 @@ RUN mkdir -p /run/avahi-daemon /var/run/dbus /etc/avahi/services && \
 # FIXED: Copy configuration files
 COPY config/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
 COPY config/plum-snapcast.service /etc/avahi/services/
+COPY config/snapcast-http.service /etc/avahi/services/
 COPY config/shairport-sync.conf /app/config/
 COPY config/shairport-sync.conf.template /app/config/
 COPY config/spotifyd.conf /app/config/

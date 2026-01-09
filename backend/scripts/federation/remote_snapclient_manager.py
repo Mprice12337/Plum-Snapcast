@@ -55,6 +55,39 @@ class RemoteSnapclientManager:
 
         log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device} -> {self.audio_device}, latency={latency})")
 
+    def _get_card_name_from_number(self, card_num: int) -> Optional[str]:
+        """
+        Look up ALSA card name from card number using /proc/asound/cards.
+
+        Args:
+            card_num: The card number (e.g., 0, 1, 3)
+
+        Returns:
+            The card name (e.g., "Headphones", "sndrpihifiberry") or None if not found
+        """
+        try:
+            with open("/proc/asound/cards", "r") as f:
+                for line in f:
+                    # Format: " 0 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones"
+                    # We need to extract the card number and name in brackets
+                    line = line.strip()
+                    if not line or line.startswith(" "):
+                        continue
+                    # Parse: "0 [Headphones     ]:"
+                    parts = line.split("[")
+                    if len(parts) >= 2:
+                        try:
+                            num = int(parts[0].strip())
+                            if num == card_num:
+                                # Extract name from "[Headphones     ]"
+                                name_part = parts[1].split("]")[0].strip()
+                                return name_part
+                        except ValueError:
+                            continue
+        except Exception as e:
+            log(f"Warning: Could not read /proc/asound/cards: {e}")
+        return None
+
     def _convert_to_dmix_device(self, audio_device: str) -> str:
         """
         Convert hw:X,Y format to default:CARD=name for dmix support.
@@ -70,27 +103,29 @@ class RemoteSnapclientManager:
             Device in default:CARD=NAME format
         """
         # Already in correct format
-        if audio_device.startswith("default:"):
+        if audio_device.startswith("default:") or audio_device.startswith("sysdefault:"):
             return audio_device
 
         # Convert hw:X,Y or hw:NAME to default:CARD=NAME
         if audio_device.startswith("hw:"):
             device_spec = audio_device[3:]  # Remove "hw:" prefix
 
-            # Map common device specifications to card names
-            # hw:1,0 -> HiFiBerry DAC+ (snd_rpi_hifiberry_dacplus)
-            # hw:0,0 or hw:Headphones -> bcm2835 Headphones
-            if device_spec in ["1,0", "1"]:
-                return "default:CARD=sndrpihifiberry"
-            elif device_spec in ["0,0", "0", "Headphones"]:
-                return "default:CARD=Headphones"
-            elif "," in device_spec:
-                # Generic hw:X,Y format - use card number
-                card_num = device_spec.split(",")[0]
-                return f"default:CARD={card_num}"
-            else:
-                # hw:NAME format - use name directly
-                return f"default:CARD={device_spec}"
+            # Check if it's hw:X,Y format (card number)
+            if "," in device_spec:
+                try:
+                    card_num = int(device_spec.split(",")[0])
+                    card_name = self._get_card_name_from_number(card_num)
+                    if card_name:
+                        log(f"Resolved card {card_num} to name '{card_name}'")
+                        return f"default:CARD={card_name}"
+                    else:
+                        log(f"Warning: Could not resolve card number {card_num}, using Headphones as fallback")
+                        return "default:CARD=Headphones"
+                except ValueError:
+                    pass
+
+            # hw:NAME format - use name directly (e.g., hw:Headphones)
+            return f"default:CARD={device_spec}"
 
         # Fallback - return as-is
         log(f"Warning: Unknown audio device format '{audio_device}', using as-is")
