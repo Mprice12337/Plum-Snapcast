@@ -625,15 +625,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
   };
 
-  const handleSimpleChange = (key: 'snapcast' | 'visualizer', value: boolean) => {
-    onSettingsChange({
-      ...settings,
-      integrations: {
-        ...settings.integrations,
-        [key]: value,
-      },
-    });
-  };
 
   return (
     <div className="space-y-6">
@@ -676,9 +667,18 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
           {expandedSection === 'airplay' && (
             <div className="mt-4 ml-14 space-y-4">
+              {/* Check if any endpoint is being edited */}
+              {(() => {
+                const isAnyEndpointBeingEdited = airplayEndpoints.some(ep =>
+                  endpointNames[ep.id] !== ep.deviceName ||
+                  endpointNameStatuses[ep.id] === 'applying'
+                );
+                return (
+                  <>
               {/* Endpoints list */}
               {airplayEndpoints.map((endpoint) => {
                 const nameChanged = endpointNames[endpoint.id] !== endpoint.deviceName;
+                const nameEmpty = !(endpointNames[endpoint.id] || endpoint.deviceName)?.trim();
                 return (
                   <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
                     <div className="flex items-center justify-between gap-3 mb-2">
@@ -723,7 +723,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                           value={endpointNames[endpoint.id] || endpoint.deviceName}
                           onChange={(e) => setEndpointNames({...endpointNames, [endpoint.id]: e.target.value})}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && nameChanged) {
+                            if (e.key === 'Enter' && nameChanged && !nameEmpty) {
                               handleEndpointNameChange(endpoint.id);
                             }
                           }}
@@ -734,7 +734,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                         {nameChanged && (
                           <button
                             onClick={() => handleEndpointNameChange(endpoint.id)}
-                            disabled={endpointNameStatuses[endpoint.id] === 'applying'}
+                            disabled={nameEmpty || endpointNameStatuses[endpoint.id] === 'applying'}
                             className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {endpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
@@ -769,7 +769,8 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               {!showAddEndpoint && airplayEndpoints.length < 10 && (
                 <button
                   onClick={() => setShowAddEndpoint(true)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
+                  disabled={isAnyEndpointBeingEdited}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   + Add Endpoint
                 </button>
@@ -785,14 +786,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                       type="text"
                       value={newEndpointName}
                       onChange={(e) => setNewEndpointName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleAddEndpoint()}
+                      onKeyDown={(e) => e.key === 'Enter' && newEndpointName.trim() && !isAnyEndpointBeingEdited && handleAddEndpoint()}
                       className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
                       placeholder="Living Room"
-                      disabled={isAddingEndpoint}
+                      disabled={isAnyEndpointBeingEdited || isAddingEndpoint}
                     />
                     <button
                       onClick={handleAddEndpoint}
-                      disabled={isAddingEndpoint}
+                      disabled={!newEndpointName.trim() || isAnyEndpointBeingEdited || isAddingEndpoint}
                       className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isAddingEndpoint ? 'Adding...' : 'Add'}
@@ -813,6 +814,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                   Maximum of 10 endpoints reached
                 </p>
               )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -965,9 +969,18 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
           {expandedSection === 'spotify' && (
             <div className="mt-4 ml-14 space-y-4">
+              {/* Check if any endpoint is being edited */}
+              {(() => {
+                const isAnySpotifyEndpointBeingEdited = spotifyEndpoints.some(ep =>
+                  spotifyEndpointNames[ep.id] !== ep.deviceName ||
+                  spotifyEndpointNameStatuses[ep.id] === 'applying'
+                );
+                return (
+                  <>
               {/* Endpoints list */}
               {spotifyEndpoints.map((endpoint) => {
                 const nameChanged = spotifyEndpointNames[endpoint.id] !== endpoint.deviceName;
+                const nameEmpty = !(spotifyEndpointNames[endpoint.id] || endpoint.deviceName)?.trim();
                 return (
                   <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
                     <div className="flex items-center justify-between gap-3 mb-2">
@@ -1012,7 +1025,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                           value={spotifyEndpointNames[endpoint.id] || endpoint.deviceName}
                           onChange={(e) => setSpotifyEndpointNames({...spotifyEndpointNames, [endpoint.id]: e.target.value})}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && nameChanged) {
+                            if (e.key === 'Enter' && nameChanged && !nameEmpty) {
                               handleSpotifyEndpointNameChange(endpoint.id);
                             }
                           }}
@@ -1023,7 +1036,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                         {nameChanged && (
                           <button
                             onClick={() => handleSpotifyEndpointNameChange(endpoint.id)}
-                            disabled={spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
+                            disabled={nameEmpty || spotifyEndpointNameStatuses[endpoint.id] === 'applying'}
                             className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {spotifyEndpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
@@ -1058,7 +1071,8 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               {!showAddSpotifyEndpoint && spotifyEndpoints.length < 10 && (
                 <button
                   onClick={() => setShowAddSpotifyEndpoint(true)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
+                  disabled={isAnySpotifyEndpointBeingEdited}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   + Add Endpoint
                 </button>
@@ -1074,14 +1088,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                       type="text"
                       value={newSpotifyEndpointName}
                       onChange={(e) => setNewSpotifyEndpointName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleAddSpotifyEndpoint()}
+                      onKeyDown={(e) => e.key === 'Enter' && newSpotifyEndpointName.trim() && !isAnySpotifyEndpointBeingEdited && handleAddSpotifyEndpoint()}
                       className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
                       placeholder="Living Room"
-                      disabled={isAddingSpotifyEndpoint}
+                      disabled={isAnySpotifyEndpointBeingEdited || isAddingSpotifyEndpoint}
                     />
                     <button
                       onClick={handleAddSpotifyEndpoint}
-                      disabled={isAddingSpotifyEndpoint}
+                      disabled={!newSpotifyEndpointName.trim() || isAnySpotifyEndpointBeingEdited || isAddingSpotifyEndpoint}
                       className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isAddingSpotifyEndpoint ? 'Adding...' : 'Add'}
@@ -1102,6 +1116,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                   Maximum of 10 endpoints reached
                 </p>
               )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1135,9 +1152,18 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
           {expandedSection === 'dlna' && (
             <div className="mt-4 ml-14 space-y-4">
+              {/* Check if any endpoint is being edited */}
+              {(() => {
+                const isAnyDlnaEndpointBeingEdited = dlnaEndpoints.some(ep =>
+                  dlnaEndpointNames[ep.id] !== ep.deviceName ||
+                  dlnaEndpointNameStatuses[ep.id] === 'applying'
+                );
+                return (
+                  <>
               {/* Endpoints list */}
               {dlnaEndpoints.map((endpoint) => {
                 const nameChanged = dlnaEndpointNames[endpoint.id] !== endpoint.deviceName;
+                const nameEmpty = !(dlnaEndpointNames[endpoint.id] || endpoint.deviceName)?.trim();
                 return (
                   <div key={endpoint.id} className="p-3 bg-[var(--bg-secondary)] rounded border border-[var(--border-color)]">
                     <div className="flex items-center justify-between gap-3 mb-2">
@@ -1180,7 +1206,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                           value={dlnaEndpointNames[endpoint.id] || endpoint.deviceName}
                           onChange={(e) => setDlnaEndpointNames({...dlnaEndpointNames, [endpoint.id]: e.target.value})}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && nameChanged) {
+                            if (e.key === 'Enter' && nameChanged && !nameEmpty) {
                               handleDlnaEndpointNameChange(endpoint.id);
                             }
                           }}
@@ -1191,7 +1217,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                         {nameChanged && (
                           <button
                             onClick={() => handleDlnaEndpointNameChange(endpoint.id)}
-                            disabled={dlnaEndpointNameStatuses[endpoint.id] === 'applying'}
+                            disabled={nameEmpty || dlnaEndpointNameStatuses[endpoint.id] === 'applying'}
                             className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs bg-[var(--accent-color)] accent-button-text rounded hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {dlnaEndpointNameStatuses[endpoint.id] === 'applying' ? 'Applying...' : 'Apply'}
@@ -1226,7 +1252,8 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               {!showAddDlnaEndpoint && dlnaEndpoints.length < 10 && (
                 <button
                   onClick={() => setShowAddDlnaEndpoint(true)}
-                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors"
+                  disabled={isAnyDlnaEndpointBeingEdited}
+                  className="w-full px-3 py-2 bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary-hover)] border border-[var(--border-color)] rounded text-sm text-[var(--text-secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   + Add Endpoint
                 </button>
@@ -1242,14 +1269,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                       type="text"
                       value={newDlnaEndpointName}
                       onChange={(e) => setNewDlnaEndpointName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleAddDlnaEndpoint()}
+                      onKeyDown={(e) => e.key === 'Enter' && newDlnaEndpointName.trim() && !isAnyDlnaEndpointBeingEdited && handleAddDlnaEndpoint()}
                       className="flex-1 px-2 py-1.5 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-color)]"
                       placeholder="Living Room"
-                      disabled={isAddingDlnaEndpoint}
+                      disabled={isAnyDlnaEndpointBeingEdited || isAddingDlnaEndpoint}
                     />
                     <button
                       onClick={handleAddDlnaEndpoint}
-                      disabled={isAddingDlnaEndpoint}
+                      disabled={!newDlnaEndpointName.trim() || isAnyDlnaEndpointBeingEdited || isAddingDlnaEndpoint}
                       className="px-3 py-1.5 bg-[var(--accent-color)] accent-button-text rounded text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isAddingDlnaEndpoint ? 'Adding...' : 'Add'}
@@ -1270,6 +1297,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                   Maximum of 10 endpoints reached
                 </p>
               )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1320,19 +1350,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               </div>
             </div>
           </div>
-        </div>
-
-        {/* Snapcast Stream */}
-        <div className="p-4 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-color)]">
-          <Switch
-            label="Snapcast Stream"
-            checked={settings.integrations.snapcast}
-            onChange={(val) => handleSimpleChange('snapcast', val)}
-            icon="tower-broadcast"
-          />
-          <p className="text-sm text-[var(--text-muted)] ml-8 mt-2">
-            Built-in Snapcast audio stream source
-          </p>
         </div>
       </div>
 
