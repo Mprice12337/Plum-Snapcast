@@ -439,6 +439,18 @@ export class SnapcastService {
         }
     }
 
+    // Get full properties directly from control script (includes volume)
+    // This uses Stream.Control with getProperties command which the control script handles
+    async getStreamControlProperties(streamId: string): Promise<any> {
+        try {
+            const result = await this.sendStreamControl(streamId, 'getProperties');
+            return result || {};
+        } catch (error) {
+            console.warn(`Failed to get control properties for ${streamId}:`, error);
+            return {};
+        }
+    }
+
     // Use the correct Stream.Control method for playback commands [[1]](https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/stream_plugin.md)
     private async sendStreamControl(streamId: string, command: string, params: any = {}): Promise<any> {
         return this.sendRequest('Stream.Control', {
@@ -534,6 +546,23 @@ export class SnapcastService {
     // Stop playback
     async stopStream(streamId: string): Promise<any> {
         return this.sendStreamControl(streamId, 'stop');
+    }
+
+    // Set source volume (controls the integration - AirPlay, Spotify, etc.)
+    async setStreamVolume(streamId: string, volume: number): Promise<any> {
+        const clampedVolume = Math.max(0, Math.min(100, Math.round(volume)));
+        return this.sendStreamControl(streamId, 'setVolume', {volume: clampedVolume});
+    }
+
+    // Get source volume from stream properties
+    async getStreamVolume(streamId: string): Promise<number> {
+        try {
+            const properties = await this.getStreamProperties(streamId);
+            return properties.volume ?? 100;
+        } catch (error) {
+            console.error(`Failed to get stream volume for ${streamId}:`, error);
+            return 100;
+        }
     }
 
     // Check if stream supports various controls

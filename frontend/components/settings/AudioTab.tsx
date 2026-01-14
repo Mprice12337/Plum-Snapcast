@@ -33,6 +33,8 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
   interface SnapcastEndpoint {
     id: string;
     name: string;
+    ip?: string;
+    isLocal: boolean;
     connected: boolean;
   }
   const [endpoints, setEndpoints] = useState<SnapcastEndpoint[]>([]);
@@ -142,14 +144,36 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       const serverStatus = await snapcastService.getServerStatus();
 
       if (serverStatus?.server?.groups) {
-        const clientList: Array<{id: string; name: string; connected: boolean}> = [];
+        const clientList: SnapcastEndpoint[] = [];
+
+        // Generic names that should be replaced with deviceName
+        const genericNames = ['snapserver', 'snapclient', 'localhost', '127.0.0.1', '::1'];
 
         serverStatus.server.groups.forEach((group: any) => {
           if (group.clients) {
             group.clients.forEach((client: any) => {
+              // Extract IP from host object, strip IPv6-mapped prefix if present
+              let ip = client.host?.ip;
+              if (ip?.startsWith('::ffff:')) {
+                ip = ip.substring(7); // Remove ::ffff: prefix
+              }
+
+              // Check if this is the local snapclient (127.0.0.1, ::1, or localhost)
+              const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+
+              // Get client name with fallback logic
+              let clientName = client.config?.name || client.host?.name || client.id;
+
+              // Replace generic names with deviceName from settings
+              if (genericNames.includes(clientName.toLowerCase()) || clientName === client.id) {
+                clientName = settings.deviceName || 'Plum Snapcast';
+              }
+
               clientList.push({
                 id: client.id,
-                name: client.config?.name || client.id,
+                name: clientName,
+                ip: ip,
+                isLocal: isLocal,
                 connected: client.connected
               });
             });
@@ -168,7 +192,7 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       console.error('Failed to load endpoints and calibrations:', error);
       setCalibrationLoadingState('error');
     }
-  }, []);
+  }, [settings.deviceName]);
 
   const handleCalibrationComplete = useCallback(async (calibration: EndpointCalibration) => {
     // Reload calibrations
@@ -680,7 +704,17 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
                             Offline
                           </span>
                         )}
+                        {endpoint.isLocal && (
+                          <span className="px-2 py-0.5 text-xs font-medium bg-purple-500/20 text-purple-400 rounded">
+                            Local
+                          </span>
+                        )}
                       </div>
+                      {endpoint.ip && !endpoint.isLocal && (
+                        <p className="text-xs text-[var(--text-secondary)] font-mono">
+                          {endpoint.ip}
+                        </p>
+                      )}
                       {cal && (
                         <p className="text-xs text-[var(--text-secondary)] mt-1">
                           {getCalibrationSummary(cal)}

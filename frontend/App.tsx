@@ -85,6 +85,8 @@ const App: React.FC = () => {
     // Use refs to avoid stale closure in WebSocket and polling callbacks
     const recentPlaybackChangeRef = useRef<{streamId: string, timestamp: number} | null>(null);
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
+    // Track volume change timestamps to reject stale polling data
+    const volumeChangeTimestamps = useRef<Record<string, {volume: number, timestamp: number}>>({});
     // Use ref to access current streams without circular dependency
     const streamsRef = useRef<Stream[]>(streams);
     // Use ref to prevent concurrent fetchData calls
@@ -102,6 +104,18 @@ const App: React.FC = () => {
     // Update streamsRef when streams changes
     useEffect(() => {
         streamsRef.current = streams;
+
+        // Track volume changes to reject stale polling data
+        const now = Date.now();
+        streams.forEach(stream => {
+            if (stream.volume !== undefined) {
+                const lastKnown = volumeChangeTimestamps.current[stream.id];
+                if (!lastKnown || lastKnown.volume !== stream.volume) {
+                    // Volume changed - update timestamp
+                    volumeChangeTimestamps.current[stream.id] = {volume: stream.volume, timestamp: now};
+                }
+            }
+        });
     }, [streams]);
 
     // Browser audio client for "Listen in Browser" functionality
@@ -385,6 +399,11 @@ const App: React.FC = () => {
         currentStreamId = myClient?.currentStreamId;
     }
     const currentStream = streams.find(s => s.id === currentStreamId);
+
+    // Debug logging
+    if (currentStream && currentStream.volume !== undefined) {
+        console.log(`[CurrentStream] id='${currentStream.id}', name='${currentStream.name}', volume=${currentStream.volume}`);
+    }
 
     // Treat none-* streams the same as no stream selected (hide controls)
     // In multi-server mode, none stream IDs are like "server-192-168-201-133-none-snapserver"
@@ -861,9 +880,13 @@ const App: React.FC = () => {
                                     if (stream.isPlaying !== isPlaying && hasRecentChange) {
                                         return stream; // Keep current state during grace period
                                     }
+                                    // Only update volume if explicitly provided in properties
+                                    // Using conditional spread to avoid overwriting with undefined
+                                    const sourceVolume = serverStream.properties?.volume;
                                     return {
                                         ...stream,
-                                        isPlaying: isPlaying
+                                        isPlaying: isPlaying,
+                                        ...(typeof sourceVolume === 'number' ? { volume: sourceVolume } : {})
                                     };
                                 }
                                 return stream;
@@ -907,9 +930,13 @@ const App: React.FC = () => {
                         if (stream.isPlaying !== isPlaying && hasRecentChange) {
                             return stream; // Keep current state during grace period
                         }
+                        // Only update volume if explicitly provided in properties
+                        // Using conditional spread to avoid overwriting with undefined
+                        const sourceVolume = properties?.volume;
                         return {
                             ...stream,
-                            isPlaying: isPlaying
+                            isPlaying: isPlaying,
+                            ...(typeof sourceVolume === 'number' ? { volume: sourceVolume } : {})
                         };
                     }
                     return stream;
@@ -1156,7 +1183,55 @@ const App: React.FC = () => {
         try {
             const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
 
-            setStreams(initialStreams);
+            // Check grace period before updating streams
+            const now = Date.now();
+            const GRACE_PERIOD = 20000; // 20 second grace period (longer to account for D-Bus signal propagation)
+            const recentChanges = recentUserChangesRef.current;
+            const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
+
+            // Merge streams with grace period respect
+            setStreams(prevStreams => {
+                return initialStreams.map(newStream => {
+                    const existingStream = prevStreams.find(s => s.id === newStream.id);
+
+                    // Grace period for source volume changes (user-initiated from GUI)
+                    if (existingStream && hasRecentChange && recentChanges!.type === 'sourceVolume' && recentChanges!.data.streamId === newStream.id) {
+                        return {
+                            ...newStream,
+                            volume: recentChanges!.data.volume
+                        };
+                    }
+
+                    // Reject stale volume data: if we have a volume and new data doesn't match, prefer current
+                    // This prevents cached stale data from overwriting fresh D-Bus signals
+                    if (existingStream &&
+                        existingStream.volume !== undefined &&
+                        newStream.volume !== undefined &&
+                        existingStream.volume !== newStream.volume) {
+
+                        const lastKnown = volumeChangeTimestamps.current[newStream.id];
+                        const VOLUME_CHANGE_GRACE = 3000; // 3 second grace to reject stale data
+
+                        if (lastKnown && (now - lastKnown.timestamp) < VOLUME_CHANGE_GRACE) {
+                            // Recent volume change - only accept if it matches what we know or is newer
+                            if (newStream.volume === lastKnown.volume) {
+                                // Polling caught up - accept it
+                                return newStream;
+                            } else {
+                                // Stale data - reject it by keeping existing stream (preserves object identity to prevent re-renders)
+                                return existingStream;
+                            }
+                        } else {
+                            // No recent change or grace expired - accept and track
+                            volumeChangeTimestamps.current[newStream.id] = {volume: newStream.volume, timestamp: now};
+                            return newStream;
+                        }
+                    }
+
+                    return newStream;
+                });
+            });
+
             setClients(initialClients);
             setServerName(snapServerName || 'Snapcast Server');
 
@@ -1344,7 +1419,8 @@ const App: React.FC = () => {
                     },
                     isPlaying: properties.playbackStatus === 'playing',
                     progress: properties.position ? Math.floor(properties.position) : 0,  // Already in seconds (legacy)
-                    playback  // Server-provided playback position data
+                    playback,  // Server-provided playback position data
+                    volume: typeof federatedStream.volume === 'number' ? federatedStream.volume : undefined  // Source volume from control script
                 };
             };
 
@@ -1401,7 +1477,7 @@ const App: React.FC = () => {
                 // Check if we should ignore polling updates due to recent user changes
                 // Use ref to avoid stale closure
                 const now = Date.now();
-                const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
+                const GRACE_PERIOD = 20000; // 20 second grace period for user changes (accounts for D-Bus signal propagation delay)
                 const recentChanges = recentUserChangesRef.current;
                 const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
 
@@ -1424,6 +1500,40 @@ const App: React.FC = () => {
                                     isPlaying: existingStream.isPlaying,
                                     progress: existingStream.progress
                                 };
+                            }
+
+                            // Grace period for source volume changes (user-initiated from GUI)
+                            if (existingStream && hasRecentChange && recentChanges!.type === 'sourceVolume' && recentChanges!.data.streamId === newStream.id) {
+                                // User recently changed source volume - preserve their action
+                                return {
+                                    ...newStream,
+                                    volume: recentChanges!.data.volume
+                                };
+                            }
+
+                            // Reject stale volume data from ANY source (not just user-initiated)
+                            if (existingStream &&
+                                existingStream.volume !== undefined &&
+                                newStream.volume !== undefined &&
+                                existingStream.volume !== newStream.volume) {
+
+                                const lastKnown = volumeChangeTimestamps.current[newStream.id];
+                                const VOLUME_CHANGE_GRACE = 3000; // 3 second grace to reject stale data
+
+                                if (lastKnown && (now - lastKnown.timestamp) < VOLUME_CHANGE_GRACE) {
+                                    // Recent volume change - only accept if it matches what we know or is newer
+                                    if (newStream.volume === lastKnown.volume) {
+                                        // Polling caught up - accept it
+                                        return newStream;
+                                    } else {
+                                        // Stale data - reject it by keeping existing stream (preserves object identity to prevent re-renders)
+                                        return existingStream;
+                                    }
+                                } else {
+                                    // No recent change or grace expired - accept and track
+                                    volumeChangeTimestamps.current[newStream.id] = {volume: newStream.volume, timestamp: now};
+                                    return newStream;
+                                }
                             }
 
                             if (existingStream && existingStream.isPlaying) {
@@ -1515,6 +1625,56 @@ const App: React.FC = () => {
         } catch (error) {
             console.error(`Failed to set volume for client ${localClientId}:`, error);
             // Could revert local state here if needed
+        }
+    };
+
+    // Handle source/integration volume changes (AirPlay, Spotify, etc.)
+    const handleSourceVolumeChange = async (streamId: string, volume: number) => {
+        console.log(`[handleSourceVolumeChange] Called with streamId='${streamId}', volume=${volume}`);
+
+        // Track user change with grace period to prevent polling from overwriting
+        const timestamp = Date.now();
+        const userChange = {type: 'sourceVolume', timestamp, data: {streamId, volume}};
+        recentUserChangesRef.current = userChange;
+        setRecentUserChanges(userChange);
+        console.log(`[VolumeGrace] Set grace period for volume=${volume}%, expires in 7s`);
+
+        // Update local stream state immediately for responsiveness
+        setStreams(prevStreams =>
+            prevStreams.map(s => (s.id === streamId ? {...s, volume} : s))
+        );
+
+        // Use audio API for source volume control (always available regardless of federation status)
+        // Snapcast's Stream.Control doesn't support setVolume command, so we use
+        // direct D-Bus MPRIS control via the audio API
+        try {
+            const payload = { streamId, volume };
+            console.log(`[handleSourceVolumeChange] Sending payload:`, payload);
+
+            const response = await fetch('/api/audio/source-volume', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                console.error(`Failed to set source volume: ${error.message || error.error}`);
+                // Clear the grace period on failure
+                console.log(`[VolumeGrace] Cleared grace period due to API failure`);
+                recentUserChangesRef.current = null;
+                setRecentUserChanges(null);
+            } else {
+                console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for stream ${streamId}`);
+            }
+        } catch (error) {
+            console.error(`Failed to set source volume for stream ${streamId}:`, error);
+            // Clear the grace period on error
+            console.log(`[VolumeGrace] Cleared grace period due to error`);
+            recentUserChangesRef.current = null;
+            setRecentUserChanges(null);
         }
     };
 
@@ -2206,6 +2366,8 @@ const App: React.FC = () => {
                                     stream={currentStream}
                                     volume={myClient.volume}
                                     onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                                    sourceVolume={currentStream.volume}
+                                    onSourceVolumeChange={(vol) => handleSourceVolumeChange(currentStream.id, vol)}
                                     onPlayPause={handlePlayPause}
                                     onSkip={handleSkip}
                                 />

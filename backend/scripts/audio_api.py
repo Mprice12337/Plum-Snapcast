@@ -7,10 +7,11 @@ Provides endpoints for audio device discovery and configuration
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from flask import Blueprint, jsonify, request
 
 # Import AudioDeviceManager and SettingsManager
@@ -22,6 +23,203 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 SUPERVISORCTL_CONF = "/app/supervisord/supervisord.conf"
+
+
+class MPRISVolumeController:
+    """
+    Direct D-Bus/MPRIS volume control for integration sources.
+    Works with AirPlay, Spotify, Bluetooth, etc.
+    Uses subprocess approach to avoid D-Bus session bus connection issues.
+    """
+
+    # Map integration keywords to MPRIS service name patterns
+    # Uses flexible keyword matching instead of strict regex patterns
+    # to support custom stream names like "AirPlay - Office DeskPi - AP 1"
+    INTEGRATION_MPRIS_MAP = {
+        # AirPlay: org.mpris.MediaPlayer2.ShairportSync or ShairportSync.i*
+        'airplay': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
+        # Spotify: org.mpris.MediaPlayer2.spotifyd or spotifyd.instance*
+        'spotify': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
+        # Bluetooth: org.mpris.MediaPlayer2.* (various players)
+        'bluetooth': r'org\.mpris\.MediaPlayer2\.',
+        # DLNA: org.mpris.MediaPlayer2.GMediaRender or gmediarender*
+        'dlna': r'org\.mpris\.MediaPlayer2\.GMediaRender',
+        # Plexamp: org.mpris.MediaPlayer2.Plexamp
+        'plexamp': r'org\.mpris\.MediaPlayer2\.Plexamp$',
+    }
+
+    def __init__(self):
+        pass
+
+    def _find_mpris_service_via_subprocess(self, stream_id: str) -> Optional[str]:
+        """Find MPRIS service using dbus-send command"""
+        try:
+            # List all MPRIS services using dbus-send (use system bus, not session bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--dest=org.freedesktop.DBus',
+                 '--type=method_call', '--print-reply',
+                 '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to list D-Bus services: {result.stderr}")
+                return None
+
+            # Parse output for MPRIS services
+            mpris_services = []
+            for line in result.stdout.split('\n'):
+                if 'org.mpris.MediaPlayer2.' in line:
+                    # Extract service name from dbus-send output
+                    # Format: string "org.mpris.MediaPlayer2.ShairportSync"
+                    match = re.search(r'"(org\.mpris\.MediaPlayer2\.[^"]+)"', line)
+                    if match:
+                        mpris_services.append(match.group(1))
+
+            logger.debug(f"Found MPRIS services: {mpris_services}")
+
+            # Match stream ID to service using flexible keyword matching
+            # Check if any integration keyword appears in the stream ID (case-insensitive)
+            stream_id_lower = stream_id.lower()
+
+            for keyword, mpris_pattern in self.INTEGRATION_MPRIS_MAP.items():
+                if keyword in stream_id_lower:
+                    logger.debug(f"Stream '{stream_id}' contains keyword '{keyword}', looking for MPRIS pattern: {mpris_pattern}")
+                    for service in mpris_services:
+                        if re.match(mpris_pattern, service):
+                            logger.info(f"Found MPRIS service {service} for stream {stream_id}")
+                            return service
+                    # Keyword found but no matching service
+                    logger.warning(f"Keyword '{keyword}' found in stream ID but no matching MPRIS service")
+
+            logger.warning(f"No MPRIS service found for stream {stream_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding MPRIS service: {e}")
+            return None
+
+    def _find_mpris_service(self, stream_id: str) -> Optional[str]:
+        """Find MPRIS service - wrapper that calls subprocess implementation"""
+        return self._find_mpris_service_via_subprocess(stream_id)
+
+    def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
+        """
+        Set volume for a stream via MPRIS D-Bus using subprocess
+
+        Args:
+            stream_id: Stream ID (e.g., airplay1, spotify2)
+            volume: Volume level (0-100)
+
+        Returns:
+            Tuple of (success, message)
+        """
+        # Extract local stream ID from federated ID if needed
+        # Format: "server-192-168-7-122-airplay1" -> "airplay1"
+        local_stream_id = stream_id
+        if stream_id.startswith("server-"):
+            parts = stream_id.split("-")
+            if len(parts) >= 6:
+                local_stream_id = "-".join(parts[5:])
+                logger.debug(f"Extracted local stream ID: {local_stream_id} from {stream_id}")
+
+        # Find MPRIS service
+        service = self._find_mpris_service(local_stream_id)
+        if not service:
+            return False, f"No MPRIS service found for stream {local_stream_id}"
+
+        try:
+            # Convert 0-100 to 0.0-1.0 for MPRIS
+            mpris_volume = max(0.0, min(1.0, volume / 100.0))
+
+            # Call SetVolume method (not Properties.Set, as Volume property is read-only)
+            # ShairportSync provides org.mpris.MediaPlayer2.Player.SetVolume method
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.mpris.MediaPlayer2.Player.SetVolume',
+                 f'double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"dbus-send failed: {result.stderr}")
+                return False, f"Failed to set volume: {result.stderr}"
+
+            logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% (MPRIS: {mpris_volume:.2f})")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout setting volume for {local_stream_id}")
+            return False, "Timeout setting volume"
+        except Exception as e:
+            logger.error(f"Failed to set volume for {local_stream_id}: {e}")
+            return False, f"Error setting volume: {str(e)}"
+
+    def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
+        """
+        Get volume for a stream via MPRIS D-Bus using subprocess
+
+        Args:
+            stream_id: Stream ID (e.g., airplay1, spotify2)
+
+        Returns:
+            Tuple of (success, volume, message)
+        """
+        # Extract local stream ID from federated ID if needed
+        local_stream_id = stream_id
+        if stream_id.startswith("server-"):
+            parts = stream_id.split("-")
+            if len(parts) >= 6:
+                local_stream_id = "-".join(parts[5:])
+
+        # Find MPRIS service
+        service = self._find_mpris_service(local_stream_id)
+        if not service:
+            return False, 0, f"No MPRIS service found for stream {local_stream_id}"
+
+        try:
+            # Get volume using dbus-send (use system bus, not session bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"dbus-send failed: {result.stderr}")
+                return False, 0, f"Failed to get volume: {result.stderr}"
+
+            # Parse output to get volume value
+            # Format: "variant       double 0.5"
+            match = re.search(r'double\s+([\d.]+)', result.stdout)
+            if not match:
+                logger.error(f"Could not parse volume from dbus-send output: {result.stdout}")
+                return False, 0, "Failed to parse volume"
+
+            mpris_volume = float(match.group(1))
+            volume = int(mpris_volume * 100)
+
+            logger.debug(f"Got volume for {local_stream_id}: {volume}% (MPRIS: {mpris_volume:.2f})")
+            return True, volume, f"Volume: {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout getting volume for {local_stream_id}")
+            return False, 0, "Timeout getting volume"
+        except Exception as e:
+            logger.error(f"Failed to get volume for {local_stream_id}: {e}")
+            return False, 0, f"Error getting volume: {str(e)}"
 
 
 class AudioConfigController:
@@ -533,6 +731,9 @@ def create_audio_blueprint(audio_controller: AudioConfigController = None) -> Bl
     if audio_controller is None:
         audio_controller = AudioConfigController()
 
+    # Initialize MPRIS volume controller
+    mpris_controller = MPRISVolumeController()
+
     bp = Blueprint('audio', __name__)
 
     @bp.route("/api/audio/devices/output", methods=["GET"])
@@ -668,6 +869,63 @@ def create_audio_blueprint(audio_controller: AudioConfigController = None) -> Bl
         except Exception as e:
             logger.error(f"Toggle input device failed: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
+
+    @bp.route("/api/audio/source-volume", methods=["POST"])
+    def set_source_volume():
+        """
+        Set source volume for a stream (controls AirPlay/Spotify/Bluetooth/etc volume via D-Bus MPRIS)
+        This endpoint is always available regardless of federation status
+        """
+        try:
+            data = request.get_json()
+            stream_id = data.get("streamId")
+            volume = data.get("volume")
+
+            logger.info(f"Source volume request - streamId: '{stream_id}', volume: {volume}")
+
+            if not stream_id or volume is None:
+                return jsonify({"error": "streamId and volume required"}), 400
+
+            # The streamId might be a friendly name from the frontend, but we need the actual stream ID
+            # Try to extract the actual stream ID from the Snapcast API
+            # For now, let's accept it and let the MPRIS controller handle it
+
+            # Use direct D-Bus MPRIS control
+            success, message = mpris_controller.set_volume(stream_id, int(volume))
+
+            if success:
+                return jsonify({"success": True, "message": message})
+            else:
+                logger.warning(f"Failed to set volume for '{stream_id}': {message}")
+                return jsonify({"success": False, "message": message}), 400
+
+        except Exception as e:
+            logger.error(f"Set source volume failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/audio/source-volume", methods=["GET"])
+    def get_source_volume():
+        """
+        Get source volume for a stream via D-Bus MPRIS
+        Query parameter: streamId
+        """
+        try:
+            stream_id = request.args.get("streamId")
+
+            if not stream_id:
+                return jsonify({"error": "streamId parameter required"}), 400
+
+            # Get volume via D-Bus MPRIS
+            success, volume, message = mpris_controller.get_volume(stream_id)
+
+            if success:
+                return jsonify({"success": True, "volume": volume, "message": message})
+            else:
+                return jsonify({"success": False, "volume": 0, "message": message}), 400
+
+        except Exception as e:
+            logger.error(f"Get source volume failed: {e}")
+            return jsonify({"error": str(e)}), 500
 
     return bp
 

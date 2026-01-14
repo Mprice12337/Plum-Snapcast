@@ -715,3 +715,45 @@ class FederationRouter:
                 "success": False,
                 "message": f"Stream control error: {str(e)}"
             }
+
+    async def set_stream_volume(self, stream_id: str, volume: int) -> Dict:
+        """Set source volume for a stream (controls the integration like AirPlay/Spotify)"""
+        try:
+            # Parse stream ID
+            server_id, local_stream_id = self.parse_federated_id(stream_id)
+
+            # Get connection
+            conn = self.ws_manager.get_connection(server_id)
+            if not conn or not conn.connected:
+                return {
+                    "success": False,
+                    "message": f"Server not connected: {server_id}"
+                }
+
+            # Clamp volume to valid range
+            clamped_volume = max(0, min(100, volume))
+
+            # Send setVolume command with volume in params
+            await conn.send_request("Stream.Control", {
+                "id": local_stream_id,
+                "command": "setVolume",
+                "params": {"volume": clamped_volume}
+            })
+
+            # Refresh status after volume change
+            try:
+                await asyncio.wait_for(conn.get_status(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass  # Timeout refreshing status, continue anyway
+
+            return {
+                "success": True,
+                "message": f"Stream volume set to {clamped_volume}%"
+            }
+
+        except Exception as e:
+            logger.error(f"Set stream volume failed: {e}")
+            return {
+                "success": False,
+                "message": f"Stream volume error: {str(e)}"
+            }

@@ -8,11 +8,20 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import requests
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+# D-Bus for direct MPRIS volume control
+try:
+    import dbus
+    DBUS_AVAILABLE = True
+except ImportError:
+    DBUS_AVAILABLE = False
+    dbus = None
 
 # Add parent directory to path to import settings_api, integrations_api, audio_api, and playback_api
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,6 +32,167 @@ from playback_api import create_playback_blueprint, playback_store
 from testtone_api import create_testtone_blueprint
 
 logger = logging.getLogger(__name__)
+
+
+class MPRISVolumeController:
+    """
+    Direct D-Bus/MPRIS volume control for integration sources.
+    Bypasses Snapcast's Stream.Control which doesn't support setVolume.
+    """
+
+    # Map stream ID patterns to MPRIS service name patterns
+    STREAM_MPRIS_MAP = {
+        # AirPlay: org.mpris.MediaPlayer2.ShairportSync or ShairportSync.i*
+        r'airplay(\d*)': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
+        # Spotify: org.mpris.MediaPlayer2.spotifyd or spotifyd.instance*
+        r'spotify(\d*)': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
+        # Bluetooth: org.mpris.MediaPlayer2.* (various players)
+        r'bluetooth(\d*)': r'org\.mpris\.MediaPlayer2\.',
+    }
+
+    def __init__(self):
+        self.bus = None
+        self._connect()
+
+    def _connect(self):
+        """Connect to D-Bus session bus"""
+        if not DBUS_AVAILABLE:
+            logger.warning("D-Bus not available - volume control disabled")
+            return
+
+        try:
+            self.bus = dbus.SessionBus()
+            logger.info("Connected to D-Bus session bus for MPRIS volume control")
+        except Exception as e:
+            logger.error(f"Failed to connect to D-Bus: {e}")
+            self.bus = None
+
+    def _find_mpris_service(self, stream_id: str) -> Optional[str]:
+        """
+        Find the MPRIS service name for a given stream ID.
+
+        Args:
+            stream_id: Snapcast stream ID (e.g., "airplay1", "spotify2")
+
+        Returns:
+            MPRIS service name or None if not found
+        """
+        if not self.bus:
+            return None
+
+        try:
+            # Get list of all D-Bus services
+            dbus_obj = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+            dbus_iface = dbus.Interface(dbus_obj, 'org.freedesktop.DBus')
+            services = dbus_iface.ListNames()
+
+            # Find MPRIS services
+            mpris_services = [s for s in services if s.startswith('org.mpris.MediaPlayer2.')]
+            logger.debug(f"Found MPRIS services: {mpris_services}")
+
+            # Match stream ID to service pattern
+            for pattern, mpris_pattern in self.STREAM_MPRIS_MAP.items():
+                if re.match(pattern, stream_id, re.IGNORECASE):
+                    # Find matching MPRIS service
+                    for service in mpris_services:
+                        if re.match(mpris_pattern, service):
+                            logger.debug(f"Matched stream {stream_id} to MPRIS service {service}")
+                            return service
+
+            # If no pattern match, try direct name matching
+            for service in mpris_services:
+                service_lower = service.lower()
+                stream_lower = stream_id.lower()
+                # Check if stream name is part of service name
+                if stream_lower.replace('-', '').rstrip('0123456789') in service_lower:
+                    logger.debug(f"Matched stream {stream_id} to MPRIS service {service} via name")
+                    return service
+
+            logger.warning(f"No MPRIS service found for stream {stream_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding MPRIS service: {e}")
+            return None
+
+    def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
+        """
+        Set volume for a stream via MPRIS D-Bus.
+
+        Args:
+            stream_id: Snapcast stream ID
+            volume: Volume level 0-100
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if not DBUS_AVAILABLE:
+            return False, "D-Bus not available"
+
+        if not self.bus:
+            self._connect()
+            if not self.bus:
+                return False, "Failed to connect to D-Bus"
+
+        # Find MPRIS service for this stream
+        service = self._find_mpris_service(stream_id)
+        if not service:
+            return False, f"No MPRIS service found for stream {stream_id}"
+
+        try:
+            # Get MPRIS player properties interface
+            player_obj = self.bus.get_object(service, '/org/mpris/MediaPlayer2')
+            props_iface = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+
+            # Convert 0-100 to 0.0-1.0 for MPRIS
+            mpris_volume = max(0.0, min(1.0, volume / 100.0))
+
+            # Set volume
+            props_iface.Set('org.mpris.MediaPlayer2.Player', 'Volume', dbus.Double(mpris_volume))
+
+            logger.info(f"Set volume for {stream_id} via {service}: {volume}%")
+            return True, f"Volume set to {volume}%"
+
+        except dbus.exceptions.DBusException as e:
+            logger.error(f"D-Bus error setting volume: {e}")
+            return False, f"D-Bus error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error setting volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
+        """
+        Get current volume for a stream via MPRIS D-Bus.
+
+        Args:
+            stream_id: Snapcast stream ID
+
+        Returns:
+            Tuple of (success, volume 0-100, message)
+        """
+        if not DBUS_AVAILABLE or not self.bus:
+            return False, 0, "D-Bus not available"
+
+        service = self._find_mpris_service(stream_id)
+        if not service:
+            return False, 0, f"No MPRIS service found for stream {stream_id}"
+
+        try:
+            player_obj = self.bus.get_object(service, '/org/mpris/MediaPlayer2')
+            props_iface = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+
+            mpris_volume = props_iface.Get('org.mpris.MediaPlayer2.Player', 'Volume')
+            volume = int(mpris_volume * 100)
+
+            return True, volume, f"Volume: {volume}%"
+
+        except Exception as e:
+            logger.error(f"Error getting volume: {e}")
+            return False, 0, f"Error: {str(e)}"
+
+
+# Global MPRIS volume controller instance
+mpris_volume_controller = MPRISVolumeController()
 
 
 class FederationAPI:
@@ -218,6 +388,41 @@ class FederationAPI:
 
             except Exception as e:
                 logger.error(f"Stream control failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/federation/stream/volume", methods=["POST"])
+        def set_stream_volume():
+            """Set source volume for a stream (controls AirPlay/Spotify/etc volume via D-Bus MPRIS)"""
+            try:
+                data = request.get_json()
+                stream_id = data.get("streamId")
+                volume = data.get("volume")
+
+                if not stream_id or volume is None:
+                    return jsonify({"error": "streamId and volume required"}), 400
+
+                if not isinstance(volume, (int, float)):
+                    return jsonify({"error": "volume must be a number"}), 400
+
+                # Extract local stream ID from federated ID
+                # Format: "server-192-168-7-122-airplay1" -> "airplay1"
+                local_stream_id = stream_id
+                if stream_id.startswith("server-"):
+                    parts = stream_id.split("-")
+                    if len(parts) >= 6:
+                        # server-192-168-7-122-airplay1 -> parts[5:] = ["airplay1"]
+                        local_stream_id = "-".join(parts[5:])
+
+                # Use direct D-Bus MPRIS control (bypasses Snapcast which doesn't support setVolume)
+                success, message = mpris_volume_controller.set_volume(local_stream_id, int(volume))
+
+                if success:
+                    return jsonify({"success": True, "message": message})
+                else:
+                    return jsonify({"success": False, "message": message}), 400
+
+            except Exception as e:
+                logger.error(f"Set stream volume failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
         @self.app.route("/api/federation/server/add", methods=["POST"])
@@ -456,7 +661,12 @@ class DataAggregator:
             server_streams = conn.last_status.get("server", {}).get("streams", [])
 
             for stream in server_streams:
+                # Extract the actual stream ID from Snapcast
+                # The stream dict has: {"id": "airplay1", "uri": {...}, "properties": {...}}
                 stream_id = stream.get("id", "")
+
+                # Debug logging to see what we're getting
+                logger.debug(f"Processing stream - id: '{stream_id}', keys: {list(stream.keys())}")
 
                 federated_id = f"{conn.server_id}-{stream_id}"
 
@@ -484,11 +694,25 @@ class DataAggregator:
                 else:
                     playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
 
+                # Extract source volume from properties (set by control script)
+                source_volume = properties.get("volume")
+
+                # Extract stream display name from properties or URI
+                stream_name = properties.get("name", "")
+                if not stream_name:
+                    # Try URI query name
+                    uri = stream.get("uri", {})
+                    if isinstance(uri, dict):
+                        query = uri.get("query", {})
+                        stream_name = query.get("name", stream_id)
+                    else:
+                        stream_name = stream_id
+
                 streams.append({
                     "id": federated_id,
                     "serverId": conn.server_id,
                     "serverName": conn.name,
-                    "name": stream.get("status"),
+                    "name": stream_name,  # Fixed: use actual stream name, not status
                     "status": stream_status,
                     "metadata": {
                         "title": metadata.get("title", ""),
@@ -504,7 +728,9 @@ class DataAggregator:
                         "interpolated_position": playback_data.get("interpolated_position", 0),
                         "playback_status": playback_data.get("playback_status", "unknown"),
                         "is_stale": playback_data.get("is_stale", True)
-                    }
+                    },
+                    # Source volume at top level for frontend Stream interface
+                    "volume": source_volume
                 })
 
         return streams

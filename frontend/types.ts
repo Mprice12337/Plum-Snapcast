@@ -61,6 +61,7 @@ export interface Stream {
     isPlaying: boolean;
     progress: number;                // in seconds (legacy, frontend-tracked)
     playback?: PlaybackData;         // Server-provided playback position (preferred)
+    volume?: number;                 // Source volume (0-100) from control script
 }
 
 export interface Client {

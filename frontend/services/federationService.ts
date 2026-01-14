@@ -207,6 +207,35 @@ export class FederationService {
   }
 
   /**
+   * Set source volume for a stream (controls AirPlay/Spotify/etc volume)
+   */
+  async setStreamVolume(streamId: string, volume: number): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/stream/volume`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ streamId, volume }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || data.error || 'Failed to set stream volume');
+      }
+
+      return data;
+    } catch (error) {
+      console.error('Failed to set stream volume:', error);
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  /**
    * Manually add a server
    */
   async addServer(host: string, port: number, name: string): Promise<{ success: boolean; server?: Server; error?: string }> {

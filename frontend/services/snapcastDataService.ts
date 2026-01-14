@@ -241,6 +241,23 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         progress = getPositionFromProperties();
     }
 
+    // Extract source volume from stream properties (set by control script)
+    // Snapcast's Server.GetStatus doesn't include volume from control script notifications,
+    // so we need to fetch it directly from the control script via Stream.Control getProperties
+    let sourceVolume = snapStream.properties?.volume;
+
+    // If volume not in stream properties and stream can be controlled, fetch from control script
+    if (sourceVolume === undefined && snapStream.properties?.canControl && !snapStream.id.includes('none-')) {
+        try {
+            const controlProps = await snapcastService.getStreamControlProperties(snapStream.id);
+            if (typeof controlProps?.volume === 'number') {
+                sourceVolume = controlProps.volume;
+            }
+        } catch (error) {
+            console.warn(`[DataService] Failed to get control properties for ${snapStream.id}:`, error);
+        }
+    }
+
     return {
         id: snapStream.id,
         name: getStreamName(snapStream),
@@ -251,6 +268,7 @@ const convertSnapcastStreamToStream = async (snapStream: any): Promise<Stream> =
         },
         isPlaying: isPlaying,
         progress: progress,
+        volume: typeof sourceVolume === 'number' ? sourceVolume : undefined,
     };
 };
 
