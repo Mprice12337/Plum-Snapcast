@@ -28,20 +28,6 @@ const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNoteP
 
 const VOLUME_STEP = 5;
 
-// Helper function to check if two arrays have the same content
-// Uses JSON serialization for deep comparison (handles nested objects)
-function arraysEqual<T extends Record<string, any>>(a: T[], b: T[]): boolean {
-  if (a.length !== b.length) return false;
-
-  // Sort both arrays by id for consistent comparison
-  const sortedA = [...a].sort((x, y) => String(x.id).localeCompare(String(y.id)));
-  const sortedB = [...b].sort((x, y) => String(x.id).localeCompare(String(y.id)));
-
-  // Use JSON.stringify for deep comparison (handles nested objects like metadata, properties)
-  // This is simpler and more reliable than manual deep equality checking
-  return JSON.stringify(sortedA) === JSON.stringify(sortedB);
-}
-
 // Helper function to validate album art URLs
 // Detects corrupted data URLs containing binary data instead of proper base64
 function isValidAlbumArtUrl(url: string | undefined | null): boolean {
@@ -101,8 +87,6 @@ const App: React.FC = () => {
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
     // Track volume change timestamps to reject stale polling data
     const volumeChangeTimestamps = useRef<Record<string, {volume: number, timestamp: number}>>({});
-    // Track last raw snapshot data to detect actual server changes (before transformation)
-    const lastRawSnapshotRef = useRef<{servers: Server[], streams: any[], clients: Client[]} | null>(null);
     // Use ref to access current streams without circular dependency
     const streamsRef = useRef<Stream[]>(streams);
     // Use ref to prevent concurrent fetchData calls
@@ -1481,23 +1465,7 @@ const App: React.FC = () => {
 
             // Start polling for federated data
             federationService.startPolling((data) => {
-                // Check if raw data from server actually changed (before transformation)
-                const lastRawSnapshot = lastRawSnapshotRef.current;
-                const serversChanged = !lastRawSnapshot || !arraysEqual(lastRawSnapshot.servers, data.servers);
-                const streamsChanged = !lastRawSnapshot || !arraysEqual(lastRawSnapshot.streams, data.streams);
-                const clientsChanged = !lastRawSnapshot || !arraysEqual(lastRawSnapshot.clients, data.clients);
-
-                // Store current raw snapshot for next comparison
-                lastRawSnapshotRef.current = {
-                    servers: data.servers,
-                    streams: data.streams,
-                    clients: data.clients
-                };
-
-                // Only update servers if raw data actually changed
-                if (serversChanged) {
-                    setServers(data.servers);
-                }
+                setServers(data.servers);
 
                 // Also fetch active endpoint to determine current stream in multi-server mode
                 federationService.getActiveEndpoint().then(endpoint => {
@@ -1514,8 +1482,7 @@ const App: React.FC = () => {
                 const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
 
                 // Transform and MERGE federated streams (preserve client-side progress tracking)
-                // Only transform if raw stream data changed
-                if (streamsChanged && data.streams.length > 0) {
+                if (data.streams.length > 0) {
                     setStreams(prevStreams => {
                         const transformedStreams = data.streams.map(federatedStream => {
                             const newStream = transformFederatedStream(federatedStream);
@@ -1588,8 +1555,7 @@ const App: React.FC = () => {
                 }
 
                 // Transform and set federated clients
-                // Only transform if raw client data changed
-                if (clientsChanged && data.clients.length > 0) {
+                if (data.clients.length > 0) {
                     const transformedClients = data.clients.map(client => {
                         const transformed = transformFederatedClient(client);
 
