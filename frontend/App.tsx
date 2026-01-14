@@ -1583,26 +1583,38 @@ const App: React.FC = () => {
                             return newStream;
                         });
 
+                        // Only return new array if something actually changed
+                        // This prevents unnecessary re-renders when data is identical
+                        if (arraysEqual(prevStreams, transformedStreams)) {
+                            return prevStreams;
+                        }
                         return transformedStreams;
                     });
                 }
 
                 // Transform and set federated clients
                 if (data.clients.length > 0) {
-                    // If there was a recent client routing change, preserve that client's stream assignment
-                    const transformedClients = data.clients.map(client => {
-                        const transformed = transformFederatedClient(client);
+                    setClients(prevClients => {
+                        // If there was a recent client routing change, preserve that client's stream assignment
+                        const transformedClients = data.clients.map(client => {
+                            const transformed = transformFederatedClient(client);
 
-                        if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
-                            return {
-                                ...transformed,
-                                currentStreamId: recentChanges!.data.streamId
-                            };
+                            if (hasRecentChange && recentChanges!.type === 'routing' && recentChanges!.data.clientId === transformed.id) {
+                                return {
+                                    ...transformed,
+                                    currentStreamId: recentChanges!.data.streamId
+                                };
+                            }
+
+                            return transformed;
+                        });
+
+                        // Only return new array if something actually changed
+                        if (arraysEqual(prevClients, transformedClients)) {
+                            return prevClients;
                         }
-
-                        return transformed;
+                        return transformedClients;
                     });
-                    setClients(transformedClients);
                 }
             }, 5000);
         };
