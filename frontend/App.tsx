@@ -29,7 +29,7 @@ const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNoteP
 const VOLUME_STEP = 5;
 
 // Helper function to check if two arrays have the same content
-// Uses shallow comparison of object properties to detect changes
+// Uses JSON serialization for deep comparison (handles nested objects)
 function arraysEqual<T extends Record<string, any>>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
 
@@ -37,22 +37,9 @@ function arraysEqual<T extends Record<string, any>>(a: T[], b: T[]): boolean {
   const sortedA = [...a].sort((x, y) => String(x.id).localeCompare(String(y.id)));
   const sortedB = [...b].sort((x, y) => String(x.id).localeCompare(String(y.id)));
 
-  for (let i = 0; i < sortedA.length; i++) {
-    const itemA = sortedA[i];
-    const itemB = sortedB[i];
-
-    // Compare all keys
-    const keysA = Object.keys(itemA);
-    const keysB = Object.keys(itemB);
-
-    if (keysA.length !== keysB.length) return false;
-
-    for (const key of keysA) {
-      if (itemA[key] !== itemB[key]) return false;
-    }
-  }
-
-  return true;
+  // Use JSON.stringify for deep comparison (handles nested objects like metadata, properties)
+  // This is simpler and more reliable than manual deep equality checking
+  return JSON.stringify(sortedA) === JSON.stringify(sortedB);
 }
 
 // Helper function to validate album art URLs
