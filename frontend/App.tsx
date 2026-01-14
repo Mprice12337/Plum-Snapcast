@@ -1935,17 +1935,18 @@ const App: React.FC = () => {
         const isStreamLocal = streamId ? isLocalId(streamId) : true;
         const localServer = getLocalServer();
 
-        // Check if browser audio client is trying to access remote stream
-        // Browser clients connect via WebSocket to local server - they cannot play remote streams
+        // Check if browser audio client needs to switch servers for remote streams
         const isBrowserClient = clientId === browserClientId || clientId === getBrowserAudioClientId();
-        if (settings.federation.enabled && isClientLocal && !isStreamLocal && streamId && isBrowserClient) {
-            console.error('[StreamChange] ERROR: Browser audio cannot play remote streams');
-            alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-            // Revert local state
-            setClients(prevClients =>
-                prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
-            );
-            return;
+        if (settings.federation.enabled && isBrowserClient && streamId) {
+            const newServer = getServerForStream(streamId);
+            const newHost = newServer?.host || window.location.hostname;
+            const currentHost = browserAudio.state.currentHost;
+
+            // If browser client is switching to a stream on a different server, restart connection
+            if (currentHost && newHost !== currentHost) {
+                console.log(`[StreamChange] Browser audio switching from ${currentHost} to ${newHost}`);
+                browserAudio.restart(newHost, browserAudio.state.muted, newServer?.port || 1780);
+            }
         }
 
         // Use federation API for:
@@ -2500,13 +2501,13 @@ const App: React.FC = () => {
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={() => {
                                 const targetStream = myClient?.currentStreamId || null;
-                                // Block browser audio if current stream is remote
-                                if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
-                                    alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-                                    return;
-                                }
+                                // Get the server for this stream (local or remote)
+                                const server = targetStream ? getServerForStream(targetStream) : undefined;
+                                const targetHost = server?.host || window.location.hostname;
+                                const targetPort = server?.port || 1780;
+
                                 setTargetStreamForBrowserAudio(targetStream);
-                                browserAudio.start();
+                                browserAudio.start(false, targetHost, targetPort);
                             }}
                             browserAudioActive={browserAudio.state.isActive}
                             federationEnabled={settings.federation.enabled}
@@ -2573,13 +2574,13 @@ const App: React.FC = () => {
                 }}
                 onStartBrowserAudio={() => {
                     const targetStream = myClient?.currentStreamId || null;
-                    // Block browser audio if current stream is remote
-                    if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
-                        alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-                        return;
-                    }
+                    // Get the server for this stream (local or remote)
+                    const server = targetStream ? getServerForStream(targetStream) : undefined;
+                    const targetHost = server?.host || window.location.hostname;
+                    const targetPort = server?.port || 1780;
+
                     setTargetStreamForBrowserAudio(targetStream);
-                    browserAudio.start(true); // Start muted for visualizer mode
+                    browserAudio.start(true, targetHost, targetPort); // Start muted for visualizer mode
                 }}
                 onToggleBrowserAudioMute={() => browserAudio.toggleMute()}
                 onClose={() => setIsVisualizerOpen(false)}

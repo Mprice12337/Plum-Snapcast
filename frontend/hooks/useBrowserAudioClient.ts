@@ -132,6 +132,7 @@ export function useBrowserAudioClient(defaultHost: string) {
         state,
         start,
         stop,
+        restart, // Restart with a different host (for switching servers)
         setVolume,
         toggleMute,
         isMuted,
