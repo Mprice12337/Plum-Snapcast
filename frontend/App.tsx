@@ -28,6 +28,33 @@ const musicNotePlaceholder = `data:image/svg+xml,${encodeURIComponent(musicNoteP
 
 const VOLUME_STEP = 5;
 
+// Helper function to check if two arrays have the same content
+// Uses shallow comparison of object properties to detect changes
+function arraysEqual<T extends Record<string, any>>(a: T[], b: T[]): boolean {
+  if (a.length !== b.length) return false;
+
+  // Sort both arrays by id for consistent comparison
+  const sortedA = [...a].sort((x, y) => String(x.id).localeCompare(String(y.id)));
+  const sortedB = [...b].sort((x, y) => String(x.id).localeCompare(String(y.id)));
+
+  for (let i = 0; i < sortedA.length; i++) {
+    const itemA = sortedA[i];
+    const itemB = sortedB[i];
+
+    // Compare all keys
+    const keysA = Object.keys(itemA);
+    const keysB = Object.keys(itemB);
+
+    if (keysA.length !== keysB.length) return false;
+
+    for (const key of keysA) {
+      if (itemA[key] !== itemB[key]) return false;
+    }
+  }
+
+  return true;
+}
+
 // Helper function to validate album art URLs
 // Detects corrupted data URLs containing binary data instead of proper base64
 function isValidAlbumArtUrl(url: string | undefined | null): boolean {
@@ -1465,7 +1492,13 @@ const App: React.FC = () => {
 
             // Start polling for federated data
             federationService.startPolling((data) => {
-                setServers(data.servers);
+                // Only update servers if data actually changed (prevents unnecessary re-renders)
+                setServers(prevServers => {
+                    if (arraysEqual(prevServers, data.servers)) {
+                        return prevServers; // Keep same object identity to prevent re-renders
+                    }
+                    return data.servers;
+                });
 
                 // Also fetch active endpoint to determine current stream in multi-server mode
                 federationService.getActiveEndpoint().then(endpoint => {

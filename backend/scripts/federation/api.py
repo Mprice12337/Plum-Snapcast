@@ -278,6 +278,22 @@ class FederationAPI:
                 logger.error(f"Get clients failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/api/federation/snapshot", methods=["GET"])
+        def get_snapshot():
+            """
+            Get atomic snapshot of all federation data (servers, streams, clients).
+
+            This endpoint returns all three data types from a single consistent view
+            of the connection state, preventing race conditions where streams reference
+            servers that don't exist yet, or clients disappear temporarily.
+            """
+            try:
+                snapshot = self.data_aggregator.get_snapshot()
+                return jsonify(snapshot)
+            except Exception as e:
+                logger.error(f"Get snapshot failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/api/federation/active-endpoint", methods=["GET"])
         def get_active_endpoint():
             """
@@ -889,6 +905,282 @@ class DataAggregator:
 
         if updates_made > 0:
             logger.debug(f"Updated {updates_made} client stream assignments based on remote snapclient activity")
+
+        return clients
+
+    def get_snapshot(self) -> Dict:
+        """
+        Get atomic snapshot of all federation data (servers, streams, clients).
+
+        This method captures a consistent view of all data from the same set of connections,
+        preventing race conditions where streams reference servers that don't exist yet.
+
+        Returns:
+            Dict with keys: servers, streams, clients
+        """
+        logger.debug("Building atomic snapshot of federation data")
+
+        # Capture connection list once to ensure consistency
+        connections = list(self.ws_manager.get_all_connections())
+
+        # Build all data from the same connection snapshot
+        servers = self._build_servers_from_connections(connections)
+        streams = self._build_streams_from_connections(connections)
+        clients = self._build_clients_from_connections(connections)
+
+        logger.debug(f"Snapshot: {len(servers)} servers, {len(streams)} streams, {len(clients)} clients")
+
+        return {
+            "servers": servers,
+            "streams": streams,
+            "clients": clients
+        }
+
+    def _build_servers_from_connections(self, connections: List) -> List[Dict]:
+        """Build servers list from a snapshot of connections"""
+        servers = []
+
+        # Add connected servers from snapshot
+        for conn in connections:
+            servers.append({
+                "id": conn.server_id,
+                "name": conn.name,
+                "host": conn.host,
+                "port": conn.port,
+                "connected": conn.connected,
+                "isLocal": conn.server_id == self.local_server_id
+            })
+
+        # Add discovered but not connected servers
+        for server_info in self.discovery.get_servers():
+            if server_info.id not in [s["id"] for s in servers]:
+                servers.append({
+                    "id": server_info.id,
+                    "name": server_info.name,
+                    "host": server_info.host,
+                    "port": server_info.port,
+                    "connected": False,
+                    "isLocal": server_info.id == self.local_server_id
+                })
+
+        return servers
+
+    def _build_streams_from_connections(self, connections: List) -> List[Dict]:
+        """Build streams list from a snapshot of connections (same logic as get_streams)"""
+        streams = []
+
+        # Get local playback position data
+        local_playback = playback_store.get_all()
+
+        # Cache for remote server playback data
+        remote_playback_cache = {}
+
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            # Determine if this is a local or remote server
+            is_local = conn.server_id == self.local_server_id
+
+            # Fetch playback data from remote server if needed
+            if not is_local and conn.server_id not in remote_playback_cache:
+                try:
+                    url = f"http://{conn.host}:5001/api/playback"
+                    response = requests.get(url, timeout=2)
+                    if response.status_code == 200:
+                        data = response.json()
+                        remote_playback_cache[conn.server_id] = data.get("streams", {})
+                    else:
+                        remote_playback_cache[conn.server_id] = {}
+                except Exception as e:
+                    logger.debug(f"Failed to fetch playback from {conn.host}: {e}")
+                    remote_playback_cache[conn.server_id] = {}
+
+            server_streams = conn.last_status.get("server", {}).get("streams", [])
+
+            for stream in server_streams:
+                stream_id = stream.get("id", "")
+                federated_id = f"{conn.server_id}-{stream_id}"
+
+                properties = stream.get("properties", {})
+                metadata = properties.get("metadata", {})
+
+                stream_status = stream.get("status", "idle")
+                playback_status = "playing" if stream_status.lower() == "playing" else "idle"
+
+                enhanced_properties = {
+                    **properties,
+                    "playbackStatus": playback_status,
+                }
+
+                # Get playback position data
+                if is_local:
+                    playback_data = local_playback.get(stream_id, {})
+                else:
+                    playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
+
+                source_volume = properties.get("volume")
+
+                # Extract stream display name
+                stream_name = properties.get("name", "")
+                if not stream_name:
+                    uri = stream.get("uri", {})
+                    if isinstance(uri, dict):
+                        query = uri.get("query", {})
+                        stream_name = query.get("name", stream_id)
+                    else:
+                        stream_name = stream_id
+
+                streams.append({
+                    "id": federated_id,
+                    "serverId": conn.server_id,
+                    "serverName": conn.name,
+                    "name": stream_name,
+                    "status": stream_status,
+                    "metadata": {
+                        "title": metadata.get("title", ""),
+                        "artist": metadata.get("artist", ""),
+                        "album": metadata.get("album", ""),
+                        "artUrl": metadata.get("artUrl", ""),
+                        "duration": metadata.get("duration", 0)
+                    },
+                    "properties": enhanced_properties,
+                    "playback": {
+                        "position": playback_data.get("position", 0),
+                        "duration": playback_data.get("duration", 0),
+                        "interpolated_position": playback_data.get("interpolated_position", 0),
+                        "playback_status": playback_data.get("playback_status", "unknown"),
+                        "is_stale": playback_data.get("is_stale", True)
+                    },
+                    "volume": source_volume
+                })
+
+        return streams
+
+    def _build_clients_from_connections(self, connections: List) -> List[Dict]:
+        """Build clients list from a snapshot of connections (simplified version without refresh)"""
+        import asyncio
+        import time
+
+        # Force fresh status from all servers
+        refresh_start = time.time()
+        refresh_success = False
+        try:
+            if hasattr(self, 'loop') and self.loop:
+                logger.debug("Starting status refresh from all servers...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self._refresh_all_statuses(),
+                    self.loop
+                )
+                future.result(timeout=10.0)
+                refresh_success = True
+                logger.debug(f"Status refresh completed in {time.time() - refresh_start:.2f}s")
+            else:
+                logger.warning("No event loop available for status refresh")
+        except asyncio.TimeoutError:
+            logger.error(f"Status refresh timed out after {time.time() - refresh_start:.2f}s")
+        except Exception as e:
+            logger.error(f"Failed to refresh statuses: {e}", exc_info=True)
+
+        if not refresh_success:
+            logger.warning("Building client list with potentially stale data")
+
+        clients = []
+
+        # Build client list from connections snapshot
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            groups = conn.last_status.get("server", {}).get("groups", [])
+
+            for group in groups:
+                current_stream_id = group.get("stream_id", "")
+                federated_stream_id = f"{conn.server_id}-{current_stream_id}" if current_stream_id else None
+
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+                    federated_id = f"{conn.server_id}-{client_id}"
+
+                    config = client.get("config", {})
+                    volume = config.get("volume", {})
+                    host_info = client.get("host", {})
+
+                    client_name = config.get("name") or host_info.get("name", client_id)
+
+                    # If client name is generic, use server name instead
+                    generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+                    if client_name.lower() in generic_names or client_name == client_id:
+                        display_name = conn.name
+                    else:
+                        display_name = client_name
+
+                    clients.append({
+                        "id": federated_id,
+                        "serverId": conn.server_id,
+                        "serverName": conn.name,
+                        "name": display_name,
+                        "connected": client.get("connected", False),
+                        "currentStreamId": federated_stream_id,
+                        "volume": volume.get("percent", 100),
+                        "muted": volume.get("muted", False)
+                    })
+
+        # Fix stream assignments for remote snapclients
+        remote_snapclient_map = {}
+
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            for group in conn.last_status.get("server", {}).get("groups", []):
+                current_stream_id = group.get("stream_id", "")
+
+                if not current_stream_id or "none-" in current_stream_id:
+                    continue
+
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+
+                    if client_id.startswith("remote-server-"):
+                        source_server_id = client_id.replace("remote-", "")
+                        federated_stream_id = f"{conn.server_id}-{current_stream_id}"
+
+                        logger.debug(f"Found remote snapclient: {client_id} on {conn.name}/{current_stream_id}")
+
+                        remote_snapclient_map[source_server_id] = {
+                            "stream": federated_stream_id,
+                            "server": conn.server_id
+                        }
+
+        if remote_snapclient_map:
+            logger.debug(f"Remote snapclient map: {remote_snapclient_map}")
+
+        # Update client stream assignments
+        updates_made = 0
+        for client in clients:
+            if client["currentStreamId"] and "none-" not in client["currentStreamId"]:
+                continue
+
+            server_id = client["serverId"]
+            if server_id in remote_snapclient_map:
+                remote_client_id = f"remote-{server_id}"
+                remote_client = next((c for c in clients if c["id"].endswith(remote_client_id)), None)
+
+                if remote_client:
+                    remote_client_stream = remote_client.get("currentStreamId", "")
+
+                    if remote_client_stream and "none-" not in remote_client_stream:
+                        old_stream = client["currentStreamId"]
+                        new_stream = remote_snapclient_map[server_id]["stream"]
+                        client["currentStreamId"] = new_stream
+                        logger.debug(f"Updated client {client['name']} from {old_stream} to {new_stream}")
+                        updates_made += 1
+                    else:
+                        logger.debug(f"Skipping mapping for {client['name']} - on none stream")
+
+        if updates_made > 0:
+            logger.debug(f"Updated {updates_made} client stream assignments")
 
         return clients
 

@@ -107,7 +107,8 @@ export class FederationService {
   }
 
   /**
-   * Get all data (servers, streams, clients) in one call
+   * Get all data (servers, streams, clients) in one call (DEPRECATED - use getSnapshot instead)
+   * @deprecated Use getSnapshot() for atomic, race-condition-free data fetching
    */
   async getAll(): Promise<{ servers: Server[]; streams: Stream[]; clients: Client[] }> {
     const [servers, streams, clients] = await Promise.all([
@@ -117,6 +118,34 @@ export class FederationService {
     ]);
 
     return { servers, streams, clients };
+  }
+
+  /**
+   * Get atomic snapshot of all data (servers, streams, clients).
+   *
+   * This method fetches all data from a single endpoint that provides a consistent
+   * view of the system state, preventing race conditions where:
+   * - Streams reference servers that don't exist yet
+   * - Clients temporarily disappear during state updates
+   *
+   * Use this instead of getAll() for polling and state updates.
+   */
+  async getSnapshot(): Promise<{ servers: Server[]; streams: Stream[]; clients: Client[] }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/snapshot`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch snapshot: ${response.statusText}`);
+      }
+      const data = await response.json();
+      return {
+        servers: data.servers || [],
+        streams: data.streams || [],
+        clients: data.clients || [],
+      };
+    } catch (error) {
+      console.error('Failed to fetch snapshot:', error);
+      return { servers: [], streams: [], clients: [] };
+    }
   }
 
   /**
@@ -375,7 +404,7 @@ export class FederationService {
    */
   private async poll() {
     try {
-      const data = await this.getAll();
+      const data = await this.getSnapshot();
       if (this.onUpdateCallback) {
         this.onUpdateCallback(data);
       }
