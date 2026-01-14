@@ -91,6 +91,10 @@ const App: React.FC = () => {
     const streamsRef = useRef<Stream[]>(streams);
     // Use ref to prevent concurrent fetchData calls
     const isFetchingRef = useRef(false);
+    // Track last seen timestamps for clients to prevent removing them during transient backend issues
+    const clientLastSeenRef = useRef<Record<string, number>>({});
+    // Grace period for keeping clients that temporarily disappear from snapshots (10 seconds)
+    const CLIENT_RETENTION_GRACE_MS = 10000;
 
     // Settings loaded from settingsService (server + local storage)
     const [settings, setSettings] = useState<Settings>(settingsService.getMergedSettings());
@@ -842,7 +846,13 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
             // Handle refresh signal - fetch latest state for all streams
             if (playbackStatus === 'REFRESH') {
-                // Fetch latest state for all streams
+                // In federation mode, skip local refresh - let federation polling handle it
+                // Calling fetchData() in federation mode would overwrite federation data with local-only data
+                if (settings.federation.enabled) {
+                    return;
+                }
+
+                // Fetch latest state for all streams (non-federation mode only)
                 const serverStatus = await snapcastService.getServerStatus();
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
                     // Get all current stream IDs (without federation prefix)
@@ -905,7 +915,18 @@ const App: React.FC = () => {
             const streamExists = streamsRef.current.some(stream => stream.id === federatedStreamId);
 
             if (!streamExists) {
-                // This is a NEW stream - fetch all data to include it (only if not already fetching)
+                // This is a NEW stream - need to fetch data to include it
+                // IMPORTANT: In federation mode, DO NOT call fetchData() as it uses local WebSocket data
+                // which would overwrite the federation data and cause other servers' devices to disappear.
+                // Instead, trigger an immediate federation poll which will properly update state.
+                if (settings.federation.enabled) {
+                    federationService.triggerPoll().catch(() => {
+                        // Silent failure - federation polling will retry
+                    });
+                    return;
+                }
+
+                // Non-federation mode: fetch all data (only if not already fetching)
                 if (!isFetchingRef.current) {
                     await fetchData();
                 }
@@ -1378,7 +1399,8 @@ const App: React.FC = () => {
             }
 
             // Transform federated stream data to match frontend Stream type
-            const transformFederatedStream = (federatedStream: any): Stream => {
+            // Note: servers array from the same snapshot is used to derive serverName if not provided
+            const transformFederatedStream = (federatedStream: any, snapshotServers: Server[]): Stream => {
                 const metadata = federatedStream.metadata || {};
                 const properties = federatedStream.properties || {};
                 const playbackData = federatedStream.playback;
@@ -1395,6 +1417,14 @@ const App: React.FC = () => {
 
                 const streamName = extractStreamName(federatedStream.id, federatedStream.serverId);
 
+                // Derive serverName: prefer provided value, fallback to lookup from servers, then serverId
+                let serverName = federatedStream.serverName;
+                if (!serverName) {
+                    // Try to find server name from the snapshot's servers list
+                    const matchingServer = snapshotServers.find(s => s.id === federatedStream.serverId);
+                    serverName = matchingServer?.name || federatedStream.serverId || 'Unknown Server';
+                }
+
                 // Build playback object if available from federation API
                 const playback: PlaybackData | undefined = playbackData ? {
                     position: playbackData.position || 0,
@@ -1407,7 +1437,7 @@ const App: React.FC = () => {
                 return {
                     id: federatedStream.id,
                     serverId: federatedStream.serverId,
-                    serverName: federatedStream.serverName,
+                    serverName: serverName,
                     name: streamName,
                     sourceDevice: streamName,
                     currentTrack: {
@@ -1489,10 +1519,16 @@ const App: React.FC = () => {
                 if (data.streams.length > 0) {
                     setStreams(prevStreams => {
                         const transformedStreams = data.streams.map(federatedStream => {
-                            const newStream = transformFederatedStream(federatedStream);
+                            const newStream = transformFederatedStream(federatedStream, data.servers);
 
-                            // Find existing stream to preserve client-side progress
+                            // Find existing stream to preserve client-side progress and serverName
                             const existingStream = prevStreams.find(s => s.id === newStream.id);
+
+                            // CRITICAL: Preserve serverName from existing stream if new one is undefined/empty
+                            // This prevents "Unknown Server" flash during backend state transitions
+                            if (existingStream && existingStream.serverName && !newStream.serverName) {
+                                newStream.serverName = existingStream.serverName;
+                            }
 
                             // CRITICAL: Grace period check FIRST - applies regardless of isPlaying state
                             // This prevents server state from overwriting user's recent play/pause action
@@ -1558,7 +1594,7 @@ const App: React.FC = () => {
                     });
                 }
 
-                // Transform and set federated clients
+                // Transform and MERGE federated clients (prevent temporary disappearance during backend state changes)
                 if (data.clients.length > 0) {
                     const transformedClients = data.clients.map(client => {
                         const transformed = transformFederatedClient(client);
@@ -1573,7 +1609,35 @@ const App: React.FC = () => {
                         return transformed;
                     });
 
-                    setClients(transformedClients);
+                    // Update last seen timestamps for all clients in this snapshot
+                    const newClientIds = new Set(transformedClients.map(c => c.id));
+                    transformedClients.forEach(client => {
+                        clientLastSeenRef.current[client.id] = now;
+                    });
+
+                    // Merge: keep existing clients that were recently seen but missing from this snapshot
+                    // This prevents clients from disappearing during transient backend state changes
+                    setClients(prevClients => {
+                        // Start with all transformed clients from the snapshot
+                        const mergedClients = [...transformedClients];
+
+                        // Check for any previously-existing clients that are missing from this snapshot
+                        prevClients.forEach(existingClient => {
+                            if (!newClientIds.has(existingClient.id)) {
+                                // Client is missing from this snapshot - check if we should retain it
+                                const lastSeen = clientLastSeenRef.current[existingClient.id];
+                                const retentionExpired = !lastSeen || (now - lastSeen) > CLIENT_RETENTION_GRACE_MS;
+
+                                if (!retentionExpired) {
+                                    // Client was recently seen - keep it to prevent flickering
+                                    mergedClients.push(existingClient);
+                                }
+                                // If retention expired, the client is truly gone - don't add it back
+                            }
+                        });
+
+                        return mergedClients;
+                    });
                 }
             }, 5000);
         };
