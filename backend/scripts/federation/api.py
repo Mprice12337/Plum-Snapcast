@@ -420,22 +420,56 @@ class FederationAPI:
                 if not isinstance(volume, (int, float)):
                     return jsonify({"error": "volume must be a number"}), 400
 
-                # Extract local stream ID from federated ID
-                # Format: "server-192-168-7-122-airplay1" -> "airplay1"
+                # Parse federated ID to extract server ID and local stream ID
+                # Format: "server-192-168-7-122-airplay1" -> server_id="server-192-168-7-122", local_stream_id="airplay1"
+                server_id = None
                 local_stream_id = stream_id
                 if stream_id.startswith("server-"):
                     parts = stream_id.split("-")
                     if len(parts) >= 6:
-                        # server-192-168-7-122-airplay1 -> parts[5:] = ["airplay1"]
-                        local_stream_id = "-".join(parts[5:])
+                        server_id = "-".join(parts[:5])  # "server-192-168-7-122"
+                        local_stream_id = "-".join(parts[5:])  # "airplay1"
 
-                # Use direct D-Bus MPRIS control (bypasses Snapcast which doesn't support setVolume)
-                success, message = mpris_volume_controller.set_volume(local_stream_id, int(volume))
+                # Check if this is a remote server
+                is_remote = server_id and server_id != self.data_aggregator.local_server_id
 
-                if success:
-                    return jsonify({"success": True, "message": message})
+                if is_remote:
+                    # Forward request to remote server's audio API
+                    logger.info(f"Forwarding volume request to remote server {server_id} for stream {local_stream_id}")
+
+                    # Find the connection to get the host
+                    conn = self.data_aggregator.ws_manager.get_connection(server_id)
+                    if not conn or not conn.connected:
+                        return jsonify({"success": False, "message": f"Remote server not connected: {server_id}"}), 400
+
+                    # Forward to remote server's audio API (part of federation service on port 5001)
+                    try:
+                        remote_url = f"http://{conn.host}:5001/api/audio/source-volume"
+                        remote_response = requests.post(
+                            remote_url,
+                            json={"streamId": local_stream_id, "volume": int(volume)},
+                            timeout=5
+                        )
+
+                        if remote_response.status_code == 200:
+                            remote_data = remote_response.json()
+                            return jsonify({"success": True, "message": remote_data.get("message", f"Volume set to {volume}%")})
+                        else:
+                            error_data = remote_response.json()
+                            return jsonify({"success": False, "message": error_data.get("message", error_data.get("error", "Remote server error"))}), 400
+                    except requests.exceptions.Timeout:
+                        return jsonify({"success": False, "message": f"Timeout connecting to remote server {conn.host}"}), 504
+                    except requests.exceptions.RequestException as e:
+                        logger.error(f"Failed to forward volume request to {conn.host}: {e}")
+                        return jsonify({"success": False, "message": f"Failed to connect to remote server: {str(e)}"}), 502
                 else:
-                    return jsonify({"success": False, "message": message}), 400
+                    # Local server - use direct D-Bus MPRIS control
+                    success, message = mpris_volume_controller.set_volume(local_stream_id, int(volume))
+
+                    if success:
+                        return jsonify({"success": True, "message": message})
+                    else:
+                        return jsonify({"success": False, "message": message}), 400
 
             except Exception as e:
                 logger.error(f"Set stream volume failed: {e}")

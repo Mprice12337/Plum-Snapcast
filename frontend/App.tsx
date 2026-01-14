@@ -358,6 +358,13 @@ const App: React.FC = () => {
         return browserAudio.state.clientId;
     };
 
+    // Helper to get server for a stream ID
+    // Stream IDs are prefixed with server ID: "server-192-168-1-100-airplay-0"
+    const getServerForStream = (streamId: string): Server | undefined => {
+        if (!settings.federation.enabled || !streamId) return undefined;
+        return servers.find(s => streamId.startsWith(`${s.id}-`));
+    };
+
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
     // Exclude browser audio client from being selected as primary
@@ -1712,30 +1719,50 @@ const App: React.FC = () => {
             prevStreams.map(s => (s.id === streamId ? {...s, volume} : s))
         );
 
-        // Use audio API for source volume control (always available regardless of federation status)
-        // Snapcast's Stream.Control doesn't support setVolume command, so we use
-        // direct D-Bus MPRIS control via the audio API
+        // Determine if this is a remote federated stream
+        // Pattern: server-192-168-X-X-streamname (but NOT server-localhost-*)
+        const isLocalFederated = streamId.startsWith('server-localhost-');
+        const isRemoteFederated = settings.federation.enabled && streamId.startsWith('server-') && !isLocalFederated;
+
         try {
-            const payload = { streamId, volume };
-            console.log(`[handleSourceVolumeChange] Sending payload:`, payload);
-
-            const response = await fetch('/api/audio/source-volume', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload),
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                console.error(`Failed to set source volume: ${error.message || error.error}`);
-                // Clear the grace period on failure
-                console.log(`[VolumeGrace] Cleared grace period due to API failure`);
-                recentUserChangesRef.current = null;
-                setRecentUserChanges(null);
+            if (isRemoteFederated) {
+                // Remote federated stream - use federation API to forward to remote server
+                console.log(`[handleSourceVolumeChange] Remote federated stream, using federation API`);
+                const result = await federationService.setStreamVolume(streamId, volume);
+                if (!result.success) {
+                    console.error(`Failed to set source volume via federation: ${result.message}`);
+                    // Clear the grace period on failure
+                    console.log(`[VolumeGrace] Cleared grace period due to federation API failure`);
+                    recentUserChangesRef.current = null;
+                    setRecentUserChanges(null);
+                } else {
+                    console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for remote stream ${streamId}`);
+                }
             } else {
-                console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for stream ${streamId}`);
+                // Local stream - use direct audio API with D-Bus MPRIS control
+                // Strip the server-localhost- prefix if present
+                const localStreamId = isLocalFederated ? streamId.replace('server-localhost-', '') : streamId;
+                const payload = { streamId: localStreamId, volume };
+                console.log(`[handleSourceVolumeChange] Local stream, sending payload:`, payload);
+
+                const response = await fetch('/api/audio/source-volume', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error(`Failed to set source volume: ${error.message || error.error}`);
+                    // Clear the grace period on failure
+                    console.log(`[VolumeGrace] Cleared grace period due to API failure`);
+                    recentUserChangesRef.current = null;
+                    setRecentUserChanges(null);
+                } else {
+                    console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for stream ${streamId}`);
+                }
             }
         } catch (error) {
             console.error(`Failed to set source volume for stream ${streamId}:`, error);

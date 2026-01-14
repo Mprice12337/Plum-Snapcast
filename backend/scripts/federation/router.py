@@ -307,14 +307,6 @@ class FederationRouter:
                         # Route the remote snapclient (on our local server) to our local stream
                         await self._route_simple(stream_conn, remote_client_group_id, stream_local_id)
 
-                        # ALSO route our LOCAL output client to the same stream
-                        # This ensures the server hosting the stream also plays it locally
-                        local_output_client = await self._find_local_output_client(local_status)
-                        if local_output_client:
-                            local_client_id = local_output_client.get("id")
-                            local_group_id = local_output_client.get("group_id")
-                            await self._route_simple(stream_conn, local_group_id, stream_local_id)
-
                         # Update active endpoint tracking (use federated stream ID format)
                         self.active_endpoint = (client_server_id, client_local_id, f"{self.local_server_id}-{stream_local_id}")
                         logger.info(f"Routed remote client to local stream: {stream_local_id}")
@@ -348,13 +340,6 @@ class FederationRouter:
 
                     # Route the remote client to the desired stream
                     await self._route_simple(stream_conn, remote_group_id, stream_local_id)
-
-                    # ALSO route the stream server's local output client to the same stream
-                    # (preserving multi-listener capability - both local and remote can listen)
-                    stream_server_local_client = await self._find_local_output_client(stream_status)
-                    if stream_server_local_client:
-                        stream_local_group_id = stream_server_local_client.get("group_id")
-                        await self._route_simple(stream_conn, stream_local_group_id, stream_local_id)
 
                     # Update active endpoint tracking (use federated stream ID format)
                     self.active_endpoint = (client_server_id, client_local_id, f"{stream_server_id}-{stream_local_id}")
