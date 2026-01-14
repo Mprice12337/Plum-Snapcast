@@ -992,6 +992,7 @@ const App: React.FC = () => {
     // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
     useEffect(() => {
         if (!currentStream) return;
+        if (settings.federation.enabled) return; // Federation mode handles artwork via polling
 
         // Check if current stream has placeholder artwork
         const hasPlaceholder = currentStream.currentTrack.albumArtUrl === musicNotePlaceholder;
@@ -1465,7 +1466,10 @@ const App: React.FC = () => {
 
             // Start polling for federated data
             federationService.startPolling((data) => {
-                setServers(data.servers);
+                // Only update servers if we received data (prevent clearing on empty snapshots)
+                if (data.servers.length > 0) {
+                    setServers(data.servers);
+                }
 
                 // Also fetch active endpoint to determine current stream in multi-server mode
                 federationService.getActiveEndpoint().then(endpoint => {
