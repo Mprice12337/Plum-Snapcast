@@ -341,17 +341,28 @@ const App: React.FC = () => {
     };
 
     // Helper to get the effective browser audio client ID
-    // In federation mode, local clients get "server-{ip}-" prefix from federation API
+    // In federation mode, clients get "server-{ip}-" prefix based on which server they're connected to
     const getBrowserAudioClientId = (): string => {
         if (!browserAudio.state.clientId) return '';
 
         if (settings.federation.enabled) {
-            // Find the local server ID (isLocal=true)
+            // Determine which server the browser is connected to
+            const currentHost = browserAudio.state.currentHost;
+
+            if (currentHost) {
+                // Find the server by host IP
+                const connectedServer = servers.find(s => s.host === currentHost);
+                if (connectedServer) {
+                    return `${connectedServer.id}-${browserAudio.state.clientId}`;
+                }
+            }
+
+            // Fallback to local server ID
             const localServer = getLocalServer();
             if (localServer) {
                 return `${localServer.id}-${browserAudio.state.clientId}`;
             }
-            // Fallback to localhost prefix if local server not found yet
+            // Fallback to localhost prefix if no server found yet
             return `server-localhost-${browserAudio.state.clientId}`;
         }
 
