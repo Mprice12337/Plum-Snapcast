@@ -376,6 +376,19 @@ const App: React.FC = () => {
         return servers.find(s => streamId.startsWith(`${s.id}-`));
     };
 
+    // Helper to extract host from a federated stream ID
+    // Stream ID format: "server-192-168-1-100-streamname" -> "192.168.1.100"
+    const extractHostFromStreamId = (streamId: string): string | undefined => {
+        if (!streamId || !streamId.startsWith('server-')) return undefined;
+        // Extract: server-192-168-1-100-streamname -> 192-168-1-100
+        const match = streamId.match(/^server-(\d+-\d+-\d+-\d+)-/);
+        if (match) {
+            // Convert dashes back to dots: 192-168-1-100 -> 192.168.1.100
+            return match[1].replace(/-/g, '.');
+        }
+        return undefined;
+    };
+
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
     // Exclude browser audio client from being selected as primary
@@ -2514,7 +2527,9 @@ const App: React.FC = () => {
                                 const targetStream = myClient?.currentStreamId || null;
                                 // Get the server for this stream (local or remote)
                                 const server = targetStream ? getServerForStream(targetStream) : undefined;
-                                const targetHost = server?.host || window.location.hostname;
+                                // Fallback chain: server.host -> extract from stream ID -> window.location.hostname
+                                const extractedHost = targetStream ? extractHostFromStreamId(targetStream) : undefined;
+                                const targetHost = server?.host || extractedHost || window.location.hostname;
                                 const targetPort = server?.port || 1780;
 
                                 setTargetStreamForBrowserAudio(targetStream);
@@ -2587,7 +2602,9 @@ const App: React.FC = () => {
                     const targetStream = myClient?.currentStreamId || null;
                     // Get the server for this stream (local or remote)
                     const server = targetStream ? getServerForStream(targetStream) : undefined;
-                    const targetHost = server?.host || window.location.hostname;
+                    // Fallback chain: server.host -> extract from stream ID -> window.location.hostname
+                    const extractedHost = targetStream ? extractHostFromStreamId(targetStream) : undefined;
+                    const targetHost = server?.host || extractedHost || window.location.hostname;
                     const targetPort = server?.port || 1780;
 
                     setTargetStreamForBrowserAudio(targetStream);
