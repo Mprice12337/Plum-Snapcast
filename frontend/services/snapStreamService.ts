@@ -706,7 +706,7 @@ export class SnapStream {
             hello.mac = "00:00:00:00:00:00";
             hello.arch = "web";
             hello.os = navigator?.platform || "unknown";
-            hello.hostname = "Snapweb client";
+            hello.hostname = "Browser Audio";
             hello.uniqueId = SnapStream.getClientId();
             this.sendMessage(hello);
             this.syncTime();

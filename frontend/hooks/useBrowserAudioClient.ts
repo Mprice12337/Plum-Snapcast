@@ -3,6 +3,7 @@ import { SnapStream } from '../services/snapStreamService';
 
 export interface BrowserAudioClientState {
     isActive: boolean;
+    isConnecting: boolean; // True while connection is in progress
     isPlaying: boolean;
     volume: number;
     muted: boolean;
@@ -13,6 +14,7 @@ export interface BrowserAudioClientState {
 export function useBrowserAudioClient(defaultHost: string) {
     const [state, setState] = useState<BrowserAudioClientState>({
         isActive: false,
+        isConnecting: false,
         isPlaying: false,
         volume: 100,
         muted: false,
@@ -26,10 +28,14 @@ export function useBrowserAudioClient(defaultHost: string) {
     const start = async (startMuted: boolean = false, host?: string, port: number = 1780) => {
         const targetHost = host || defaultHost;
 
-        if (snapStreamRef.current) {
-            console.warn("Browser audio client already started");
+        // Prevent multiple simultaneous connection attempts
+        if (snapStreamRef.current || state.isConnecting) {
+            console.warn("Browser audio client already started or connecting");
             return;
         }
+
+        // Set connecting state
+        setState(prev => ({ ...prev, isConnecting: true }));
 
         try {
             const stream = new SnapStream(targetHost, port);
@@ -47,6 +53,7 @@ export function useBrowserAudioClient(defaultHost: string) {
             setState(prev => ({
                 ...prev,
                 isActive: true,
+                isConnecting: false,
                 isPlaying: true,
                 muted: startMuted,
                 currentHost: targetHost
@@ -54,6 +61,8 @@ export function useBrowserAudioClient(defaultHost: string) {
 
             console.log(`Browser audio client started on ${targetHost}:${port} (${startMuted ? 'muted' : 'unmuted'})`);
         } catch (error) {
+            // Clear connecting state on failure
+            setState(prev => ({ ...prev, isConnecting: false }));
             console.error("Failed to start browser audio client:", error);
             throw error;
         }
@@ -74,6 +83,8 @@ export function useBrowserAudioClient(defaultHost: string) {
     // Stop the browser audio client
     const stop = () => {
         if (!snapStreamRef.current) {
+            // Still clear connecting state in case we're stopping during connection
+            setState(prev => ({ ...prev, isConnecting: false }));
             return;
         }
 
@@ -83,6 +94,7 @@ export function useBrowserAudioClient(defaultHost: string) {
         setState(prev => ({
             ...prev,
             isActive: false,
+            isConnecting: false,
             isPlaying: false
         }));
 
