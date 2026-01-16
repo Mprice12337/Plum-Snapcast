@@ -33,12 +33,9 @@ export function useBrowserAudioClient(defaultHost: string) {
 
         try {
             const stream = new SnapStream(targetHost, port);
+            // SnapStream.start() now has built-in retry logic and waits for connection
             await stream.start();
             stream.resume(); // Resume audio context (requires user interaction)
-
-            // Give the WebSocket a moment to establish connection
-            // SnapStream has internal retry logic, so initial failures will auto-recover
-            await new Promise(resolve => setTimeout(resolve, 300));
 
             snapStreamRef.current = stream;
 
