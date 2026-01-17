@@ -325,15 +325,19 @@ class FederationService:
             self.loop
         )
 
-        # Add local server connection (localhost)
+        # Add local server connection
+        # Use local_host from config (auto-detected IP) for the server record,
+        # but connect via localhost for reliability
+        local_host = self.config.get("local_host", "localhost")
         try:
-            logger.info("Connecting to local Snapcast server...")
+            logger.info(f"Connecting to local Snapcast server (host: {local_host})...")
             await self.ws_manager.add_server(
                 server_id=self.local_server_id,
-                host="localhost",
+                host=local_host,  # Use actual IP so browser clients can connect
                 port=1780,
                 name=self.local_server_name,
-                use_https=False
+                use_https=False,
+                connect_via="localhost"  # Connect internally via localhost
             )
         except Exception as e:
             logger.error(f"Failed to connect to local server: {e}")

@@ -801,6 +801,23 @@ def main():
     snapserver_port = args.snapserver_port
     idle_timeout = args.idle_timeout
 
+    # Read Bluetooth device name from settings for stream naming
+    # Pattern: "{deviceName} Bluetooth" (e.g., "Plum Audio Bluetooth")
+    device_name = "Plum Audio"  # Default fallback
+    try:
+        settings_file = "/app/data/settings.json"
+        if os.path.exists(settings_file):
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                device_name = settings.get('integrations', {}).get('bluetooth', {}).get('deviceName', 'Plum Audio')
+        print(f"[Init] Read Bluetooth device name from settings: {device_name}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Init] Could not read settings, using default device name: {e}", file=sys.stderr)
+
+    # Update global stream ID with custom name
+    globals()['BLUETOOTH_STREAM_ID'] = f"{device_name} Bluetooth"
+    print(f"[Init] Bluetooth Stream ID: {globals()['BLUETOOTH_STREAM_ID']}", file=sys.stderr)
+
     log("=== Bluetooth Stream Lifecycle Manager Starting ===")
     log(f"Snapserver: {snapserver_host}:{snapserver_port}")
     log(f"Idle timeout: {idle_timeout}s")

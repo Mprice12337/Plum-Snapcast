@@ -60,6 +60,7 @@ class MetadataStore:
             "position": 0,  # Current position in milliseconds
             "last_updated": None,
             "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
+            "volume": None,  # Source volume 0-100 (from AVRCP Absolute Volume)
         }
 
     def update(self, **kwargs):
@@ -112,7 +113,7 @@ class MetadataStore:
 
 
 class BluetoothMetadataMonitor:
-    """Monitor BlueZ D-Bus for Bluetooth audio metadata and playback state"""
+    """Monitor BlueZ D-Bus for Bluetooth audio metadata, playback state, and volume"""
 
     def __init__(self, store: MetadataStore, on_update_callback):
         self.store = store
@@ -120,6 +121,9 @@ class BluetoothMetadataMonitor:
         self.current_player_path = None
         self.player_interface = None
         self.player_properties = None
+        # MediaTransport1 for volume control (AVRCP Absolute Volume)
+        self.current_transport_path = None
+        self.transport_properties = None
         self.bus = None
 
         if not DBUS_AVAILABLE:
@@ -180,7 +184,19 @@ class BluetoothMetadataMonitor:
     def _properties_changed_handler(self, interface, changed, invalidated, path):
         """Handle D-Bus PropertiesChanged signals"""
         try:
-            # We're interested in MediaPlayer1 interface
+            # Handle MediaTransport1 for volume changes (AVRCP Absolute Volume)
+            if interface == 'org.bluez.MediaTransport1':
+                if 'Volume' in changed:
+                    # Volume is 0-127, convert to 0-100 percentage
+                    raw_volume = int(changed['Volume'])
+                    volume_percent = int(round(raw_volume / 1.27))
+                    log(f"[Volume] Transport volume changed: {raw_volume}/127 = {volume_percent}%")
+                    self.store.update(volume=volume_percent)
+                    if self.on_update:
+                        self.on_update()
+                return
+
+            # We're interested in MediaPlayer1 interface for metadata/playback
             if interface != 'org.bluez.MediaPlayer1':
                 return
 
@@ -281,7 +297,7 @@ class BluetoothMetadataMonitor:
             log(f"[Error] Failed to start Bluetooth monitor: {e}")
 
     def _scan_for_players(self):
-        """Scan for existing Bluetooth media players"""
+        """Scan for existing Bluetooth media players and transports"""
         if not DBUS_AVAILABLE:
             return
 
@@ -295,7 +311,7 @@ class BluetoothMetadataMonitor:
             objects = obj_manager.GetManagedObjects()
 
             for path, interfaces in objects.items():
-                # Look for MediaPlayer1 interfaces
+                # Look for MediaPlayer1 interfaces (for playback control & metadata)
                 if 'org.bluez.MediaPlayer1' in interfaces:
                     log(f"[Bluetooth] Found media player: {path}")
                     self.current_player_path = path
@@ -318,6 +334,25 @@ class BluetoothMetadataMonitor:
                         status = self._extract_playback_status(str(props['Status']))
                         self.store.update(playback_status=status)
                         log(f"[Bluetooth] Initial status: {status}")
+
+                # Look for MediaTransport1 interfaces (for volume control via AVRCP)
+                if 'org.bluez.MediaTransport1' in interfaces:
+                    log(f"[Bluetooth] Found media transport: {path}")
+                    self.current_transport_path = path
+
+                    # Get transport properties interface for volume control
+                    transport_obj = self.bus.get_object('org.bluez', path)
+                    self.transport_properties = dbus.Interface(transport_obj, 'org.freedesktop.DBus.Properties')
+
+                    # Get current volume if available
+                    props = interfaces['org.bluez.MediaTransport1']
+                    if 'Volume' in props:
+                        raw_volume = int(props['Volume'])
+                        volume_percent = int(round(raw_volume / 1.27))
+                        self.store.update(volume=volume_percent)
+                        log(f"[Bluetooth] Initial volume: {raw_volume}/127 = {volume_percent}%")
+                    else:
+                        log(f"[Bluetooth] Transport found but Volume property not available (device may not support AVRCP Absolute Volume)")
 
         except Exception as e:
             log(f"[Error] Player scan failed: {e}")
@@ -361,8 +396,57 @@ class BluetoothMetadataMonitor:
                 log(f"[Error] Previous failed: {e}")
 
     def is_available(self):
-        """Check if control is available"""
+        """Check if playback control is available"""
         return self.player_interface is not None
+
+    def is_volume_available(self):
+        """Check if volume control is available (AVRCP Absolute Volume)"""
+        return self.transport_properties is not None
+
+    def get_volume(self) -> Optional[int]:
+        """Get current volume (0-100) from MediaTransport1"""
+        if not self.transport_properties:
+            return None
+
+        try:
+            raw_volume = self.transport_properties.Get('org.bluez.MediaTransport1', 'Volume')
+            volume_percent = int(round(int(raw_volume) / 1.27))
+            return volume_percent
+        except dbus.exceptions.DBusException as e:
+            # Volume property may not be available if device doesn't support AVRCP Absolute Volume
+            log(f"[Volume] Could not get volume: {e}")
+            return None
+        except Exception as e:
+            log(f"[Error] Get volume failed: {e}")
+            return None
+
+    def set_volume(self, volume_percent: int) -> bool:
+        """Set volume (0-100) via MediaTransport1 AVRCP Absolute Volume"""
+        if not self.transport_properties:
+            log("[Volume] Cannot set volume - no transport available")
+            return False
+
+        try:
+            # Convert 0-100 to 0-127
+            raw_volume = int(round(volume_percent * 1.27))
+            raw_volume = max(0, min(127, raw_volume))  # Clamp to valid range
+
+            self.transport_properties.Set(
+                'org.bluez.MediaTransport1',
+                'Volume',
+                dbus.UInt16(raw_volume)
+            )
+
+            log(f"[Volume] Set volume to {volume_percent}% (raw: {raw_volume}/127)")
+            self.store.update(volume=volume_percent)
+            return True
+
+        except dbus.exceptions.DBusException as e:
+            log(f"[Volume] Could not set volume (device may not support AVRCP Absolute Volume): {e}")
+            return False
+        except Exception as e:
+            log(f"[Error] Set volume failed: {e}")
+            return False
 
     def stop(self):
         """Stop monitoring"""
@@ -395,7 +479,9 @@ class SnapcastControlScript:
         state_data = self.store.get_all()
         playback_status = state_data.get("playback_status", "Stopped")
         position = state_data.get("position", 0)
+        volume = state_data.get("volume")  # May be None if AVRCP Absolute Volume not supported
         can_control = self.bt_monitor.is_available()
+        can_volume = self.bt_monitor.is_volume_available()
 
         # Notification params: include stream ID and all properties
         params = {
@@ -405,7 +491,6 @@ class SnapcastControlScript:
             "playbackStatus": playback_status,
             "loopStatus": "none",
             "shuffle": False,
-            "volume": 100,
             "mute": False,
             "rate": 1.0,
             "position": position,
@@ -421,6 +506,12 @@ class SnapcastControlScript:
             # Metadata (simple field names)
             "metadata": meta_obj
         }
+
+        # Include volume only if AVRCP Absolute Volume is available
+        # This controls whether the frontend shows the volume slider
+        if volume is not None and can_volume:
+            params["volume"] = volume
+
         self.send_notification("Plugin.Stream.Player.Properties", params)
 
         # Log what we sent
@@ -450,7 +541,9 @@ class SnapcastControlScript:
                 state_data = self.store.get_all()
                 playback_status = state_data.get("playback_status", "Stopped")
                 position = state_data.get("position", 0)
+                volume = state_data.get("volume")  # May be None
                 can_control = self.bt_monitor.is_available()
+                can_volume = self.bt_monitor.is_volume_available()
 
                 # Build complete properties response per Snapcast Stream Plugin API
                 properties = {
@@ -458,7 +551,6 @@ class SnapcastControlScript:
                     "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
-                    "volume": 100,
                     "mute": False,
                     "rate": 1.0,
                     "position": position,
@@ -475,13 +567,17 @@ class SnapcastControlScript:
                     "metadata": meta_obj
                 }
 
+                # Include volume only if AVRCP Absolute Volume is available
+                if volume is not None and can_volume:
+                    properties["volume"] = volume
+
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": properties
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → status={playback_status}, metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, volume={volume}, metadata keys: {list(meta_obj.keys())}")
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
@@ -522,6 +618,22 @@ class SnapcastControlScript:
                 elif command == "previous" or command == "prev":
                     self.bt_monitor.previous_track()
                     self.send_update()
+                elif command == "setVolume" or command == "volume":
+                    # Handle volume control via AVRCP Absolute Volume
+                    volume_param = params.get("volume") or params.get("params", {}).get("volume")
+                    if volume_param is not None:
+                        volume = int(volume_param)
+                        if self.bt_monitor.is_volume_available():
+                            success = self.bt_monitor.set_volume(volume)
+                            if success:
+                                self.send_update()
+                                log(f"[Control] Volume set to {volume}%")
+                            else:
+                                log(f"[Control] Failed to set volume to {volume}%")
+                        else:
+                            log(f"[Control] Volume control not available (device may not support AVRCP Absolute Volume)")
+                    else:
+                        log(f"[Control] setVolume command missing volume parameter")
                 else:
                     log(f"[Snapcast] Unknown control command: {command}")
 
@@ -593,13 +705,33 @@ class SnapcastControlScript:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Bluetooth metadata control script for Snapcast')
-    parser.add_argument('--stream', required=False, default='Bluetooth', help='Stream ID')
+    parser.add_argument('--stream', required=False, default=None, help='Stream ID (auto-detected from settings if not provided)')
     parser.add_argument('--snapcast-host', required=False, default='localhost', help='Snapcast host')
     parser.add_argument('--snapcast-port', required=False, default='1780', help='Snapcast port')
 
     args = parser.parse_args()
 
-    log(f"[Init] Starting with args: stream={args.stream}")
+    # Determine stream ID - read from settings if not provided
+    # Must match the stream ID created by bluetooth-stream-lifecycle-manager.py
+    stream_id = args.stream
+    if not stream_id:
+        # Read Bluetooth device name from settings (same logic as lifecycle manager)
+        device_name = "Plum Audio"  # Default fallback
+        try:
+            import os
+            settings_file = "/app/data/settings.json"
+            if os.path.exists(settings_file):
+                with open(settings_file, 'r') as f:
+                    settings = json.load(f)
+                    device_name = settings.get('integrations', {}).get('bluetooth', {}).get('deviceName', 'Plum Audio')
+            log(f"[Init] Read Bluetooth device name from settings: {device_name}")
+        except Exception as e:
+            log(f"[Init] Could not read settings, using default device name: {e}")
 
-    script = SnapcastControlScript(stream_id=args.stream)
+        # Construct stream ID to match lifecycle manager: "{deviceName} Bluetooth"
+        stream_id = f"{device_name} Bluetooth"
+
+    log(f"[Init] Starting with stream ID: {stream_id}")
+
+    script = SnapcastControlScript(stream_id=stream_id)
     script.run()

@@ -15,13 +15,8 @@ from typing import Dict, List, Optional, Tuple
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# D-Bus for direct MPRIS volume control
-try:
-    import dbus
-    DBUS_AVAILABLE = True
-except ImportError:
-    DBUS_AVAILABLE = False
-    dbus = None
+# Subprocess for D-Bus commands (avoids session bus connection issues in containers)
+import subprocess
 
 # Add parent directory to path to import settings_api, integrations_api, audio_api, and playback_api
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,39 +32,30 @@ logger = logging.getLogger(__name__)
 class MPRISVolumeController:
     """
     Direct D-Bus/MPRIS volume control for integration sources.
+    Uses subprocess approach to avoid D-Bus session bus connection issues in containers.
     Bypasses Snapcast's Stream.Control which doesn't support setVolume.
     """
 
-    # Map stream ID patterns to MPRIS service name patterns
-    STREAM_MPRIS_MAP = {
+    # Map integration keywords to MPRIS service name patterns
+    # Uses flexible keyword matching to support custom stream names
+    INTEGRATION_MPRIS_MAP = {
         # AirPlay: org.mpris.MediaPlayer2.ShairportSync or ShairportSync.i*
-        r'airplay(\d*)': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
+        'airplay': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
         # Spotify: org.mpris.MediaPlayer2.spotifyd or spotifyd.instance*
-        r'spotify(\d*)': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
-        # Bluetooth: org.mpris.MediaPlayer2.* (various players)
-        r'bluetooth(\d*)': r'org\.mpris\.MediaPlayer2\.',
+        'spotify': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
+        # DLNA: org.mpris.MediaPlayer2.GMediaRender or gmediarender*
+        'dlna': r'org\.mpris\.MediaPlayer2\.GMediaRender',
+        # Plexamp: org.mpris.MediaPlayer2.Plexamp
+        'plexamp': r'org\.mpris\.MediaPlayer2\.Plexamp$',
+        # Note: Bluetooth is NOT included - volume is controlled at the source device
     }
 
     def __init__(self):
-        self.bus = None
-        self._connect()
-
-    def _connect(self):
-        """Connect to D-Bus session bus"""
-        if not DBUS_AVAILABLE:
-            logger.warning("D-Bus not available - volume control disabled")
-            return
-
-        try:
-            self.bus = dbus.SessionBus()
-            logger.info("Connected to D-Bus session bus for MPRIS volume control")
-        except Exception as e:
-            logger.error(f"Failed to connect to D-Bus: {e}")
-            self.bus = None
+        pass
 
     def _find_mpris_service(self, stream_id: str) -> Optional[str]:
         """
-        Find the MPRIS service name for a given stream ID.
+        Find the MPRIS service name for a given stream ID using subprocess.
 
         Args:
             stream_id: Snapcast stream ID (e.g., "airplay1", "spotify2")
@@ -77,47 +63,179 @@ class MPRISVolumeController:
         Returns:
             MPRIS service name or None if not found
         """
-        if not self.bus:
-            return None
-
         try:
-            # Get list of all D-Bus services
-            dbus_obj = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
-            dbus_iface = dbus.Interface(dbus_obj, 'org.freedesktop.DBus')
-            services = dbus_iface.ListNames()
+            # List all D-Bus services using dbus-send (system bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--dest=org.freedesktop.DBus',
+                 '--type=method_call', '--print-reply',
+                 '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-            # Find MPRIS services
-            mpris_services = [s for s in services if s.startswith('org.mpris.MediaPlayer2.')]
+            if result.returncode != 0:
+                logger.error(f"Failed to list D-Bus services: {result.stderr}")
+                return None
+
+            # Parse output for MPRIS services
+            mpris_services = []
+            for line in result.stdout.split('\n'):
+                if 'org.mpris.MediaPlayer2.' in line:
+                    # Extract service name from dbus-send output
+                    # Format: string "org.mpris.MediaPlayer2.ShairportSync"
+                    match = re.search(r'"(org\.mpris\.MediaPlayer2\.[^"]+)"', line)
+                    if match:
+                        mpris_services.append(match.group(1))
+
             logger.debug(f"Found MPRIS services: {mpris_services}")
 
-            # Match stream ID to service pattern
-            for pattern, mpris_pattern in self.STREAM_MPRIS_MAP.items():
-                if re.match(pattern, stream_id, re.IGNORECASE):
-                    # Find matching MPRIS service
+            # Match stream ID to service using flexible keyword matching
+            stream_id_lower = stream_id.lower()
+
+            for keyword, mpris_pattern in self.INTEGRATION_MPRIS_MAP.items():
+                if keyword in stream_id_lower:
+                    logger.debug(f"Stream '{stream_id}' contains keyword '{keyword}', looking for MPRIS pattern: {mpris_pattern}")
                     for service in mpris_services:
                         if re.match(mpris_pattern, service):
-                            logger.debug(f"Matched stream {stream_id} to MPRIS service {service}")
+                            logger.info(f"Found MPRIS service {service} for stream {stream_id}")
                             return service
-
-            # If no pattern match, try direct name matching
-            for service in mpris_services:
-                service_lower = service.lower()
-                stream_lower = stream_id.lower()
-                # Check if stream name is part of service name
-                if stream_lower.replace('-', '').rstrip('0123456789') in service_lower:
-                    logger.debug(f"Matched stream {stream_id} to MPRIS service {service} via name")
-                    return service
+                    # Keyword found but no matching service
+                    logger.warning(f"Keyword '{keyword}' found in stream ID but no matching MPRIS service")
 
             logger.warning(f"No MPRIS service found for stream {stream_id}")
             return None
 
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout listing D-Bus services")
+            return None
         except Exception as e:
             logger.error(f"Error finding MPRIS service: {e}")
             return None
 
+    def _find_bluetooth_transport(self) -> Optional[str]:
+        """Find active Bluetooth MediaTransport1 object path for volume control"""
+        try:
+            # Use dbus-send to get all BlueZ managed objects
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez', '/',
+                 'org.freedesktop.DBus.ObjectManager.GetManagedObjects'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.debug(f"Failed to get BlueZ managed objects: {result.stderr}")
+                return None
+
+            # Parse the output to find MediaTransport1 paths
+            # Format: object path "/org/bluez/.../fdN" followed by interface lines
+            # When we see MediaTransport1, the preceding object path is the transport
+            lines = result.stdout.split('\n')
+            current_path = None
+
+            for line in lines:
+                # Look for object path lines - format: object path "/org/bluez/hci0/dev_.../fd0"
+                path_match = re.search(r'object path "(/org/bluez/[^"]+)"', line)
+                if path_match:
+                    current_path = path_match.group(1)
+
+                # Check if this object has MediaTransport1 interface
+                # Format: string "org.bluez.MediaTransport1"
+                if current_path and 'org.bluez.MediaTransport1' in line:
+                    logger.info(f"Found Bluetooth transport: {current_path}")
+                    return current_path
+
+            logger.warning("No active Bluetooth MediaTransport1 found")
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout finding Bluetooth transport")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding Bluetooth transport: {e}")
+            return None
+
+    def _set_bluetooth_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Bluetooth volume via MediaTransport1 (AVRCP Absolute Volume)"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, "No active Bluetooth audio connection found"
+
+        try:
+            # Convert 0-100 to 0-127 for AVRCP
+            raw_volume = int(round(volume * 1.27))
+            raw_volume = max(0, min(127, raw_volume))
+
+            # Set volume using dbus-send on system bus
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume',
+                 f'variant:uint16:{raw_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                # Check if it's because Absolute Volume isn't supported
+                if 'not supported' in result.stderr.lower() or 'permission' in result.stderr.lower():
+                    return False, "Device does not support AVRCP Absolute Volume control"
+                logger.error(f"Failed to set Bluetooth volume: {result.stderr}")
+                return False, f"Failed to set Bluetooth volume: {result.stderr}"
+
+            logger.info(f"Set Bluetooth volume to {volume}% (raw: {raw_volume}/127)")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Bluetooth volume"
+        except Exception as e:
+            logger.error(f"Error setting Bluetooth volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_bluetooth_volume(self) -> Tuple[bool, int, str]:
+        """Get Bluetooth volume via MediaTransport1"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, 0, "No active Bluetooth audio connection found"
+
+        try:
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Bluetooth volume: {result.stderr}"
+
+            # Parse volume from output - format: variant uint16 XX
+            match = re.search(r'uint16\s+(\d+)', result.stdout)
+            if match:
+                raw_volume = int(match.group(1))
+                volume_percent = int(round(raw_volume / 1.27))
+                return True, volume_percent, f"Volume: {volume_percent}%"
+
+            return False, 0, "Could not parse Bluetooth volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
     def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
         """
-        Set volume for a stream via MPRIS D-Bus.
+        Set volume for a stream via D-Bus.
 
         Args:
             stream_id: Snapcast stream ID
@@ -126,43 +244,49 @@ class MPRISVolumeController:
         Returns:
             Tuple of (success, message)
         """
-        if not DBUS_AVAILABLE:
-            return False, "D-Bus not available"
+        # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
+        if 'bluetooth' in stream_id.lower():
+            return self._set_bluetooth_volume(volume)
 
-        if not self.bus:
-            self._connect()
-            if not self.bus:
-                return False, "Failed to connect to D-Bus"
-
-        # Find MPRIS service for this stream
+        # Find MPRIS service for this stream (AirPlay, Spotify, etc.)
         service = self._find_mpris_service(stream_id)
         if not service:
             return False, f"No MPRIS service found for stream {stream_id}"
 
         try:
-            # Get MPRIS player properties interface
-            player_obj = self.bus.get_object(service, '/org/mpris/MediaPlayer2')
-            props_iface = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
-
             # Convert 0-100 to 0.0-1.0 for MPRIS
             mpris_volume = max(0.0, min(1.0, volume / 100.0))
 
-            # Set volume
-            props_iface.Set('org.mpris.MediaPlayer2.Player', 'Volume', dbus.Double(mpris_volume))
+            # Set volume using dbus-send (system bus)
+            # ShairportSync provides org.mpris.MediaPlayer2.Player.SetVolume method
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.mpris.MediaPlayer2.Player.SetVolume',
+                 f'double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-            logger.info(f"Set volume for {stream_id} via {service}: {volume}%")
+            if result.returncode != 0:
+                logger.error(f"dbus-send SetVolume failed: {result.stderr}")
+                return False, f"Failed to set volume: {result.stderr}"
+
+            logger.info(f"Set volume for {stream_id} ({service}) to {volume}% (MPRIS: {mpris_volume:.2f})")
             return True, f"Volume set to {volume}%"
 
-        except dbus.exceptions.DBusException as e:
-            logger.error(f"D-Bus error setting volume: {e}")
-            return False, f"D-Bus error: {str(e)}"
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout setting volume for {stream_id}")
+            return False, "Timeout setting volume"
         except Exception as e:
-            logger.error(f"Error setting volume: {e}")
-            return False, f"Error: {str(e)}"
+            logger.error(f"Failed to set volume for {stream_id}: {e}")
+            return False, f"Error setting volume: {str(e)}"
 
     def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
         """
-        Get current volume for a stream via MPRIS D-Bus.
+        Get current volume for a stream via D-Bus.
 
         Args:
             stream_id: Snapcast stream ID
@@ -170,25 +294,52 @@ class MPRISVolumeController:
         Returns:
             Tuple of (success, volume 0-100, message)
         """
-        if not DBUS_AVAILABLE or not self.bus:
-            return False, 0, "D-Bus not available"
+        # Check if this is a Bluetooth stream - use MediaTransport1
+        if 'bluetooth' in stream_id.lower():
+            return self._get_bluetooth_volume()
 
+        # Find MPRIS service for this stream
         service = self._find_mpris_service(stream_id)
         if not service:
             return False, 0, f"No MPRIS service found for stream {stream_id}"
 
         try:
-            player_obj = self.bus.get_object(service, '/org/mpris/MediaPlayer2')
-            props_iface = dbus.Interface(player_obj, 'org.freedesktop.DBus.Properties')
+            # Get volume using dbus-send (system bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-            mpris_volume = props_iface.Get('org.mpris.MediaPlayer2.Player', 'Volume')
+            if result.returncode != 0:
+                logger.error(f"dbus-send Get Volume failed: {result.stderr}")
+                return False, 0, f"Failed to get volume: {result.stderr}"
+
+            # Parse output to get volume value
+            # Format: "variant       double 0.5"
+            match = re.search(r'double\s+([\d.]+)', result.stdout)
+            if not match:
+                logger.error(f"Could not parse volume from dbus-send output: {result.stdout}")
+                return False, 0, "Failed to parse volume"
+
+            mpris_volume = float(match.group(1))
             volume = int(mpris_volume * 100)
 
+            logger.debug(f"Got volume for {stream_id}: {volume}% (MPRIS: {mpris_volume:.2f})")
             return True, volume, f"Volume: {volume}%"
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout getting volume for {stream_id}")
+            return False, 0, "Timeout getting volume"
         except Exception as e:
-            logger.error(f"Error getting volume: {e}")
-            return False, 0, f"Error: {str(e)}"
+            logger.error(f"Failed to get volume for {stream_id}: {e}")
+            return False, 0, f"Error getting volume: {str(e)}"
 
 
 # Global MPRIS volume controller instance

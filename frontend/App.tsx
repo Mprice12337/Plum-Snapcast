@@ -638,13 +638,10 @@ const App: React.FC = () => {
     const allClients = clients.map(c => {
         // If this is our browser audio client, ensure proper naming, local volume, and connection status
         if (browserAudio.state.isActive && c.id === browserClientId) {
-            // Determine client name based on endpoint name or device name
-            const clientName = settings.deviceName || 'Device';
-
             return {
                 ...c,
-                // Use device name for browser audio client
-                name: clientName,
+                // Always show as "This Browser" to distinguish from hardware clients
+                name: 'This Browser',
                 // Override volume with local state (browser audio volume is local only)
                 volume: browserAudio.state.volume,
                 // Override connection status - if browser audio is active, it's connected
@@ -660,11 +657,9 @@ const App: React.FC = () => {
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
-            const clientName = settings.deviceName || 'Device';
-
             const browserClient: Client = {
                 id: browserClientId,
-                name: `${clientName} (Connecting...)`,
+                name: 'This Browser (Connecting...)',
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
                 connected: false

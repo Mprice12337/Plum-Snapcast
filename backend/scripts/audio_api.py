@@ -105,9 +105,129 @@ class MPRISVolumeController:
         """Find MPRIS service - wrapper that calls subprocess implementation"""
         return self._find_mpris_service_via_subprocess(stream_id)
 
+    def _find_bluetooth_transport(self) -> Optional[str]:
+        """Find active Bluetooth MediaTransport1 object path for volume control"""
+        try:
+            # Use dbus-send to get all BlueZ managed objects
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez', '/',
+                 'org.freedesktop.DBus.ObjectManager.GetManagedObjects'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.debug(f"Failed to get BlueZ managed objects: {result.stderr}")
+                return None
+
+            # Parse the output to find MediaTransport1 paths
+            # Format: object path "/org/bluez/.../fdN" followed by interface lines
+            # When we see MediaTransport1, the preceding object path is the transport
+            lines = result.stdout.split('\n')
+            current_path = None
+
+            for line in lines:
+                # Look for object path lines - format: object path "/org/bluez/hci0/dev_.../fd0"
+                path_match = re.search(r'object path "(/org/bluez/[^"]+)"', line)
+                if path_match:
+                    current_path = path_match.group(1)
+
+                # Check if this object has MediaTransport1 interface
+                # Format: string "org.bluez.MediaTransport1"
+                if current_path and 'org.bluez.MediaTransport1' in line:
+                    logger.info(f"Found Bluetooth transport: {current_path}")
+                    return current_path
+
+            logger.debug("No active Bluetooth MediaTransport1 found")
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout finding Bluetooth transport")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding Bluetooth transport: {e}")
+            return None
+
+    def _set_bluetooth_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Bluetooth volume via MediaTransport1 (AVRCP Absolute Volume)"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, "No active Bluetooth audio connection found"
+
+        try:
+            # Convert 0-100 to 0-127 for AVRCP
+            raw_volume = int(round(volume * 1.27))
+            raw_volume = max(0, min(127, raw_volume))
+
+            # Set volume using dbus-send on system bus
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume',
+                 f'variant:uint16:{raw_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                # Check if it's because Absolute Volume isn't supported
+                if 'not supported' in result.stderr.lower() or 'permission' in result.stderr.lower():
+                    return False, "Device does not support AVRCP Absolute Volume control"
+                logger.error(f"Failed to set Bluetooth volume: {result.stderr}")
+                return False, f"Failed to set Bluetooth volume: {result.stderr}"
+
+            logger.info(f"Set Bluetooth volume to {volume}% (raw: {raw_volume}/127)")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Bluetooth volume"
+        except Exception as e:
+            logger.error(f"Error setting Bluetooth volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_bluetooth_volume(self) -> Tuple[bool, int, str]:
+        """Get Bluetooth volume via MediaTransport1"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, 0, "No active Bluetooth audio connection found"
+
+        try:
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Bluetooth volume: {result.stderr}"
+
+            # Parse volume from output - format: variant uint16 XX
+            match = re.search(r'uint16\s+(\d+)', result.stdout)
+            if match:
+                raw_volume = int(match.group(1))
+                volume_percent = int(round(raw_volume / 1.27))
+                return True, volume_percent, f"Volume: {volume_percent}%"
+
+            return False, 0, "Could not parse Bluetooth volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
     def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
         """
-        Set volume for a stream via MPRIS D-Bus using subprocess
+        Set volume for a stream via D-Bus
 
         Args:
             stream_id: Stream ID (e.g., airplay1, spotify2)
@@ -125,7 +245,11 @@ class MPRISVolumeController:
                 local_stream_id = "-".join(parts[5:])
                 logger.debug(f"Extracted local stream ID: {local_stream_id} from {stream_id}")
 
-        # Find MPRIS service
+        # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
+        if 'bluetooth' in local_stream_id.lower():
+            return self._set_bluetooth_volume(volume)
+
+        # Find MPRIS service for non-Bluetooth streams
         service = self._find_mpris_service(local_stream_id)
         if not service:
             return False, f"No MPRIS service found for stream {local_stream_id}"
@@ -163,7 +287,7 @@ class MPRISVolumeController:
 
     def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
         """
-        Get volume for a stream via MPRIS D-Bus using subprocess
+        Get volume for a stream via D-Bus
 
         Args:
             stream_id: Stream ID (e.g., airplay1, spotify2)
@@ -178,7 +302,11 @@ class MPRISVolumeController:
             if len(parts) >= 6:
                 local_stream_id = "-".join(parts[5:])
 
-        # Find MPRIS service
+        # Check if this is a Bluetooth stream - use MediaTransport1
+        if 'bluetooth' in local_stream_id.lower():
+            return self._get_bluetooth_volume()
+
+        # Find MPRIS service for non-Bluetooth streams
         service = self._find_mpris_service(local_stream_id)
         if not service:
             return False, 0, f"No MPRIS service found for stream {local_stream_id}"
