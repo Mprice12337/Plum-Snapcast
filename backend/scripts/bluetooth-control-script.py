@@ -8,9 +8,11 @@ Based on proven pattern from airplay-control-script.py:
 - Playback state tracking (Playing/Paused/Stopped)
 - Control command handling via BlueZ D-Bus
 - Complete properties response for Snapcast
+- Album art retrieval via AVRCP BIP/OBEX (BlueZ 5.81+)
 """
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -93,6 +95,245 @@ try:
 except ImportError:
     DBUS_AVAILABLE = False
     log("[Warning] D-Bus not available - Bluetooth features disabled")
+
+
+class BluetoothCoverArtFetcher:
+    """
+    Fetches album art via AVRCP BIP (Basic Imaging Profile) over OBEX.
+
+    Requires:
+    - BlueZ 5.81+ with experimental features enabled (-E flag)
+    - obexd daemon running
+    - Device that supports AVRCP cover art (iOS 13+, Android, etc.)
+
+    Flow:
+    1. Detect ObexPort on MediaPlayer1 (indicates device supports cover art)
+    2. Create OBEX session to that port via org.bluez.obex.Client1
+    3. When Track.ImgHandle changes, use org.bluez.obex.Image1.GetThumbnail
+    4. Convert image data to base64 data URL
+    """
+
+    def __init__(self, bus, on_artwork_callback):
+        self.bus = bus
+        self.on_artwork = on_artwork_callback
+        self.obex_session = None
+        self.obex_image_interface = None
+        self.current_obex_port = None
+        self.current_device_address = None
+        self.last_img_handle = None
+        self.fetching = False
+
+    def setup_obex_session(self, device_address: str, obex_port: int) -> bool:
+        """
+        Create OBEX BIP session to the device's cover art port.
+
+        Args:
+            device_address: Bluetooth device address (XX:XX:XX:XX:XX:XX)
+            obex_port: L2CAP PSM port from MediaPlayer1.ObexPort property
+        """
+        try:
+            # Already have a session to this device/port
+            if (self.obex_session and
+                self.current_device_address == device_address and
+                self.current_obex_port == obex_port):
+                return True
+
+            # Close existing session if different device/port
+            if self.obex_session:
+                self.close_session()
+
+            log(f"[CoverArt] Setting up OBEX BIP session to {device_address} port {obex_port}")
+
+            # Get OBEX Client interface
+            obex_client_obj = self.bus.get_object(
+                'org.bluez.obex',
+                '/org/bluez/obex'
+            )
+            obex_client = dbus.Interface(
+                obex_client_obj,
+                'org.bluez.obex.Client1'
+            )
+
+            # Create BIP session
+            # Target is the AVRCP Cover Art UUID
+            session_path = obex_client.CreateSession(
+                device_address,
+                {
+                    'Target': 'avrcp',
+                    'Channel': dbus.UInt16(obex_port)
+                }
+            )
+
+            log(f"[CoverArt] OBEX session created: {session_path}")
+
+            # Get the Image1 interface for fetching cover art
+            session_obj = self.bus.get_object('org.bluez.obex', session_path)
+            self.obex_image_interface = dbus.Interface(
+                session_obj,
+                'org.bluez.obex.Image1'
+            )
+            self.obex_session = session_path
+            self.current_device_address = device_address
+            self.current_obex_port = obex_port
+
+            log(f"[CoverArt] OBEX BIP session ready for cover art retrieval")
+            return True
+
+        except dbus.exceptions.DBusException as e:
+            # org.bluez.obex.Error.Failed means obexd isn't running or device doesn't support BIP
+            if "Failed" in str(e) or "NotSupported" in str(e):
+                log(f"[CoverArt] Device may not support AVRCP cover art: {e}")
+            else:
+                log(f"[CoverArt] Failed to create OBEX session: {e}")
+            return False
+        except Exception as e:
+            log(f"[CoverArt] Error setting up OBEX session: {e}")
+            return False
+
+    def fetch_cover_art(self, img_handle: str) -> Optional[str]:
+        """
+        Fetch cover art thumbnail for the given image handle.
+
+        Args:
+            img_handle: Image handle from MediaPlayer1.Track.ImgHandle
+
+        Returns:
+            Base64 data URL (data:image/jpeg;base64,...) or None if failed
+        """
+        if not self.obex_image_interface:
+            log(f"[CoverArt] No OBEX session available")
+            return None
+
+        if not img_handle:
+            log(f"[CoverArt] No image handle provided")
+            return None
+
+        # Skip if same handle as last fetch (avoid re-fetching same art)
+        if img_handle == self.last_img_handle:
+            log(f"[CoverArt] Same image handle, skipping fetch")
+            return None
+
+        if self.fetching:
+            log(f"[CoverArt] Already fetching, skipping")
+            return None
+
+        try:
+            self.fetching = True
+            log(f"[CoverArt] Fetching thumbnail for handle: {img_handle}")
+
+            # GetThumbnail returns the image file path
+            # The thumbnail is typically 200x200 JPEG
+            result = self.obex_image_interface.GetThumbnail(img_handle)
+
+            # Result is the path to the downloaded image file
+            if result:
+                image_path = str(result)
+                log(f"[CoverArt] Thumbnail downloaded to: {image_path}")
+
+                # Read the image file and convert to base64
+                try:
+                    with open(image_path, 'rb') as f:
+                        image_data = f.read()
+
+                    if len(image_data) < 100:
+                        log(f"[CoverArt] Image too small ({len(image_data)} bytes), likely invalid")
+                        return None
+
+                    # Convert to base64 data URL
+                    base64_data = base64.b64encode(image_data).decode('utf-8')
+
+                    # Detect image type (JPEG or PNG)
+                    if image_data[:2] == b'\xff\xd8':
+                        mime_type = 'image/jpeg'
+                    elif image_data[:8] == b'\x89PNG\r\n\x1a\n':
+                        mime_type = 'image/png'
+                    else:
+                        mime_type = 'image/jpeg'  # Default to JPEG
+
+                    data_url = f"data:{mime_type};base64,{base64_data}"
+                    log(f"[CoverArt] Successfully converted to data URL ({len(image_data)} bytes, {len(base64_data)} chars)")
+
+                    self.last_img_handle = img_handle
+                    return data_url
+
+                except IOError as e:
+                    log(f"[CoverArt] Failed to read image file: {e}")
+                    return None
+            else:
+                log(f"[CoverArt] GetThumbnail returned empty result")
+                return None
+
+        except dbus.exceptions.DBusException as e:
+            error_name = e.get_dbus_name() if hasattr(e, 'get_dbus_name') else str(e)
+            if "NotSupported" in str(e):
+                log(f"[CoverArt] Device doesn't support thumbnail retrieval")
+            elif "InvalidArguments" in str(e):
+                log(f"[CoverArt] Invalid image handle: {img_handle}")
+            else:
+                log(f"[CoverArt] D-Bus error fetching thumbnail: {error_name}")
+            return None
+        except Exception as e:
+            log(f"[CoverArt] Error fetching cover art: {e}")
+            import traceback
+            log(f"[CoverArt] Traceback: {traceback.format_exc()}")
+            return None
+        finally:
+            self.fetching = False
+
+    def close_session(self):
+        """Close the OBEX session"""
+        if self.obex_session:
+            try:
+                obex_client_obj = self.bus.get_object(
+                    'org.bluez.obex',
+                    '/org/bluez/obex'
+                )
+                obex_client = dbus.Interface(
+                    obex_client_obj,
+                    'org.bluez.obex.Client1'
+                )
+                obex_client.RemoveSession(self.obex_session)
+                log(f"[CoverArt] Closed OBEX session")
+            except Exception as e:
+                log(f"[CoverArt] Error closing OBEX session: {e}")
+
+            self.obex_session = None
+            self.obex_image_interface = None
+            self.current_device_address = None
+            self.current_obex_port = None
+            self.last_img_handle = None
+
+    def handle_track_update(self, device_address: str, obex_port: Optional[int],
+                           img_handle: Optional[str]):
+        """
+        Handle a track metadata update - fetch cover art if available.
+
+        Args:
+            device_address: Bluetooth device address
+            obex_port: L2CAP PSM from MediaPlayer1.ObexPort (None if not supported)
+            img_handle: Image handle from Track.ImgHandle (None if not available)
+        """
+        if not obex_port:
+            # Device doesn't advertise AVRCP cover art support
+            return
+
+        if not img_handle:
+            # No image handle in track metadata (might arrive later)
+            log(f"[CoverArt] Track has no image handle yet")
+            return
+
+        # Setup session if needed
+        if not self.setup_obex_session(device_address, obex_port):
+            return
+
+        # Fetch cover art in background thread to avoid blocking D-Bus loop
+        def fetch_thread():
+            data_url = self.fetch_cover_art(img_handle)
+            if data_url and self.on_artwork:
+                self.on_artwork(data_url)
+
+        thread = threading.Thread(target=fetch_thread, daemon=True)
+        thread.start()
 
 
 class MetadataStore:
@@ -196,7 +437,7 @@ class MetadataStore:
 
 
 class BluetoothMetadataMonitor:
-    """Monitor BlueZ D-Bus for Bluetooth audio metadata, playback state, and volume"""
+    """Monitor BlueZ D-Bus for Bluetooth audio metadata, playback state, volume, and cover art"""
 
     def __init__(self, store: MetadataStore, on_update_callback, stream_id: str):
         self.store = store
@@ -210,6 +451,10 @@ class BluetoothMetadataMonitor:
         self.current_transport_path = None
         self.transport_properties = None
         self.bus = None
+        # Cover art support (AVRCP BIP/OBEX)
+        self.cover_art_fetcher = None
+        self.current_obex_port = None
+        self.current_device_address = None
 
         if not DBUS_AVAILABLE:
             log("[Bluetooth] D-Bus not available - monitoring disabled")
@@ -218,7 +463,70 @@ class BluetoothMetadataMonitor:
         # Initialize D-Bus
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self.bus = dbus.SystemBus()
-        log("[Bluetooth] D-Bus monitor initialized")
+
+        # Initialize cover art fetcher
+        self.cover_art_fetcher = BluetoothCoverArtFetcher(
+            self.bus,
+            self._on_cover_art_received
+        )
+
+        log("[Bluetooth] D-Bus monitor initialized (with cover art support)")
+
+    def _on_cover_art_received(self, data_url: str):
+        """Callback when cover art is successfully fetched"""
+        log(f"[CoverArt] Received cover art ({len(data_url)} chars)")
+        self.store.update(artUrl=data_url)
+        if self.on_update:
+            self.on_update()
+
+    def _extract_device_address_from_path(self, player_path: str) -> Optional[str]:
+        """Extract Bluetooth device address from D-Bus object path.
+
+        Path format: /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/player0
+        Returns: XX:XX:XX:XX:XX:XX or None
+        """
+        try:
+            # Find dev_ in path
+            if '/dev_' in player_path:
+                # Extract the address part
+                parts = player_path.split('/')
+                for part in parts:
+                    if part.startswith('dev_'):
+                        # dev_XX_XX_XX_XX_XX_XX -> XX:XX:XX:XX:XX:XX
+                        addr = part[4:].replace('_', ':')
+                        return addr
+        except Exception as e:
+            log(f"[CoverArt] Failed to extract device address from path: {e}")
+        return None
+
+    def _get_obex_port(self) -> Optional[int]:
+        """Get the OBEX BIP port from MediaPlayer1.ObexPort property.
+
+        This property is only available when:
+        - BlueZ was started with -E (experimental features)
+        - The connected device supports AVRCP cover art
+
+        Returns: L2CAP PSM port number, or None if not supported
+        """
+        if not self.player_properties:
+            return None
+
+        try:
+            obex_port = self.player_properties.Get('org.bluez.MediaPlayer1', 'ObexPort')
+            port = int(obex_port)
+            if port > 0:
+                log(f"[CoverArt] Device supports cover art (ObexPort={port})")
+                return port
+        except dbus.exceptions.DBusException as e:
+            # Property not available - device doesn't support cover art or bluetoothd -E not used
+            if "UnknownProperty" in str(e) or "not found" in str(e).lower():
+                log(f"[CoverArt] ObexPort not available (device may not support cover art or bluetoothd -E not enabled)")
+            else:
+                log(f"[CoverArt] Error getting ObexPort: {e}")
+        except Exception as e:
+            log(f"[CoverArt] Error getting ObexPort: {e}")
+
+        return None
 
     def _extract_metadata_from_dict(self, metadata_dict: Dict) -> Dict:
         """Extract metadata from BlueZ MediaPlayer1 Track properties"""
@@ -245,11 +553,18 @@ class BluetoothMetadataMonitor:
                 result['album'] = str(metadata_dict['Album'])
                 log(f"[Metadata] Album: {result['album']}")
 
-            # Note: BlueZ typically doesn't provide album art via AVRCP
-            # Most phone implementations don't support this
+            # Image handle for AVRCP cover art (BlueZ 5.81+ with -E flag)
+            # This is used to fetch cover art via OBEX BIP
+            if 'ImgHandle' in metadata_dict:
+                img_handle = str(metadata_dict['ImgHandle'])
+                if img_handle:
+                    result['img_handle'] = img_handle
+                    log(f"[Metadata] Image Handle: {img_handle}")
+
+            # Legacy: Direct album art URL (rarely used)
             if 'AlbumArt' in metadata_dict:
                 result['artUrl'] = str(metadata_dict['AlbumArt'])
-                log(f"[Metadata] Album Art: {result['artUrl']}")
+                log(f"[Metadata] Album Art URL: {result['artUrl']}")
 
         except Exception as e:
             log(f"[Error] Metadata extraction failed: {e}")
@@ -324,10 +639,26 @@ class BluetoothMetadataMonitor:
                 metadata = self._extract_metadata_from_dict(track_dict)
 
                 if metadata:
+                    # Don't store img_handle in the main store - it's only used for fetching
+                    img_handle = metadata.pop('img_handle', None)
+
                     # Update store with new metadata
                     self.store.update(**metadata)
                     updated = True
                     should_notify_snapcast = True  # Track change is meaningful
+
+                    # Try to fetch cover art if we have an image handle and cover art fetcher
+                    if img_handle and self.cover_art_fetcher and self.current_player_path:
+                        # Extract device address from player path
+                        device_address = self._extract_device_address_from_path(self.current_player_path)
+                        if device_address:
+                            # Check if player has ObexPort (indicates cover art support)
+                            obex_port = self._get_obex_port()
+                            if obex_port:
+                                log(f"[CoverArt] Triggering cover art fetch (device={device_address}, port={obex_port}, handle={img_handle})")
+                                self.cover_art_fetcher.handle_track_update(
+                                    device_address, obex_port, img_handle
+                                )
 
             # Check if playback status changed
             if 'Status' in changed:
@@ -457,9 +788,12 @@ class BluetoothMetadataMonitor:
 
                     # Get current track if available
                     props = interfaces['org.bluez.MediaPlayer1']
+                    img_handle = None
                     if 'Track' in props:
                         metadata = self._extract_metadata_from_dict(props['Track'])
                         if metadata:
+                            # Extract img_handle before storing (it's not for the store)
+                            img_handle = metadata.pop('img_handle', None)
                             self.store.update(**metadata)
                             log(f"[Bluetooth] Initial metadata loaded")
 
@@ -475,6 +809,18 @@ class BluetoothMetadataMonitor:
                         status = self._extract_playback_status(str(props['Status']))
                         self.store.update(playback_status=status)
                         log(f"[Bluetooth] Initial status: {status}")
+
+                    # Check for cover art support (AVRCP BIP/OBEX)
+                    # ObexPort indicates the device supports AVRCP cover art
+                    if self.cover_art_fetcher and img_handle:
+                        obex_port = self._get_obex_port()
+                        if obex_port:
+                            device_address = self._extract_device_address_from_path(path)
+                            if device_address:
+                                log(f"[CoverArt] Triggering initial cover art fetch")
+                                self.cover_art_fetcher.handle_track_update(
+                                    device_address, obex_port, img_handle
+                                )
 
                 # Look for MediaTransport1 interfaces (for volume control via AVRCP)
                 if 'org.bluez.MediaTransport1' in interfaces:
@@ -664,7 +1010,12 @@ class BluetoothMetadataMonitor:
             return False
 
     def stop(self):
-        """Stop monitoring"""
+        """Stop monitoring and clean up"""
+        # Close cover art OBEX session
+        if self.cover_art_fetcher:
+            self.cover_art_fetcher.close_session()
+
+        # Stop GLib main loop
         if hasattr(self, 'loop'):
             self.loop.quit()
 

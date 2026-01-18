@@ -72,6 +72,10 @@ if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
     start_service bluetoothd
     sleep 3
 
+    # Start OBEX daemon for cover art retrieval (requires bluetoothd)
+    start_service obexd
+    sleep 2
+
     start_service bluetooth-init
     sleep 5
 
@@ -97,7 +101,7 @@ if [ "${BLUETOOTH_ENABLED}" = "1" ]; then
 
     # Show final status
     echo "Service status:"
-    supervisorctl -c /app/supervisord/supervisord.conf status 2>/dev/null | grep -E "bluetooth|bluealsa" || echo "  (Status check failed)"
+    supervisorctl -c /app/supervisord/supervisord.conf status 2>/dev/null | grep -E "bluetooth|bluealsa|obexd" || echo "  (Status check failed)"
 
 else
     echo "Bluetooth is DISABLED - skipping Bluetooth services"
