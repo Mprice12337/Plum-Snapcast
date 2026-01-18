@@ -936,6 +936,11 @@ const App: React.FC = () => {
             // Handle direct playback status update
             const isPlaying = playbackStatus.toLowerCase() === 'playing';
 
+            // DEBUG: Log playback state updates for Bluetooth
+            if (streamId.includes('Bluetooth')) {
+                console.log(`[DEBUG onPlaybackStateUpdate] streamId=${streamId}, playbackStatus='${playbackStatus}', isPlaying=${isPlaying}`);
+            }
+
             // Check if this is a new stream that doesn't exist yet
             const federatedStreamId = getFederatedStreamId(streamId);
             const streamExists = streamsRef.current.some(stream => stream.id === federatedStreamId);
@@ -1000,6 +1005,13 @@ const App: React.FC = () => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
+            // CRITICAL: Skip position updates for Bluetooth streams
+            // Bluetooth uses playback API with server-side interpolation, not Stream.OnUpdate position updates
+            // Stream.OnUpdate position for Bluetooth would conflict with playback API and cause timeline jumping
+            if (streamId.includes('Bluetooth')) {
+                return;
+            }
+
             // Position and duration come in SECONDS from backend (already converted by control script)
             const progressInSeconds = Math.floor(position);
 
@@ -1086,6 +1098,11 @@ const App: React.FC = () => {
 
         const syncStreamState = async () => {
             try {
+                // DEBUG: Log that sync is running for Bluetooth
+                if (currentStream.id.includes('Bluetooth')) {
+                    console.log(`[DEBUG syncStreamState] Running for ${currentStream.id}`);
+                }
+
                 // Fetch both Snapcast stream data and our playback API data in parallel
                 // Skip playback API for none streams (they don't have position data)
                 const [serverStream, playbackData] = await Promise.all([
@@ -1099,6 +1116,18 @@ const App: React.FC = () => {
                     // Prefer playback API for position, fall back to Snapcast properties
                     let positionSeconds = 0;
                     let durationSeconds = 0;
+
+                    // DEBUG: Log playback API data
+                    if (currentStream.id.includes('Bluetooth')) {
+                        console.log(`[DEBUG] Playback API data:`, playbackData ? {
+                            is_stale: playbackData.is_stale,
+                            playback_status: playbackData.playback_status,
+                            position: playbackData.position,
+                            interpolated_position: playbackData.interpolated_position
+                        } : 'null');
+                        console.log(`[DEBUG] serverStream.status: ${serverStream.status}`);
+                        console.log(`[DEBUG] isStreamPlaying result: ${isPlaying}`);
+                    }
 
                     if (playbackData && !playbackData.is_stale) {
                         // Use playback API (includes server-side interpolation)
@@ -1192,8 +1221,40 @@ const App: React.FC = () => {
                                     }
                                 }
 
+                                // Attach playback API data to stream for useAudioSync hook
+                                if (playbackData && !playbackData.is_stale) {
+                                    updatedStream.playback = {
+                                        position: playbackData.position || 0,
+                                        duration: playbackData.duration || 0,
+                                        interpolated_position: playbackData.interpolated_position || 0,
+                                        playback_status: playbackData.playback_status || 'unknown',
+                                        is_stale: playbackData.is_stale ?? true
+                                    };
+
+                                    // CRITICAL: Update isPlaying from playback API for streams with choppy audio
+                                    // For Bluetooth and other sources, stream.status toggles rapidly (idle/playing)
+                                    // but playback API provides stable playback state from the control script
+                                    const playbackApiIsPlaying = playbackData.playback_status === 'playing';
+
+                                    // DEBUG: Always log for Bluetooth streams
+                                    if (s.id.includes('Bluetooth')) {
+                                        console.log(`[DEBUG] isPlaying comparison: current=${updatedStream.isPlaying}, playbackAPI=${playbackApiIsPlaying}, status='${playbackData.playback_status}'`);
+                                    }
+
+                                    if (updatedStream.isPlaying !== playbackApiIsPlaying) {
+                                        console.log(`[PlaybackAPI] Updating ${s.id} isPlaying: ${updatedStream.isPlaying} → ${playbackApiIsPlaying}`);
+                                        updatedStream.isPlaying = playbackApiIsPlaying;
+                                    }
+                                }
+
                                 // Sync position from playback API (server-side interpolation)
-                                if (isPlaying && positionSeconds > 0 && playbackData && !playbackData.is_stale) {
+                                // Allow sync if: playing, OR initial load (progress === 0), OR playback API says playing/paused
+                                const playbackApiActive = playbackData && !playbackData.is_stale &&
+                                    (playbackData.playback_status === 'playing' || playbackData.playback_status === 'paused');
+                                const shouldSyncPosition = playbackData && !playbackData.is_stale &&
+                                    (isPlaying || s.progress === 0 || playbackApiActive);
+
+                                if (shouldSyncPosition && positionSeconds >= 0) {
                                     // Update if position changed significantly (>2s) or initial load
                                     const positionDiff = Math.abs(positionSeconds - s.progress);
                                     if (positionDiff > 2 || s.progress === 0) {
@@ -1208,11 +1269,16 @@ const App: React.FC = () => {
                     );
                 }
             } catch (error) {
-                // Silently handle errors to avoid spam
+                // Log errors for Bluetooth streams to debug
+                if (currentStream.id.includes('Bluetooth')) {
+                    console.error('[DEBUG syncStreamState] Error:', error);
+                }
+                // Silently handle errors to avoid spam for other streams
             }
         };
 
-        // Poll every 2 seconds for active streams (more aggressive than before)
+        // Immediately sync on stream change, then poll every 2 seconds
+        syncStreamState();
         const interval = setInterval(syncStreamState, 2000);
 
         return () => clearInterval(interval);

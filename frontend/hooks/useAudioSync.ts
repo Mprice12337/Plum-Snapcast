@@ -30,6 +30,7 @@ export const useAudioSync = (
     const lastPlayingRef = useRef<boolean>(false);
     const lastStreamIdRef = useRef<string>('');
     const hasInitializedRef = useRef<boolean>(false);
+    const hadPlaybackDataRef = useRef<boolean>(false);
     // For seek detection: track server's reported position and when we received it
     const lastServerPositionRef = useRef<number>(0);
     const lastServerUpdateTimeRef = useRef<number>(Date.now());
@@ -56,10 +57,25 @@ export const useAudioSync = (
         // Detect resync conditions
         const isNewStream = stream.id !== lastStreamIdRef.current;
         const isInitial = !hasInitializedRef.current || isNewStream;
+
+        // Reset playback data tracking on stream change
+        if (isNewStream) {
+            hadPlaybackDataRef.current = false;
+        }
         const trackChanged = currentTrack !== lastTrackRef.current && lastTrackRef.current !== '' && !isInitial;
         const playStateChanged = stream.isPlaying !== lastPlayingRef.current && lastTrackRef.current !== '' && !isInitial;
         const transitioningToPaused = playStateChanged && !stream.isPlaying;
         const transitioningToPlaying = playStateChanged && stream.isPlaying;
+
+        // DEBUG: Log state changes for Bluetooth streams
+        if (stream.id.includes('Bluetooth') && playStateChanged) {
+            console.log(`[DEBUG useAudioSync] Play state changed: ${lastPlayingRef.current} → ${stream.isPlaying}`);
+        }
+
+        // Detect when playback API data becomes available for the first time
+        // This happens after initial render when polling attaches playback data to stream
+        const hasPlaybackData = stream.playback?.interpolated_position !== undefined && !stream.playback.is_stale;
+        const playbackDataJustArrived = hasPlaybackData && !hadPlaybackDataRef.current;
 
         // Seek detection: compare server position to what we'd expect based on elapsed time
         // This avoids thrashing because normal playback has server position ≈ expected position
@@ -99,11 +115,12 @@ export const useAudioSync = (
             }
             // Don't update progress - keep current position when pausing
         }
-        // Resync for other conditions (initial, track change, resume, seek)
-        else if (isInitial || trackChanged || transitioningToPlaying || isSeek) {
+        // Resync for other conditions (initial, track change, resume, seek, playback data arrival)
+        else if (isInitial || trackChanged || transitioningToPlaying || isSeek || playbackDataJustArrived) {
             const reason = isInitial ? 'initial' :
                            trackChanged ? 'track-change' :
-                           transitioningToPlaying ? 'resume' : 'seek';
+                           transitioningToPlaying ? 'resume' :
+                           playbackDataJustArrived ? 'playback-data-arrived' : 'seek';
 
             console.log(`[useAudioSync] Resync (${reason}): ${lastProgressRef.current.toFixed(1)}s → ${serverPosition.toFixed(1)}s`);
 
@@ -120,6 +137,9 @@ export const useAudioSync = (
         // Always update server position tracking (for seek detection on next poll)
         lastServerPositionRef.current = serverPosition;
         lastServerUpdateTimeRef.current = Date.now();
+
+        // Track playback data availability for next iteration
+        hadPlaybackDataRef.current = hasPlaybackData;
 
         // Start local interpolation when playing
         if (stream.isPlaying) {

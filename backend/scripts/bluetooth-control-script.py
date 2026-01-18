@@ -12,13 +12,20 @@ Based on proven pattern from airplay-control-script.py:
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
+import urllib.request
 from typing import Dict, Optional
 
 # Configuration
 LOG_FILE = "/tmp/bluetooth-control-script.log"
+
+# Playback API configuration (for real-time position tracking independent of Snapcast)
+# This API runs on the federation service port (default 5000)
+PLAYBACK_API_PORT = int(os.getenv("FEDERATION_API_PORT", "5000"))
+PLAYBACK_API_URL = f"http://localhost:{PLAYBACK_API_PORT}/api/playback"
 
 # Set up logging to file
 def log(message: str):
@@ -31,6 +38,51 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+
+def post_playback_position(stream_id: str, position_ms: int, duration_ms: int,
+                           playback_status: str = "playing", **extra):
+    """
+    POST position update to playback API (non-blocking).
+
+    Sends position data to our API instead of Snapcast notifications to avoid audio stuttering.
+    """
+    def _post():
+        try:
+            # URL-encode the stream_id for the path
+            encoded_stream_id = urllib.request.quote(stream_id, safe='')
+            url = f"{PLAYBACK_API_URL}/{encoded_stream_id}"
+
+            data = {
+                "position": position_ms,
+                "duration": duration_ms,
+                "playback_status": playback_status,
+                **extra
+            }
+
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=2) as response:
+                if response.status == 200:
+                    log(f"[PlaybackAPI] Posted position: {position_ms}ms / {duration_ms}ms ({playback_status})")
+                else:
+                    log(f"[PlaybackAPI] Unexpected status: {response.status}")
+
+        except urllib.error.URLError as e:
+            # API might not be ready yet - this is expected during startup
+            log(f"[PlaybackAPI] Failed to post (API may not be ready): {e.reason}")
+        except Exception as e:
+            log(f"[PlaybackAPI] Error posting position: {e}")
+
+    # Run in background thread to avoid blocking metadata processing
+    thread = threading.Thread(target=_post, daemon=True)
+    thread.start()
+
 
 # Try to import D-Bus - graceful fallback if not available
 try:
@@ -58,6 +110,7 @@ class MetadataStore:
             "artUrl": None,
             "duration": None,  # Track duration in milliseconds
             "position": 0,  # Current position in milliseconds
+            "position_timestamp": None,  # When position was last updated (for interpolation)
             "last_updated": None,
             "playback_status": "Stopped",  # "Playing", "Paused", or "Stopped"
             "volume": None,  # Source volume 0-100 (from AVRCP Absolute Volume)
@@ -68,7 +121,36 @@ class MetadataStore:
         with self.lock:
             self.data.update(kwargs)
             self.data["last_updated"] = time.time()
+            # Record timestamp when position is updated for interpolation
+            if "position" in kwargs:
+                self.data["position_timestamp"] = time.time()
             log(f"[Store] Updated: {list(kwargs.keys())}")
+
+    def get_current_position(self) -> int:
+        """
+        Get current playback position with client-side interpolation.
+        If playing, calculates position based on elapsed time since last update.
+        Returns position in milliseconds.
+        """
+        with self.lock:
+            stored_position = self.data.get("position", 0)
+            playback_status = self.data.get("playback_status", "Stopped")
+            position_timestamp = self.data.get("position_timestamp")
+            duration = self.data.get("duration")
+
+            # If not playing or no timestamp, return stored position
+            if playback_status != "Playing" or position_timestamp is None:
+                return stored_position
+
+            # Calculate elapsed time and interpolate
+            elapsed_ms = int((time.time() - position_timestamp) * 1000)
+            interpolated_position = stored_position + elapsed_ms
+
+            # Clamp to duration if available
+            if duration and interpolated_position > duration:
+                return duration
+
+            return interpolated_position
 
     def get_all(self) -> Dict:
         """Get all metadata (returns a copy)"""
@@ -105,8 +187,9 @@ class MetadataStore:
                 if self.data.get("artUrl"):
                     meta["artUrl"] = self.data["artUrl"]
 
+                # Duration in SECONDS per Snapcast API (convert from BlueZ milliseconds)
                 if self.data.get("duration"):
-                    meta["duration"] = self.data["duration"]
+                    meta["duration"] = self.data["duration"] / 1000.0
 
                 return meta
             return None
@@ -115,9 +198,11 @@ class MetadataStore:
 class BluetoothMetadataMonitor:
     """Monitor BlueZ D-Bus for Bluetooth audio metadata, playback state, and volume"""
 
-    def __init__(self, store: MetadataStore, on_update_callback):
+    def __init__(self, store: MetadataStore, on_update_callback, stream_id: str):
         self.store = store
         self.on_update = on_update_callback
+        self.stream_id = stream_id  # Needed for playback API posts on seek detection
+        self.last_position_post_time = 0  # Rate limit immediate seek posts
         self.current_player_path = None
         self.player_interface = None
         self.player_properties = None
@@ -182,18 +267,26 @@ class BluetoothMetadataMonitor:
         return status_map.get(status_str.lower(), "Stopped")
 
     def _properties_changed_handler(self, interface, changed, invalidated, path):
-        """Handle D-Bus PropertiesChanged signals"""
+        """Handle D-Bus PropertiesChanged signals from BlueZ"""
         try:
+            log(f"[DBus] ⚡ Signal received: interface={interface}, path={path}")
             # Handle MediaTransport1 for volume changes (AVRCP Absolute Volume)
             if interface == 'org.bluez.MediaTransport1':
                 if 'Volume' in changed:
                     # Volume is 0-127, convert to 0-100 percentage
+                    old_volume = self.store.get_all().get("volume")
                     raw_volume = int(changed['Volume'])
                     volume_percent = int(round(raw_volume / 1.27))
-                    log(f"[Volume] Transport volume changed: {raw_volume}/127 = {volume_percent}%")
-                    self.store.update(volume=volume_percent)
-                    if self.on_update:
-                        self.on_update()
+
+                    # Only notify Snapcast if volume actually changed
+                    # This prevents notification spam from Bluetooth devices that send redundant volume signals
+                    if volume_percent != old_volume:
+                        log(f"[Volume] Transport volume changed: {old_volume}% → {volume_percent}%")
+                        self.store.update(volume=volume_percent)
+                        if self.on_update:
+                            self.on_update()
+                    else:
+                        log(f"[Volume] Received duplicate volume signal: {volume_percent}% (no change)")
                 return
 
             # We're interested in MediaPlayer1 interface for metadata/playback
@@ -220,6 +313,8 @@ class BluetoothMetadataMonitor:
                     log(f"[Error] Failed to setup player interface: {e}")
 
             updated = False
+            # Track if we should send Snapcast notification (for meaningful changes only)
+            should_notify_snapcast = False
 
             # Check if Track metadata changed
             if 'Track' in changed:
@@ -232,21 +327,52 @@ class BluetoothMetadataMonitor:
                     # Update store with new metadata
                     self.store.update(**metadata)
                     updated = True
+                    should_notify_snapcast = True  # Track change is meaningful
 
             # Check if playback status changed
             if 'Status' in changed:
+                old_status = self.store.get_all().get("playback_status", "Unknown")
                 status = self._extract_playback_status(str(changed['Status']))
-                log(f"[DBus] Status changed: {status}")
+                log(f"[DBus] ⚡ Status changed: {old_status} → {status}")
                 self.store.update(playback_status=status)
                 updated = True
+                should_notify_snapcast = True  # Status change is meaningful
 
             # Check if position changed (AVRCP 1.3+)
             if 'Position' in changed:
                 # Position is in milliseconds
+                state_data = self.store.get_all()
+                old_position = state_data.get("position", 0)
                 position_ms = int(changed['Position'])
-                log(f"[DBus] Position changed: {position_ms}ms")
+                delta_ms = position_ms - old_position
+                log(f"[DBus] ⚡ Position changed: {old_position}ms → {position_ms}ms (Δ {delta_ms}ms)")
                 self.store.update(position=position_ms)
                 updated = True
+
+                # DON'T notify Snapcast for position-only changes - position goes to playback API only
+                # This prevents flooding Snapcast with constant Stream.OnUpdate notifications
+
+                # CRITICAL: Detect seeks and post immediately to playback API
+                # A seek is a position jump >2 seconds (same threshold as send_update)
+                # This ensures the frontend updates immediately when user scrubs on source device
+                is_seek = abs(delta_ms) > 2000
+                if is_seek:
+                    # Rate limit: don't post if send_update just posted (<500ms ago)
+                    # This prevents duplicate posts during track changes when both D-Bus and send_update detect seeks
+                    time_since_last_post = time.time() - self.last_position_post_time
+                    if time_since_last_post > 0.5:
+                        log(f"[Position] Seek detected! Posting immediately to playback API (delta: {delta_ms}ms)")
+                        duration_ms = state_data.get("duration", 0)
+                        playback_status = state_data.get("playback_status", "Stopped")
+                        post_playback_position(
+                            stream_id=self.stream_id,
+                            position_ms=position_ms,
+                            duration_ms=duration_ms or 0,
+                            playback_status=playback_status.lower()
+                        )
+                        self.last_position_post_time = time.time()  # Update for rate limiting
+                    else:
+                        log(f"[Position] Seek detected but rate limited (last post {time_since_last_post:.2f}s ago)")
 
             # Check if duration is available in Track metadata
             if 'Track' in changed:
@@ -257,10 +383,15 @@ class BluetoothMetadataMonitor:
                     log(f"[DBus] Duration: {duration_ms}ms")
                     self.store.update(duration=duration_ms)
                     updated = True
+                    # Duration is part of track metadata, already marked for notification above
 
-            # Notify parent if anything changed
-            if updated and self.on_update:
+            # Only notify Snapcast for meaningful changes (track, status)
+            # Position updates go to playback API only (via periodic thread)
+            if should_notify_snapcast and self.on_update:
+                log(f"[DBus] Calling send_update() due to meaningful property changes")
                 self.on_update()
+            elif updated:
+                log(f"[DBus] Position updated (not sending to Snapcast, playback API will handle)")
 
         except Exception as e:
             log(f"[Error] Properties changed handler failed: {e}")
@@ -268,6 +399,7 @@ class BluetoothMetadataMonitor:
     def start(self):
         """Start monitoring D-Bus for Bluetooth metadata"""
         if not DBUS_AVAILABLE:
+            log("[Bluetooth] D-Bus not available - metadata monitoring disabled")
             return
 
         log("[Bluetooth] Starting metadata monitoring...")
@@ -281,20 +413,22 @@ class BluetoothMetadataMonitor:
                 path_keyword='path'
             )
 
-            log("[Bluetooth] Subscribed to BlueZ D-Bus signals")
+            log("[Bluetooth] ✓ Subscribed to BlueZ D-Bus PropertiesChanged signals")
 
             # Try to find existing media players
             self._scan_for_players()
 
-            # Start GLib main loop in a thread
+            # Start GLib main loop in a thread for D-Bus signal reception
             self.loop = GLib.MainLoop()
             self.loop_thread = threading.Thread(target=self.loop.run, daemon=True)
             self.loop_thread.start()
 
-            log("[Bluetooth] GLib main loop started")
+            log("[Bluetooth] ✓ GLib main loop thread started (D-Bus signal reception should be active)")
 
         except Exception as e:
             log(f"[Error] Failed to start Bluetooth monitor: {e}")
+            import traceback
+            log(f"[Error] Traceback: {traceback.format_exc()}")
 
     def _scan_for_players(self):
         """Scan for existing Bluetooth media players and transports"""
@@ -328,6 +462,13 @@ class BluetoothMetadataMonitor:
                         if metadata:
                             self.store.update(**metadata)
                             log(f"[Bluetooth] Initial metadata loaded")
+
+                    # Get current position if available (AVRCP 1.3+)
+                    # BlueZ Position is in milliseconds (per org.bluez.MediaPlayer1 spec)
+                    if 'Position' in props:
+                        position_ms = int(props['Position'])
+                        self.store.update(position=position_ms)
+                        log(f"[Bluetooth] Initial position: {position_ms}ms")
 
                     # Get current playback status
                     if 'Status' in props:
@@ -403,6 +544,36 @@ class BluetoothMetadataMonitor:
         """Check if volume control is available (AVRCP Absolute Volume)"""
         return self.transport_properties is not None
 
+    def get_position(self) -> Optional[int]:
+        """
+        Get current position (milliseconds) from MediaPlayer1.
+        Actively queries BlueZ since AVRCP position updates are infrequent.
+        Returns position in milliseconds, or None if unavailable.
+        """
+        if not self.player_properties:
+            return None
+
+        try:
+            # BlueZ Position is in milliseconds (per org.bluez.MediaPlayer1 spec)
+            position_ms = self.player_properties.Get('org.bluez.MediaPlayer1', 'Position')
+            return int(position_ms)
+        except dbus.exceptions.DBusException as e:
+            # Position property may not be available for all devices/states
+            log(f"[Position] Could not get position: {e}")
+            return None
+        except Exception as e:
+            log(f"[Error] Get position failed: {e}")
+            return None
+
+    def refresh_position(self):
+        """Query current position from BlueZ and update store"""
+        position_ms = self.get_position()
+        if position_ms is not None:
+            self.store.update(position=position_ms)
+            log(f"[Bluetooth] Refreshed position: {position_ms}ms")
+            return True
+        return False
+
     def get_volume(self) -> Optional[int]:
         """Get current volume (0-100) from MediaTransport1"""
         if not self.transport_properties:
@@ -419,6 +590,30 @@ class BluetoothMetadataMonitor:
         except Exception as e:
             log(f"[Error] Get volume failed: {e}")
             return None
+
+    def _refresh_transport(self) -> bool:
+        """Refresh transport interface reference (in case it became stale)"""
+        try:
+            obj_manager = dbus.Interface(
+                self.bus.get_object('org.bluez', '/'),
+                'org.freedesktop.DBus.ObjectManager'
+            )
+            objects = obj_manager.GetManagedObjects()
+
+            for path, interfaces in objects.items():
+                if 'org.bluez.MediaTransport1' in interfaces:
+                    log(f"[Volume] Refreshed media transport: {path}")
+                    self.current_transport_path = path
+                    transport_obj = self.bus.get_object('org.bluez', path)
+                    self.transport_properties = dbus.Interface(transport_obj, 'org.freedesktop.DBus.Properties')
+                    return True
+
+            log("[Volume] No transport found during refresh")
+            return False
+
+        except Exception as e:
+            log(f"[Error] Transport refresh failed: {e}")
+            return False
 
     def set_volume(self, volume_percent: int) -> bool:
         """Set volume (0-100) via MediaTransport1 AVRCP Absolute Volume"""
@@ -442,6 +637,26 @@ class BluetoothMetadataMonitor:
             return True
 
         except dbus.exceptions.DBusException as e:
+            # If we get "No such file or directory", the transport reference is stale
+            # Try refreshing and retrying once
+            if "No such file or directory" in str(e) or "UnknownObject" in str(e):
+                log(f"[Volume] Transport reference stale, refreshing and retrying...")
+                if self._refresh_transport():
+                    try:
+                        raw_volume = int(round(volume_percent * 1.27))
+                        raw_volume = max(0, min(127, raw_volume))
+                        self.transport_properties.Set(
+                            'org.bluez.MediaTransport1',
+                            'Volume',
+                            dbus.UInt16(raw_volume)
+                        )
+                        log(f"[Volume] Set volume to {volume_percent}% after refresh (raw: {raw_volume}/127)")
+                        self.store.update(volume=volume_percent)
+                        return True
+                    except Exception as retry_error:
+                        log(f"[Volume] Retry after refresh failed: {retry_error}")
+                        return False
+
             log(f"[Volume] Could not set volume (device may not support AVRCP Absolute Volume): {e}")
             return False
         except Exception as e:
@@ -460,8 +675,51 @@ class SnapcastControlScript:
     def __init__(self, stream_id: str):
         self.stream_id = stream_id
         self.store = MetadataStore()
-        self.bt_monitor = BluetoothMetadataMonitor(self.store, self.send_update)
+        self.bt_monitor = BluetoothMetadataMonitor(self.store, self.send_update, stream_id)
+        self.last_position_post_time = 0  # Rate limit position posts to playback API
+        self.last_playback_status = None  # Track state changes for immediate posting
+        self.last_posted_position = None  # Track last posted position to detect seeks
+        self.position_update_thread = None
+        self.running = False
         log(f"[Init] Initialized for stream: {stream_id}")
+
+    def _position_update_loop(self):
+        """
+        Periodic position update loop.
+        Since AVRCP position updates are infrequent, we periodically:
+        1. Query position from BlueZ
+        2. Post to playback API for server-side interpolation
+        This ensures accurate timeline tracking even without AVRCP events.
+        """
+        log("[Position] Starting periodic position update loop")
+        while self.running:
+            try:
+                state_data = self.store.get_all()
+                playback_status = state_data.get("playback_status", "Stopped")
+
+                # Only update position when playing
+                if playback_status == "Playing":
+                    # Refresh position from BlueZ
+                    self.bt_monitor.refresh_position()
+
+                    # Get interpolated position and duration
+                    position_ms = self.store.get_current_position()
+                    duration_ms = state_data.get("duration", 0)
+
+                    # Post to playback API
+                    post_playback_position(
+                        stream_id=self.stream_id,
+                        position_ms=position_ms,
+                        duration_ms=duration_ms or 0,
+                        playback_status="playing"
+                    )
+
+                # Update every 5 seconds
+                time.sleep(5)
+
+            except Exception as e:
+                log(f"[Position] Error in position update loop: {e}")
+                time.sleep(5)
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -478,22 +736,30 @@ class SnapcastControlScript:
         meta_obj = self.store.get_metadata_for_snapcast() or {}
         state_data = self.store.get_all()
         playback_status = state_data.get("playback_status", "Stopped")
-        position = state_data.get("position", 0)
+        duration_ms = state_data.get("duration", 0)
         volume = state_data.get("volume")  # May be None if AVRCP Absolute Volume not supported
         can_control = self.bt_monitor.is_available()
         can_volume = self.bt_monitor.is_volume_available()
+
+        # Use interpolated position for accurate tracking
+        position_ms = self.store.get_current_position()
+
+        # CRITICAL: Convert playback status to lowercase for Snapcast compatibility
+        # Snapcast expects "playing", "paused", "stopped" (lowercase)
+        # Our internal store uses "Playing", "Paused", "Stopped" (capitalized)
+        snapcast_playback_status = playback_status.lower() if playback_status else "stopped"
 
         # Notification params: include stream ID and all properties
         params = {
             "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
 
             # Playback state
-            "playbackStatus": playback_status,
+            "playbackStatus": snapcast_playback_status,
             "loopStatus": "none",
             "shuffle": False,
             "mute": False,
             "rate": 1.0,
-            "position": position,
+            "position": position_ms / 1000.0 if position_ms else 0,  # Convert ms to seconds
 
             # Control capabilities (enable if D-Bus is available)
             "canGoNext": can_control,
@@ -513,6 +779,46 @@ class SnapcastControlScript:
             params["volume"] = volume
 
         self.send_notification("Plugin.Stream.Player.Properties", params)
+
+        # Post position to playback API for these conditions:
+        # 1. State changed (play/pause/stop)
+        # 2. Position jumped (seek detected - >2 second difference)
+        # 3. Periodic update (every 5 seconds)
+        # 4. Paused/stopped (ensure accurate frozen position)
+        current_time = time.time()
+        time_since_last_post = current_time - self.last_position_post_time
+        last_status = getattr(self, 'last_playback_status', None)
+        state_changed = last_status != playback_status
+
+        # Detect seeks: position jumped more than 2 seconds from last posted position
+        position_jumped = False
+        if self.last_posted_position is not None and position_ms is not None:
+            # Account for normal playback progress since last post
+            expected_position = self.last_posted_position + (time_since_last_post * 1000)
+            position_delta = abs(position_ms - expected_position)
+            # Seek detected if delta > 2 seconds (2000ms)
+            if position_delta > 2000:
+                position_jumped = True
+                log(f"[Seek] Detected position jump: {position_delta/1000:.1f}s delta")
+
+        should_post = (state_changed or position_jumped or
+                      time_since_last_post >= 5.0 or
+                      playback_status in ("Paused", "Stopped"))
+
+        if should_post:
+            if state_changed:
+                log(f"[PlaybackAPI] Posting due to state change: {last_status} → {playback_status}")
+            self.last_position_post_time = current_time
+            self.last_playback_status = playback_status
+            self.last_posted_position = position_ms
+            # Convert playback status to lowercase for playback API
+            api_status = playback_status.lower() if playback_status else "stopped"
+            post_playback_position(
+                stream_id=self.stream_id,
+                position_ms=position_ms,
+                duration_ms=duration_ms or 0,
+                playback_status=api_status
+            )
 
         # Log what we sent
         if meta_obj:
@@ -537,23 +843,32 @@ class SnapcastControlScript:
 
             if method == "Plugin.Stream.Player.GetProperties":
                 # Return COMPLETE properties object
+                # First, refresh position from BlueZ (AVRCP updates are infrequent)
+                self.bt_monitor.refresh_position()
+
                 meta_obj = self.store.get_metadata_for_snapcast() or {}
                 state_data = self.store.get_all()
                 playback_status = state_data.get("playback_status", "Stopped")
-                position = state_data.get("position", 0)
+                # Use interpolated position for accurate tracking
+                position_ms = self.store.get_current_position()
                 volume = state_data.get("volume")  # May be None
                 can_control = self.bt_monitor.is_available()
                 can_volume = self.bt_monitor.is_volume_available()
 
+                # CRITICAL: Convert playback status to lowercase for Snapcast compatibility
+                # Snapcast expects "playing", "paused", "stopped" (lowercase)
+                snapcast_playback_status = playback_status.lower() if playback_status else "stopped"
+
                 # Build complete properties response per Snapcast Stream Plugin API
+                # Position in SECONDS per Snapcast API (convert from BlueZ milliseconds)
                 properties = {
                     # Playback state
-                    "playbackStatus": playback_status,
+                    "playbackStatus": snapcast_playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
                     "mute": False,
                     "rate": 1.0,
-                    "position": position,
+                    "position": position_ms / 1000.0 if position_ms else 0,
 
                     # Control capabilities
                     "canGoNext": can_control,
@@ -578,6 +893,17 @@ class SnapcastControlScript:
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
                 log(f"[Snapcast] GetProperties → status={playback_status}, volume={volume}, metadata keys: {list(meta_obj.keys())}")
+
+                # Post current position to playback API so frontend's next poll has fresh data
+                # This ensures smooth stream switching and page refreshes
+                duration_ms = state_data.get("duration", 0)
+                api_status = playback_status.lower() if playback_status else "stopped"
+                post_playback_position(
+                    stream_id=self.stream_id,
+                    position_ms=position_ms,
+                    duration_ms=duration_ms or 0,
+                    playback_status=api_status
+                )
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands
@@ -684,9 +1010,37 @@ class SnapcastControlScript:
         # Start Bluetooth metadata monitoring
         self.bt_monitor.start()
 
+        # Give D-Bus monitor a moment to initialize and scan for devices
+        time.sleep(0.5)
+
+        # Start periodic position update thread
+        self.running = True
+        self.position_update_thread = threading.Thread(target=self._position_update_loop, daemon=True)
+        self.position_update_thread.start()
+
         # Send ready notification
         self.send_notification("Plugin.Stream.Ready", {})
         log("[Init] Sent Plugin.Stream.Ready")
+
+        # CRITICAL: Send initial state to frontend immediately after startup
+        # This ensures frontend has playback status even if D-Bus signals aren't received
+        # Without this, frontend shows status=unknown indefinitely
+        log("[Init] Sending initial state to frontend...")
+        self.send_update()
+
+        # Post initial position to playback API immediately (don't wait 5 seconds)
+        # This ensures frontend has data available on initial load or stream switch
+        state_data = self.store.get_all()
+        if state_data.get("playback_status") == "Playing":
+            position_ms = self.store.get_current_position()
+            duration_ms = state_data.get("duration", 0)
+            post_playback_position(
+                stream_id=self.stream_id,
+                position_ms=position_ms,
+                duration_ms=duration_ms or 0,
+                playback_status="playing"
+            )
+            log("[Init] Posted initial position to playback API")
 
         # Process stdin commands
         log("[Init] Listening for commands on stdin...")
@@ -700,6 +1054,7 @@ class SnapcastControlScript:
         except Exception as e:
             log(f"[Error] Fatal error: {e}")
         finally:
+            self.running = False
             self.bt_monitor.stop()
 
 
