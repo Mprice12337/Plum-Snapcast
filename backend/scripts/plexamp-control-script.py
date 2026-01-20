@@ -711,8 +711,9 @@ class PlexampMetadataMonitor:
             req = urllib.request.Request(f'http://127.0.0.1:32500/player/playback/seekTo?offset={position_ms}')
             with urllib.request.urlopen(req, timeout=2) as response:
                 log(f"[Control] Seek to {position_ms}ms (status={response.status})")
-                # Update position in store
-                self.store.update(position=position_ms)
+                # Update position in store (convert to seconds to match normal playback)
+                position_s = position_ms // 1000
+                self.store.update(position=position_s)
                 return response.status == 200
         except Exception as e:
             log(f"[Control] Seek command failed: {e}")

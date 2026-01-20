@@ -84,6 +84,10 @@ RUN mkdir -p /etc/alsa && \
 # Expose Plexamp web UI and API
 EXPOSE 32500
 
+# Copy entrypoint script that waits for FIFO reader
+COPY entrypoint.sh /opt/plexamp/entrypoint.sh
+RUN chmod +x /opt/plexamp/entrypoint.sh
+
 # Environment variables
 ENV HOME=/app/plexamp \
     NODE_ENV=production \
@@ -93,5 +97,5 @@ ENV HOME=/app/plexamp \
 USER plexamp
 WORKDIR /opt/plexamp
 
-# Start Plexamp
-CMD ["/usr/bin/node", "/opt/plexamp/js/index.js"]
+# Start Plexamp via entrypoint (waits for FIFO reader)
+CMD ["/opt/plexamp/entrypoint.sh"]

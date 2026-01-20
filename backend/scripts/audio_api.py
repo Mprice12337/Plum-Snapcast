@@ -225,6 +225,66 @@ class MPRISVolumeController:
         except Exception as e:
             return False, 0, f"Error: {str(e)}"
 
+    # Plexamp HTTP API constants (separate container, no D-Bus access)
+    PLEXAMP_HOST = "127.0.0.1"
+    PLEXAMP_PORT = 32500
+
+    def _set_plexamp_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Plexamp volume via HTTP API (separate container, no MPRIS/D-Bus access)"""
+        try:
+            # Plexamp uses 0-100 scale same as our API
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/playback/setParameters?volume={volume}"
+            result = subprocess.run(
+                ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                 '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout.strip() == '200':
+                logger.info(f"Set Plexamp volume to {volume}% via HTTP API")
+                return True, f"Volume set to {volume}%"
+            else:
+                logger.error(f"Failed to set Plexamp volume: HTTP {result.stdout}")
+                return False, f"Failed to set Plexamp volume: HTTP {result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Plexamp volume"
+        except Exception as e:
+            logger.error(f"Error setting Plexamp volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_plexamp_volume(self) -> Tuple[bool, int, str]:
+        """Get Plexamp volume via HTTP timeline API"""
+        try:
+            import xml.etree.ElementTree as ET
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/timeline/poll?wait=0"
+            result = subprocess.run(
+                ['curl', '-s', '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Plexamp timeline: {result.stderr}"
+
+            # Parse XML response for volume attribute
+            try:
+                root = ET.fromstring(result.stdout)
+                for timeline in root.findall('.//Timeline'):
+                    volume = timeline.get('volume')
+                    if volume is not None:
+                        return True, int(volume), f"Volume: {volume}%"
+            except ET.ParseError:
+                pass
+
+            return False, 0, "Could not parse Plexamp volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
     def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
         """
         Set volume for a stream via D-Bus
@@ -248,6 +308,10 @@ class MPRISVolumeController:
         # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
         if 'bluetooth' in local_stream_id.lower():
             return self._set_bluetooth_volume(volume)
+
+        # Check if this is a Plexamp stream - use HTTP API (separate container, no D-Bus)
+        if 'plexamp' in local_stream_id.lower():
+            return self._set_plexamp_volume(volume)
 
         # Find MPRIS service for non-Bluetooth streams
         service = self._find_mpris_service(local_stream_id)
@@ -323,6 +387,10 @@ class MPRISVolumeController:
         # Check if this is a Bluetooth stream - use MediaTransport1
         if 'bluetooth' in local_stream_id.lower():
             return self._get_bluetooth_volume()
+
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in local_stream_id.lower():
+            return self._get_plexamp_volume()
 
         # Find MPRIS service for non-Bluetooth streams
         service = self._find_mpris_service(local_stream_id)

@@ -1332,6 +1332,14 @@ const App: React.FC = () => {
                         };
                     }
 
+                    // Grace period for seek operations (user-initiated from GUI)
+                    if (existingStream && hasRecentChange && recentChanges!.type === 'seek' && recentChanges!.data.streamId === newStream.id) {
+                        return {
+                            ...newStream,
+                            progress: recentChanges!.data.position
+                        };
+                    }
+
                     // Reject stale volume data: if we have a volume and new data doesn't match, prefer current
                     // This prevents cached stale data from overwriting fresh D-Bus signals
                     if (existingStream &&
@@ -1665,6 +1673,15 @@ const App: React.FC = () => {
                                 };
                             }
 
+                            // Grace period for seek operations (user-initiated from GUI)
+                            if (existingStream && hasRecentChange && recentChanges!.type === 'seek' && recentChanges!.data.streamId === newStream.id) {
+                                // User recently seeked - preserve their seek position
+                                return {
+                                    ...newStream,
+                                    progress: recentChanges!.data.position
+                                };
+                            }
+
                             // Reject stale volume data from ANY source (not just user-initiated)
                             if (existingStream &&
                                 existingStream.volume !== undefined &&
@@ -1819,6 +1836,8 @@ const App: React.FC = () => {
         const userChange = {type: 'sourceVolume', timestamp, data: {streamId, volume}};
         recentUserChangesRef.current = userChange;
         setRecentUserChanges(userChange);
+        // Also track in volumeChangeTimestamps to reject stale polling data
+        volumeChangeTimestamps.current[streamId] = {volume, timestamp};
         console.log(`[VolumeGrace] Set grace period for volume=${volume}%, expires in 7s`);
 
         // Update local stream state immediately for responsiveness
@@ -2505,6 +2524,14 @@ const App: React.FC = () => {
 
             if (capabilities.canSeek) {
                 const positionInMs = positionInSeconds * 1000;
+
+                // Set grace period to prevent polling from overwriting the seek position
+                const timestamp = Date.now();
+                const userChange = {type: 'seek', timestamp, data: {streamId: currentStream.id, position: positionInSeconds}};
+                recentUserChangesRef.current = userChange;
+                setRecentUserChanges(userChange);
+                console.log(`[SeekGrace] Set grace period for position=${positionInSeconds}s, expires in 7s`);
+
                 updateStreamProgress(currentStream.id, positionInSeconds);
                 await snapcastService.seekTo(localStreamId, positionInMs);
             } else {
