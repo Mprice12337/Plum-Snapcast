@@ -47,7 +47,7 @@ IDLE_TIMEOUT = 300       # 5 minutes - time to wait when stream is idle/paused b
 DISCONNECT_TIMEOUT = 30  # 30 seconds - time to wait after device disconnects before removing stream
 
 # Stream configuration
-BLUETOOTH_STREAM_ID = "Bluetooth"
+BLUETOOTH_STREAM_ID = "Bluetooth - Plum Audio"  # Default, updated at runtime from settings
 BLUETOOTH_FIFO_PATH = "/tmp/bluetooth-fifo"
 BLUETOOTH_CONTROL_SCRIPT = "/usr/share/snapserver/plug-ins/bluetooth-control-script.py"
 
@@ -867,7 +867,7 @@ def main():
     disconnect_timeout = args.disconnect_timeout
 
     # Read Bluetooth device name from settings for stream naming
-    # Pattern: "{deviceName} Bluetooth" (e.g., "Plum Audio Bluetooth")
+    # Pattern: "Bluetooth - {deviceName}" (e.g., "Bluetooth - Plum Audio")
     device_name = "Plum Audio"  # Default fallback
     try:
         settings_file = "/app/data/settings.json"
@@ -879,8 +879,8 @@ def main():
     except Exception as e:
         print(f"[Init] Could not read settings, using default device name: {e}", file=sys.stderr)
 
-    # Update global stream ID with custom name
-    globals()['BLUETOOTH_STREAM_ID'] = f"{device_name} Bluetooth"
+    # Update global stream ID with custom name (format: "Bluetooth - {name}" to match AirPlay/Spotify/DLNA)
+    globals()['BLUETOOTH_STREAM_ID'] = f"Bluetooth - {device_name}"
     print(f"[Init] Bluetooth Stream ID: {globals()['BLUETOOTH_STREAM_ID']}", file=sys.stderr)
 
     log("=== Bluetooth Stream Lifecycle Manager Starting ===")

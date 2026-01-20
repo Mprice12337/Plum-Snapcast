@@ -540,8 +540,8 @@ export class SnapStream {
             return;
         }
 
-        // Setup audio context
-        if (!this.setupAudioContext()) {
+        // Check Web Audio API support (don't create context yet - wait for codec header to know sample rate)
+        if (!window.AudioContext) {
             throw new Error("Web Audio API is not supported by your browser");
         }
 
@@ -675,12 +675,25 @@ export class SnapStream {
             return false;
         }
 
+        // If AudioContext already exists with correct sample rate, reuse it
+        if (this.ctx && this.ctx.sampleRate === this.sampleFormat?.rate) {
+            console.log(`Reusing existing AudioContext with sample rate ${this.ctx.sampleRate}`);
+            return true;
+        }
+
+        // Close existing context if sample rate changed
+        if (this.ctx) {
+            console.log(`Closing existing AudioContext (rate ${this.ctx.sampleRate}) for new rate ${this.sampleFormat?.rate}`);
+            this.ctx.close();
+        }
+
         const options: AudioContextOptions = {
             latencyHint: "interactive",
             sampleRate: this.sampleFormat?.rate
         };
 
         this.ctx = new AudioContext(options);
+        console.log(`Created AudioContext with sample rate ${this.ctx.sampleRate}`);
 
         // Create AnalyserNode for visualizer (BEFORE GainNode for volume-independent analysis)
         this.analyserNode = this.ctx.createAnalyser();
@@ -766,6 +779,13 @@ export class SnapStream {
                 } else {
                     if (this.bufferDurationMs !== 0) {
                         this.bufferFrameCount = Math.floor(this.bufferDurationMs * this.sampleFormat.msRate());
+                    }
+
+                    // Create AudioContext NOW with the correct sample rate from the stream
+                    // This prevents sample rate mismatch that causes "wobbly" audio on first listen
+                    if (!this.setupAudioContext()) {
+                        console.error("Failed to setup AudioContext");
+                        return;
                     }
 
                     this.ctx!.resume();
