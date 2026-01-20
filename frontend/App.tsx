@@ -391,12 +391,31 @@ const App: React.FC = () => {
 
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
-    // Exclude browser audio client from being selected as primary
+    // Exclude browser audio client and remote snapclients from being selected as primary
     const browserClientId = getBrowserAudioClientId();
-    const myClient = clients.find(c =>
+    const localServer = servers.find(s => s.isLocal);
+    const localServerId = localServer?.id;
+
+    // Helper to extract the local part of a client ID (strip server prefix in federation mode)
+    const getClientLocalPart = (clientId: string): string => {
+        if (localServerId && clientId.startsWith(`${localServerId}-`)) {
+            return clientId.replace(`${localServerId}-`, '');
+        }
+        return clientId;
+    };
+
+    // Find the primary client - prefer local hardware client with MAC address
+    const myClient = clients.find(c => {
+        if (c.id === browserClientId) return false;
+        // Skip remote snapclients (infrastructure, not user devices)
+        if (c.id.includes('-remote-server-')) return false;
+        // Check if local part is a MAC address
+        const localPart = getClientLocalPart(c.id);
+        return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart);
+    }) || clients.find(c =>
         c.id !== browserClientId &&
-        /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
-    ) || clients.find(c => c.id !== browserClientId);
+        !c.id.includes('-remote-server-')
+    );
 
     // Determine current stream:
     // In federation mode, each GUI should show its LOCAL client's stream
@@ -487,6 +506,12 @@ const App: React.FC = () => {
             return; // Browser audio not active, nothing to do
         }
 
+        // Skip if we're still in the auto-assign phase (haven't assigned a stream yet)
+        // This prevents a race condition where this effect runs before auto-assign completes
+        if (!browserClientAutoAssigned) {
+            return;
+        }
+
         // Find the browser audio client in the client list
         const browserClient = clients.find(c => c.id === browserClientId);
         if (!browserClient) {
@@ -511,7 +536,7 @@ const App: React.FC = () => {
             // Stream was removed - stop the browser audio client
             browserAudio.stop();
         }
-    }, [browserAudio.state.isActive, streams, clients, browserClientId]);
+    }, [browserAudio.state.isActive, streams, clients, browserClientId, browserClientAutoAssigned]);
 
     // Visualizer preset cycling on track change
     useEffect(() => {
@@ -1247,20 +1272,11 @@ const App: React.FC = () => {
                                     }
                                 }
 
-                                // Sync position from playback API (server-side interpolation)
-                                // Allow sync if: playing, OR initial load (progress === 0), OR playback API says playing/paused
-                                const playbackApiActive = playbackData && !playbackData.is_stale &&
-                                    (playbackData.playback_status === 'playing' || playbackData.playback_status === 'paused');
-                                const shouldSyncPosition = playbackData && !playbackData.is_stale &&
-                                    (isPlaying || s.progress === 0 || playbackApiActive);
-
-                                if (shouldSyncPosition && positionSeconds >= 0) {
-                                    // Update if position changed significantly (>2s) or initial load
-                                    const positionDiff = Math.abs(positionSeconds - s.progress);
-                                    if (positionDiff > 2 || s.progress === 0) {
-                                        updatedStream.progress = positionSeconds;
-                                    }
-                                }
+                                // NOTE: Don't directly update progress here - useAudioSync handles
+                                // progress updates with smooth local interpolation. App.tsx only
+                                // attaches playback data to the stream; useAudioSync reads it and
+                                // manages the actual progress value to avoid oscillation between
+                                // the two sources fighting over the progress value.
 
                                 return updatedStream;
                             }
@@ -1537,7 +1553,13 @@ const App: React.FC = () => {
                         title: metadata.title || 'Unknown Track',
                         artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
                         album: metadata.album || 'Unknown Album',
-                        albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
+                        albumArtUrl: metadata.artUrl ? (
+                            metadata.artUrl.startsWith('/coverart/')
+                                ? `http://${window.location.hostname}:5001/api/settings/proxy/coverart/${metadata.artUrl.replace('/coverart/', '')}`
+                                : metadata.artUrl.startsWith('/')
+                                    ? `http://${window.location.hostname}:1780${metadata.artUrl}`
+                                    : metadata.artUrl
+                        ) : musicNotePlaceholder,
                         duration: metadata.duration ? Math.floor(metadata.duration) : 0  // Already in seconds
                     },
                     isPlaying: properties.playbackStatus === 'playing',
@@ -2108,7 +2130,31 @@ const App: React.FC = () => {
         const localStreamId = streamId ? stripServerPrefix(streamId) : null;
 
         try {
-            const groupId = clientGroupMap[localClientId];
+            let groupId = clientGroupMap[localClientId];
+
+            // If group not in cache, fetch it dynamically (handles newly connected clients)
+            if (!groupId) {
+                console.log(`[StreamChange] Group not in cache for ${localClientId}, fetching from server...`);
+                try {
+                    const serverStatus = await snapcastService.getServerStatus();
+                    if (serverStatus.server && serverStatus.server.groups) {
+                        for (const group of serverStatus.server.groups) {
+                            if (group.clients) {
+                                const foundClient = group.clients.find((c: any) => c.id === localClientId);
+                                if (foundClient) {
+                                    groupId = group.id;
+                                    // Update the cache for future calls
+                                    setClientGroupMap(prev => ({...prev, [localClientId]: group.id}));
+                                    console.log(`[StreamChange] Found group ${groupId} for client ${localClientId}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (fetchError) {
+                    console.error(`[StreamChange] Failed to fetch server status:`, fetchError);
+                }
+            }
 
             if (groupId && localStreamId) {
                 await snapcastService.setGroupStream(groupId, localStreamId);

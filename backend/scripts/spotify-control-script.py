@@ -88,6 +88,7 @@ class MetadataStore:
             "artUrl": None,
             "duration": None,
             "position": 0,
+            "volume": None,  # Source volume 0-100, None if unknown
             "last_updated": None,
             "playback_status": "stopped",  # "playing", "paused", or "stopped" (lowercase for Snapcast)
         }
@@ -312,6 +313,14 @@ class SpotifyMetadataMonitor:
                 # Trigger update for position changes to keep frontend in sync
                 if self.on_update:
                     self.on_update()
+
+            # Check if volume changed
+            if 'Volume' in changed:
+                mpris_volume = float(changed['Volume'])
+                volume_percent = int(mpris_volume * 100)
+                log(f"[DBus] Volume changed: {volume_percent}% (MPRIS: {mpris_volume:.2f})")
+                self.store.update(volume=volume_percent)
+                updated = True
 
             # Notify parent if anything changed
             if updated and self.on_update:
@@ -544,6 +553,45 @@ class SpotifyMetadataMonitor:
             except Exception as e:
                 log(f"[Error] Seek failed: {e}")
 
+    def set_volume(self, volume_percent: int) -> bool:
+        """
+        Set volume via MPRIS Properties.Set (0-100 scale, converted to 0.0-1.0 for MPRIS).
+        Returns True if successful.
+        """
+        if self.player_properties:
+            try:
+                # MPRIS uses 0.0-1.0 scale
+                mpris_volume = max(0.0, min(1.0, volume_percent / 100.0))
+                self.player_properties.Set(
+                    "org.mpris.MediaPlayer2.Player",
+                    "Volume",
+                    dbus.Double(mpris_volume)
+                )
+                log(f"[Control] Set volume to {volume_percent}% (MPRIS: {mpris_volume:.2f})")
+                return True
+            except Exception as e:
+                log(f"[Error] Set volume failed: {e}")
+                return False
+        return False
+
+    def get_volume(self) -> int:
+        """
+        Get current volume via MPRIS (returns 0-100 scale).
+        Returns -1 if unavailable.
+        """
+        if self.player_properties:
+            try:
+                mpris_volume = self.player_properties.Get(
+                    "org.mpris.MediaPlayer2.Player",
+                    "Volume"
+                )
+                volume_percent = int(float(mpris_volume) * 100)
+                return volume_percent
+            except Exception as e:
+                log(f"[Error] Get volume failed: {e}")
+                return -1
+        return -1
+
     def is_available(self):
         """Check if control is available"""
         return self.player_interface is not None
@@ -581,6 +629,15 @@ class SnapcastControlScript:
         position = state_data.get("position", 0)
         can_control = self.spotify_monitor.is_available()
 
+        # Get current volume - prefer stored value, fallback to D-Bus query
+        current_volume = state_data.get("volume")
+        if current_volume is None and can_control:
+            current_volume = self.spotify_monitor.get_volume()
+            if current_volume >= 0:
+                self.store.update(volume=current_volume)
+        if current_volume is None or current_volume < 0:
+            current_volume = 100  # Default if unavailable
+
         # Notification params: include stream ID and all properties
         params = {
             "id": self.stream_id,  # Include stream ID so frontend knows which stream to update
@@ -589,7 +646,7 @@ class SnapcastControlScript:
             "playbackStatus": playback_status,
             "loopStatus": "none",
             "shuffle": False,
-            "volume": 100,
+            "volume": current_volume,
             "mute": False,
             "rate": 1.0,
             "position": position,
@@ -636,13 +693,22 @@ class SnapcastControlScript:
                 position = state_data.get("position", 0)
                 can_control = self.spotify_monitor.is_available()
 
+                # Get current volume - prefer stored value, fallback to D-Bus query
+                current_volume = state_data.get("volume")
+                if current_volume is None and can_control:
+                    current_volume = self.spotify_monitor.get_volume()
+                    if current_volume >= 0:
+                        self.store.update(volume=current_volume)
+                if current_volume is None or current_volume < 0:
+                    current_volume = 100  # Default if unavailable
+
                 # Build complete properties response per Snapcast Stream Plugin API
                 properties = {
                     # Playback state
                     "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
-                    "volume": 100,
+                    "volume": current_volume,
                     "mute": False,
                     "rate": 1.0,
                     "position": position,
@@ -712,6 +778,27 @@ class SnapcastControlScript:
                     log(f"[Control] Seeking to position: {position}ms")
                     self.spotify_monitor.seek(position)
                     self.send_update()
+                elif command == "setVolume" or command == "volume":
+                    # Set source volume via MPRIS
+                    volume = params.get("volume")
+                    if volume is not None:
+                        try:
+                            volume_int = int(volume)
+                            if 0 <= volume_int <= 100:
+                                success = self.spotify_monitor.set_volume(volume_int)
+                                if success:
+                                    # Store volume and send update
+                                    self.store.update(volume=volume_int)
+                                    self.send_update()
+                                    log(f"[Control] Set volume to {volume_int}%")
+                                else:
+                                    log(f"[Control] SetVolume failed via D-Bus")
+                            else:
+                                log(f"[Control] SetVolume: invalid volume {volume_int} (must be 0-100)")
+                        except (ValueError, TypeError) as e:
+                            log(f"[Control] SetVolume: invalid volume parameter: {e}")
+                    else:
+                        log("[Control] SetVolume: missing volume parameter")
                 else:
                     log(f"[Warning] Unknown control command: {command}")
 

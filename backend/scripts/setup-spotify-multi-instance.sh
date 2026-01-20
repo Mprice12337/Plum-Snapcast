@@ -108,12 +108,18 @@ for i in $(seq 0 $((ENDPOINT_COUNT-1))); do
 
     echo "  - Instance ${INSTANCE_ID}: ${NAME} (zeroconf port ${ZEROCONF_PORT}, ${SPOTIFY_BITRATE} kbps, D-Bus/MPRIS)"
 
+    # Generate unique device_id for this instance
+    # Use a deterministic hash based on endpoint name for consistency across restarts
+    DEVICE_ID=$(echo -n "${NAME}" | sha256sum | cut -c1-40)
+    echo "    Device ID: ${DEVICE_ID}"
+
     # Create config file from template
     CONFIG_FILE="/app/config/spotifyd-${INSTANCE_ID}.conf"
     sed -e "s/SPOTIFY_NAME/${NAME}/g" \
         -e "s/INSTANCE_ID/${INSTANCE_ID}/g" \
         -e "s/SPOTIFY_ZEROCONF_PORT/${ZEROCONF_PORT}/g" \
         -e "s/SPOTIFY_BITRATE/${SPOTIFY_BITRATE}/g" \
+        -e "s/SPOTIFY_DEVICE_ID/${DEVICE_ID}/g" \
         /app/config/spotifyd.conf.template > "${CONFIG_FILE}"
 
     # Ensure config file is owned by snapcast user (for dynamic updates via API)

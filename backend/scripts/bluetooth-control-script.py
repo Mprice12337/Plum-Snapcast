@@ -647,18 +647,30 @@ class BluetoothMetadataMonitor:
                     updated = True
                     should_notify_snapcast = True  # Track change is meaningful
 
-                    # Try to fetch cover art if we have an image handle and cover art fetcher
-                    if img_handle and self.cover_art_fetcher and self.current_player_path:
-                        # Extract device address from player path
-                        device_address = self._extract_device_address_from_path(self.current_player_path)
-                        if device_address:
-                            # Check if player has ObexPort (indicates cover art support)
-                            obex_port = self._get_obex_port()
-                            if obex_port:
-                                log(f"[CoverArt] Triggering cover art fetch (device={device_address}, port={obex_port}, handle={img_handle})")
-                                self.cover_art_fetcher.handle_track_update(
-                                    device_address, obex_port, img_handle
+                    # Handle cover art: proactively establish OBEX session and fetch if possible
+                    if self.cover_art_fetcher and self.current_player_path:
+                        # Get or update device address and OBEX port
+                        if not self.current_device_address:
+                            self.current_device_address = self._extract_device_address_from_path(self.current_player_path)
+                        if not self.current_obex_port:
+                            self.current_obex_port = self._get_obex_port()
+
+                        if self.current_device_address and self.current_obex_port:
+                            # Ensure OBEX session is established (proactive - may trigger ImgHandle in future)
+                            if not self.cover_art_fetcher.obex_session:
+                                log(f"[CoverArt] Proactively establishing OBEX session on track change")
+                                self.cover_art_fetcher.setup_obex_session(
+                                    self.current_device_address, self.current_obex_port
                                 )
+
+                            # Fetch cover art if we have an image handle
+                            if img_handle:
+                                log(f"[CoverArt] Triggering cover art fetch (handle={img_handle})")
+                                self.cover_art_fetcher.handle_track_update(
+                                    self.current_device_address, self.current_obex_port, img_handle
+                                )
+                            else:
+                                log(f"[CoverArt] No ImgHandle in track metadata (device may not support AVRCP cover art)")
 
             # Check if playback status changed
             if 'Status' in changed:
@@ -812,11 +824,22 @@ class BluetoothMetadataMonitor:
 
                     # Check for cover art support (AVRCP BIP/OBEX)
                     # ObexPort indicates the device supports AVRCP cover art
-                    if self.cover_art_fetcher and img_handle:
-                        obex_port = self._get_obex_port()
-                        if obex_port:
-                            device_address = self._extract_device_address_from_path(path)
-                            if device_address:
+                    obex_port = self._get_obex_port()
+                    if self.cover_art_fetcher and obex_port:
+                        device_address = self._extract_device_address_from_path(path)
+                        if device_address:
+                            # Store device info for cover art
+                            self.current_device_address = device_address
+                            self.current_obex_port = obex_port
+
+                            # Proactively establish OBEX BIP session
+                            # Some devices (like iOS) may only provide ImgHandle after session is established
+                            log(f"[CoverArt] Proactively establishing OBEX BIP session for {device_address}")
+                            if self.cover_art_fetcher.setup_obex_session(device_address, obex_port):
+                                log(f"[CoverArt] OBEX session established - device may now provide ImgHandle")
+
+                            # If we already have an img_handle, fetch immediately
+                            if img_handle:
                                 log(f"[CoverArt] Triggering initial cover art fetch")
                                 self.cover_art_fetcher.handle_track_update(
                                     device_address, obex_port, img_handle
@@ -895,6 +918,10 @@ class BluetoothMetadataMonitor:
         Get current position (milliseconds) from MediaPlayer1.
         Actively queries BlueZ since AVRCP position updates are infrequent.
         Returns position in milliseconds, or None if unavailable.
+
+        NOTE: This queries BlueZ's cached position, which is updated via AVRCP.
+        Some devices (e.g., iOS) may not send frequent position updates,
+        so the value may lag behind the actual playback position on the device.
         """
         if not self.player_properties:
             return None
@@ -902,7 +929,10 @@ class BluetoothMetadataMonitor:
         try:
             # BlueZ Position is in milliseconds (per org.bluez.MediaPlayer1 spec)
             position_ms = self.player_properties.Get('org.bluez.MediaPlayer1', 'Position')
-            return int(position_ms)
+            position_int = int(position_ms)
+            # Log at debug level to trace what BlueZ reports
+            log(f"[BlueZ] Position query returned: {position_int}ms ({position_int/1000:.1f}s)")
+            return position_int
         except dbus.exceptions.DBusException as e:
             # Position property may not be available for all devices/states
             log(f"[Position] Could not get position: {e}")
@@ -1036,13 +1066,21 @@ class SnapcastControlScript:
 
     def _position_update_loop(self):
         """
-        Periodic position update loop.
+        Periodic position update loop with seek detection.
         Since AVRCP position updates are infrequent, we periodically:
-        1. Query position from BlueZ
-        2. Post to playback API for server-side interpolation
-        This ensures accurate timeline tracking even without AVRCP events.
+        1. Query RAW position from BlueZ (not interpolated)
+        2. Compare to expected position to detect seeks
+        3. Post to playback API for server-side interpolation
+        This ensures accurate timeline tracking even without AVRCP D-Bus signals.
+
+        CRITICAL: iOS and some devices don't send D-Bus Position signals on seek,
+        so we must detect seeks by polling and comparing positions.
         """
-        log("[Position] Starting periodic position update loop")
+        log("[Position] Starting periodic position update loop (2s interval)")
+        # Track position for seek detection in this loop
+        last_raw_position_ms = None
+        last_poll_time = time.time()
+
         while self.running:
             try:
                 state_data = self.store.get_all()
@@ -1050,27 +1088,60 @@ class SnapcastControlScript:
 
                 # Only update position when playing
                 if playback_status == "Playing":
-                    # Refresh position from BlueZ
-                    self.bt_monitor.refresh_position()
+                    # Get RAW position directly from BlueZ (before interpolation)
+                    raw_position_ms = self.bt_monitor.get_position()
 
-                    # Get interpolated position and duration
-                    position_ms = self.store.get_current_position()
-                    duration_ms = state_data.get("duration", 0)
+                    if raw_position_ms is not None:
+                        now = time.time()
+                        elapsed_s = now - last_poll_time
+                        duration_ms = state_data.get("duration", 0)
 
-                    # Post to playback API
-                    post_playback_position(
-                        stream_id=self.stream_id,
-                        position_ms=position_ms,
-                        duration_ms=duration_ms or 0,
-                        playback_status="playing"
-                    )
+                        # Detect seeks by comparing raw position to expected
+                        is_seek = False
+                        if last_raw_position_ms is not None:
+                            expected_position_ms = last_raw_position_ms + (elapsed_s * 1000)
+                            position_delta_ms = abs(raw_position_ms - expected_position_ms)
 
-                # Update every 5 seconds
-                time.sleep(5)
+                            # Seek if delta > 3 seconds (allow some margin for AVRCP timing)
+                            if position_delta_ms > 3000:
+                                is_seek = True
+                                log(f"[Position] SEEK DETECTED in poll: expected={expected_position_ms/1000:.1f}s, got={raw_position_ms/1000:.1f}s (delta={position_delta_ms/1000:.1f}s)")
+
+                        # Update store with raw position
+                        self.store.update(position=raw_position_ms)
+
+                        # Update tracking vars
+                        last_raw_position_ms = raw_position_ms
+                        last_poll_time = now
+
+                        # Also update send_update's tracking vars so it doesn't double-detect
+                        self.last_posted_position = raw_position_ms
+                        self.last_position_post_time = now
+
+                        # Log for debugging
+                        if is_seek:
+                            log(f"[Position] Posting seek position to API: {raw_position_ms}ms")
+
+                        # Post to playback API
+                        post_playback_position(
+                            stream_id=self.stream_id,
+                            position_ms=raw_position_ms,
+                            duration_ms=duration_ms or 0,
+                            playback_status="playing"
+                        )
+                    else:
+                        log("[Position] Could not get position from BlueZ")
+                else:
+                    # Reset tracking when not playing
+                    last_raw_position_ms = None
+                    last_poll_time = time.time()
+
+                # Poll every 2 seconds for responsive seek detection
+                time.sleep(2)
 
             except Exception as e:
                 log(f"[Position] Error in position update loop: {e}")
-                time.sleep(5)
+                time.sleep(2)
 
     def send_notification(self, method: str, params: Dict):
         """Send JSON-RPC notification to Snapcast via stdout"""
@@ -1143,6 +1214,7 @@ class SnapcastControlScript:
 
         # Detect seeks: position jumped more than 2 seconds from last posted position
         position_jumped = False
+        position_to_post = position_ms  # Default to interpolated position
         if self.last_posted_position is not None and position_ms is not None:
             # Account for normal playback progress since last post
             expected_position = self.last_posted_position + (time_since_last_post * 1000)
@@ -1150,23 +1222,38 @@ class SnapcastControlScript:
             # Seek detected if delta > 2 seconds (2000ms)
             if position_delta > 2000:
                 position_jumped = True
-                log(f"[Seek] Detected position jump: {position_delta/1000:.1f}s delta")
+                # When position jumped, use the RAW D-Bus position instead of interpolated
+                # This avoids posting stale interpolated position after track changes
+                raw_position = state_data.get("position", 0)
+                log(f"[Seek] Detected position jump: {position_delta/1000:.1f}s delta - using raw position {raw_position}ms instead of interpolated {position_ms}ms")
+                position_to_post = raw_position
 
-        should_post = (state_changed or position_jumped or
+        # Don't post on Paused transitions - user might be seeking while paused
+        # and the Position D-Bus signal with the new position hasn't arrived yet.
+        # The D-Bus Position handler will post the correct position when it arrives.
+        transitioning_to_paused = state_changed and playback_status == "Paused"
+
+        should_post = ((state_changed and not transitioning_to_paused) or
+                      position_jumped or
                       time_since_last_post >= 5.0 or
-                      playback_status in ("Paused", "Stopped"))
+                      playback_status == "Stopped")
+
+        if transitioning_to_paused:
+            log(f"[PlaybackAPI] Skipping post on Paused transition - waiting for Position D-Bus signal")
 
         if should_post:
             if state_changed:
                 log(f"[PlaybackAPI] Posting due to state change: {last_status} → {playback_status}")
+            if position_jumped:
+                log(f"[PlaybackAPI] Posting due to position jump (raw position: {position_to_post}ms)")
             self.last_position_post_time = current_time
             self.last_playback_status = playback_status
-            self.last_posted_position = position_ms
+            self.last_posted_position = position_to_post  # Track what we actually posted
             # Convert playback status to lowercase for playback API
             api_status = playback_status.lower() if playback_status else "stopped"
             post_playback_position(
                 stream_id=self.stream_id,
-                position_ms=position_ms,
+                position_ms=position_to_post,  # Use raw position when jump detected
                 duration_ms=duration_ms or 0,
                 playback_status=api_status
             )

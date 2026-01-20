@@ -207,9 +207,9 @@ class FederationRouter:
                     "message": "Client routed to none (deactivated)"
                 }
 
-            # Deactivate ALL active endpoints across ALL servers (only when activating a real stream)
-            # This ensures true lockout - only one output client active at a time across federation
-            await self._deactivate_all_endpoints()
+            # Deactivate endpoints on OTHER streams (preserves clients already on target stream)
+            # This ensures endpoint lockout while allowing multiple clients to listen to the same stream
+            await self._deactivate_all_endpoints(except_stream_id=stream_local_id)
 
 
             # Step 2: Activate new endpoint
@@ -467,14 +467,22 @@ class FederationRouter:
         # No active endpoint found
         return {"active": False}
 
-    async def _deactivate_all_endpoints(self):
+    async def _deactivate_all_endpoints(self, except_stream_id: Optional[str] = None):
         """
-        Deactivate ALL active endpoints across ALL servers in the federation.
+        Deactivate active endpoints across servers in the federation.
 
         This queries all servers to find output clients NOT on none streams
-        and routes them all to none. Ensures true endpoint lockout across federation.
+        and routes them to none. Ensures endpoint lockout across federation.
+
+        Args:
+            except_stream_id: Optional local stream ID to exclude from deactivation.
+                              Clients already on this stream will NOT be deactivated.
+                              This allows multiple clients to listen to the same stream.
         """
-        logger.debug("Deactivating all active endpoints")
+        if except_stream_id:
+            logger.debug(f"Deactivating endpoints EXCEPT those on stream: {except_stream_id}")
+        else:
+            logger.debug("Deactivating all active endpoints")
 
         # Get all connected servers
         all_servers = self.ws_manager.get_all_connections()
@@ -493,6 +501,11 @@ class FederationRouter:
 
                     # Skip if group is already on a none stream
                     if "none-" in group_stream_id:
+                        continue
+
+                    # Skip if group is on the target stream (don't deactivate clients already listening)
+                    if except_stream_id and group_stream_id == except_stream_id:
+                        logger.debug(f"Keeping clients on target stream {group_stream_id} active")
                         continue
 
                     # Check each client in this group

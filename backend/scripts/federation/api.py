@@ -34,6 +34,9 @@ class MPRISVolumeController:
     Direct D-Bus/MPRIS volume control for integration sources.
     Uses subprocess approach to avoid D-Bus session bus connection issues in containers.
     Bypasses Snapcast's Stream.Control which doesn't support setVolume.
+
+    Special handling for Plexamp: Uses HTTP API instead of MPRIS since Plexamp
+    runs in a separate container (no shared D-Bus).
     """
 
     # Map integration keywords to MPRIS service name patterns
@@ -45,13 +48,72 @@ class MPRISVolumeController:
         'spotify': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
         # DLNA: org.mpris.MediaPlayer2.GMediaRender or gmediarender*
         'dlna': r'org\.mpris\.MediaPlayer2\.GMediaRender',
-        # Plexamp: org.mpris.MediaPlayer2.Plexamp
-        'plexamp': r'org\.mpris\.MediaPlayer2\.Plexamp$',
+        # Note: Plexamp uses HTTP API, not MPRIS (separate container)
         # Note: Bluetooth is NOT included - volume is controlled at the source device
     }
 
+    # Plexamp HTTP API settings
+    PLEXAMP_HOST = '127.0.0.1'
+    PLEXAMP_PORT = 32500
+
     def __init__(self):
         pass
+
+    def _set_plexamp_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Plexamp volume via HTTP API (separate container, no MPRIS access)"""
+        try:
+            # Plexamp uses 0-100 scale same as our API
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/playback/setParameters?volume={volume}"
+            result = subprocess.run(
+                ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                 '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout.strip() == '200':
+                logger.info(f"Set Plexamp volume to {volume}% via HTTP API")
+                return True, f"Volume set to {volume}%"
+            else:
+                logger.error(f"Failed to set Plexamp volume: HTTP {result.stdout}")
+                return False, f"Failed to set Plexamp volume: HTTP {result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Plexamp volume"
+        except Exception as e:
+            logger.error(f"Error setting Plexamp volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_plexamp_volume(self) -> Tuple[bool, int, str]:
+        """Get Plexamp volume via HTTP timeline API"""
+        try:
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/timeline/poll?wait=0"
+            result = subprocess.run(
+                ['curl', '-s', '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, "Failed to query Plexamp timeline"
+
+            # Parse XML response for volume attribute
+            import xml.etree.ElementTree as ET
+            try:
+                root = ET.fromstring(result.stdout)
+                for timeline in root.findall('.//Timeline[@type="music"]'):
+                    volume = timeline.get('volume')
+                    if volume is not None:
+                        return True, int(volume), f"Volume: {volume}%"
+            except ET.ParseError:
+                pass
+
+            return False, 0, "Could not parse Plexamp volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
 
     def _find_mpris_service(self, stream_id: str) -> Optional[str]:
         """
@@ -235,7 +297,7 @@ class MPRISVolumeController:
 
     def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
         """
-        Set volume for a stream via D-Bus.
+        Set volume for a stream via D-Bus or HTTP API.
 
         Args:
             stream_id: Snapcast stream ID
@@ -244,6 +306,10 @@ class MPRISVolumeController:
         Returns:
             Tuple of (success, message)
         """
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in stream_id.lower():
+            return self._set_plexamp_volume(volume)
+
         # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
         if 'bluetooth' in stream_id.lower():
             return self._set_bluetooth_volume(volume)
@@ -257,8 +323,27 @@ class MPRISVolumeController:
             # Convert 0-100 to 0.0-1.0 for MPRIS
             mpris_volume = max(0.0, min(1.0, volume / 100.0))
 
-            # Set volume using dbus-send (system bus)
-            # ShairportSync provides org.mpris.MediaPlayer2.Player.SetVolume method
+            # Try standard MPRIS Properties.Set first (works for spotifyd and most players)
+            # This sets the Volume property on org.mpris.MediaPlayer2.Player interface
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume',
+                 f'variant:double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Set volume for {stream_id} ({service}) to {volume}% via Properties.Set")
+                return True, f"Volume set to {volume}%"
+
+            # If Properties.Set fails, try ShairportSync's custom SetVolume method
+            logger.debug(f"Properties.Set failed, trying SetVolume method: {result.stderr}")
             result = subprocess.run(
                 ['dbus-send', '--system', '--print-reply',
                  f'--dest={service}',
@@ -271,10 +356,10 @@ class MPRISVolumeController:
             )
 
             if result.returncode != 0:
-                logger.error(f"dbus-send SetVolume failed: {result.stderr}")
+                logger.error(f"Both volume methods failed: {result.stderr}")
                 return False, f"Failed to set volume: {result.stderr}"
 
-            logger.info(f"Set volume for {stream_id} ({service}) to {volume}% (MPRIS: {mpris_volume:.2f})")
+            logger.info(f"Set volume for {stream_id} ({service}) to {volume}% via SetVolume method")
             return True, f"Volume set to {volume}%"
 
         except subprocess.TimeoutExpired:
@@ -286,7 +371,7 @@ class MPRISVolumeController:
 
     def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
         """
-        Get current volume for a stream via D-Bus.
+        Get current volume for a stream via D-Bus or HTTP API.
 
         Args:
             stream_id: Snapcast stream ID
@@ -294,6 +379,10 @@ class MPRISVolumeController:
         Returns:
             Tuple of (success, volume 0-100, message)
         """
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in stream_id.lower():
+            return self._get_plexamp_volume()
+
         # Check if this is a Bluetooth stream - use MediaTransport1
         if 'bluetooth' in stream_id.lower():
             return self._get_bluetooth_volume()
@@ -898,6 +987,18 @@ class DataAggregator:
                 # Extract source volume from properties (set by control script)
                 source_volume = properties.get("volume")
 
+                # Transform artUrl for remote servers to absolute URL
+                # This ensures the frontend fetches from the correct server
+                art_url = metadata.get("artUrl", "")
+                if not is_local and art_url:
+                    if art_url.startswith("/coverart/"):
+                        # Transform to absolute URL pointing to remote server's coverart proxy
+                        filename = art_url.replace("/coverart/", "")
+                        art_url = f"http://{conn.host}:5001/api/settings/proxy/coverart/{filename}"
+                    elif art_url.startswith("/"):
+                        # Other relative URLs - point to remote server's Snapcast HTTP
+                        art_url = f"http://{conn.host}:1780{art_url}"
+
                 # Extract stream display name from properties or URI
                 stream_name = properties.get("name", "")
                 if not stream_name:
@@ -919,7 +1020,7 @@ class DataAggregator:
                         "title": metadata.get("title", ""),
                         "artist": metadata.get("artist", ""),
                         "album": metadata.get("album", ""),
-                        "artUrl": metadata.get("artUrl", ""),
+                        "artUrl": art_url,
                         "duration": metadata.get("duration", 0)
                     },
                     "properties": enhanced_properties,
@@ -1206,6 +1307,15 @@ class DataAggregator:
 
                 source_volume = properties.get("volume")
 
+                # Transform artUrl for remote servers to absolute URL
+                art_url = metadata.get("artUrl", "")
+                if not is_local and art_url:
+                    if art_url.startswith("/coverart/"):
+                        filename = art_url.replace("/coverart/", "")
+                        art_url = f"http://{conn.host}:5001/api/settings/proxy/coverart/{filename}"
+                    elif art_url.startswith("/"):
+                        art_url = f"http://{conn.host}:1780{art_url}"
+
                 # Extract stream display name
                 stream_name = properties.get("name", "")
                 if not stream_name:
@@ -1226,7 +1336,7 @@ class DataAggregator:
                         "title": metadata.get("title", ""),
                         "artist": metadata.get("artist", ""),
                         "album": metadata.get("album", ""),
-                        "artUrl": metadata.get("artUrl", ""),
+                        "artUrl": art_url,
                         "duration": metadata.get("duration", 0)
                     },
                     "properties": enhanced_properties,

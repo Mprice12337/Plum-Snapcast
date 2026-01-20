@@ -29,9 +29,18 @@ from xml.etree import ElementTree as ET
 LOG_FILE = "/tmp/plexamp-control-script.log"
 PLEXAMP_STATE_FILE = "/tmp/plexamp-state/.local/share/Plexamp/PlayQueue.json"
 PLEXAMP_RESOURCES_FILE = "/tmp/plexamp-state/.local/share/Plexamp/Settings/%40Plexamp%3Aresources"
+PLEXAMP_TOKEN_FILE = "/tmp/plexamp-state/.local/share/Plexamp/Settings/%40Plexamp%3Auser%3Atoken"
 SNAPCAST_WEB_ROOT = "/usr/share/snapserver/snapweb"
 COVER_ART_DIR = "/usr/share/snapserver/snapweb/coverart"
 POLL_INTERVAL = 2.0  # Poll PlayQueue.json every 2 seconds
+
+# Playback API configuration (for real-time position tracking independent of Snapcast)
+PLAYBACK_API_PORT = int(os.getenv("FEDERATION_API_PORT", "5001"))
+PLAYBACK_API_URL = f"http://localhost:{PLAYBACK_API_PORT}/api/playback"
+
+# Plexamp HTTP API for timeline
+PLEXAMP_API_PORT = 32500
+PLEXAMP_TIMELINE_URL = f"http://localhost:{PLEXAMP_API_PORT}/player/timeline/poll?wait=0"
 
 # Set up logging to file
 def log(message: str):
@@ -44,6 +53,50 @@ def log(message: str):
             f.write(log_msg + "\n")
     except:
         pass
+
+
+def post_playback_position(stream_id: str, position_ms: int, duration_ms: int,
+                           playback_status: str = "playing", **extra):
+    """
+    POST position update to playback API (non-blocking).
+
+    Sends position data to our API for remote endpoint timeline sync.
+    """
+    def _post():
+        try:
+            # URL-encode the stream_id for the path
+            encoded_stream_id = urllib.request.quote(stream_id, safe='')
+            url = f"{PLAYBACK_API_URL}/{encoded_stream_id}"
+
+            data = {
+                "position": position_ms,
+                "duration": duration_ms,
+                "playback_status": playback_status,
+                **extra
+            }
+
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+
+            with urllib.request.urlopen(req, timeout=2) as response:
+                if response.status == 200:
+                    log(f"[PlaybackAPI] Posted position: {position_ms}ms / {duration_ms}ms ({playback_status})")
+                else:
+                    log(f"[PlaybackAPI] Unexpected status: {response.status}")
+
+        except urllib.error.URLError as e:
+            # API might not be ready yet - this is expected during startup
+            log(f"[PlaybackAPI] Failed to post (API may not be ready): {e.reason}")
+        except Exception as e:
+            log(f"[PlaybackAPI] Error posting position: {e}")
+
+    # Run in background thread to avoid blocking metadata processing
+    thread = threading.Thread(target=_post, daemon=True)
+    thread.start()
 
 
 class MetadataStore:
@@ -122,53 +175,104 @@ class PlexampMetadataMonitor:
         self.on_update = on_update_callback
         self.state_file = PLEXAMP_STATE_FILE
         self.resources_file = PLEXAMP_RESOURCES_FILE
+        self.token_file = PLEXAMP_TOKEN_FILE
         self.running = False
         self.poll_thread = None
         self.last_track_id = None
         self.last_mtime = 0
-        self.plex_server_uri = None
+        self.plex_server_uris = []  # List of URIs to try (local IPs first, then plex.direct)
+        self.working_uri = None  # Last URI that worked for artwork
+        self.plex_token = self._load_plex_token()  # Load authentication token
         log(f"[Plexamp] Monitor initialized, watching: {self.state_file}")
+        if self.plex_token:
+            log(f"[Plexamp] Plex token loaded (length: {len(self.plex_token)})")
 
-    def _get_plex_server_uri(self) -> Optional[str]:
-        """Extract Plex server URI from resources file"""
-        if self.plex_server_uri:
-            return self.plex_server_uri
+    def _load_plex_token(self) -> Optional[str]:
+        """Load Plex authentication token from Plexamp settings.
+
+        First tries to get the server's accessToken from resources file,
+        falls back to user token if not found.
+        """
+        try:
+            # Try to get server accessToken from resources first
+            if os.path.exists(self.resources_file):
+                with open(self.resources_file, 'r') as f:
+                    resources = json.load(f)
+                if isinstance(resources, dict):
+                    for server_id, resource in resources.items():
+                        if resource.get('provides') == 'server':
+                            token = resource.get('accessToken')
+                            if token:
+                                log(f"[Plex] Using server accessToken from resources")
+                                return token
+
+            # Fallback to user token file
+            if os.path.exists(self.token_file):
+                with open(self.token_file, 'r') as f:
+                    token = f.read().strip()
+                    if token and len(token) > 0:
+                        log(f"[Plex] Using user token from token file")
+                        return token
+
+            log("[Plex] No authentication token found")
+            return None
+        except Exception as e:
+            log(f"[Error] Failed to load Plex token: {e}")
+            return None
+
+    def _get_plex_server_uris(self) -> list:
+        """Extract all Plex server URIs from resources file, prioritizing local IPs"""
+        if self.plex_server_uris:
+            return self.plex_server_uris
 
         try:
             import os
             if not os.path.exists(self.resources_file):
                 log(f"[Error] Resources file not found: {self.resources_file}")
-                return None
+                return []
 
             with open(self.resources_file, 'r') as f:
                 resources = json.load(f)
 
-            # Resources is a dict with server IDs as keys
+            all_uris = []
+            local_uris = []
+            remote_uris = []
+
+            def collect_uris(resource):
+                if resource.get('provides') == 'server' and 'connections' in resource:
+                    for conn in resource['connections']:
+                        uri = conn.get('uri')
+                        if uri:
+                            # Prioritize local IPs (192.168.x.x, 10.x.x.x, etc.)
+                            if conn.get('local') or '192.168.' in uri or '10.' in uri or '172.' in uri:
+                                local_uris.append(uri)
+                            else:
+                                remote_uris.append(uri)
+
+            # Resources can be dict or list
             if isinstance(resources, dict):
                 for server_id, resource in resources.items():
-                    if resource.get('provides') == 'server' and 'connections' in resource:
-                        for conn in resource['connections']:
-                            if 'uri' in conn:
-                                self.plex_server_uri = conn['uri']
-                                log(f"[Plex] Found server URI: {self.plex_server_uri}")
-                                return self.plex_server_uri
-
-            # Fallback: also handle list format (in case structure changes)
+                    collect_uris(resource)
             elif isinstance(resources, list):
                 for resource in resources:
-                    if resource.get('provides') == 'server' and 'connections' in resource:
-                        for conn in resource['connections']:
-                            if 'uri' in conn:
-                                self.plex_server_uri = conn['uri']
-                                log(f"[Plex] Found server URI: {self.plex_server_uri}")
-                                return self.plex_server_uri
+                    collect_uris(resource)
+
+            # Local URIs first, then remote (plex.direct, etc.)
+            all_uris = local_uris + remote_uris
+
+            if all_uris:
+                self.plex_server_uris = all_uris
+                log(f"[Plex] Found {len(all_uris)} server URIs (local: {len(local_uris)}, remote: {len(remote_uris)})")
+                for i, uri in enumerate(all_uris):
+                    log(f"[Plex]   [{i+1}] {uri}")
+                return all_uris
 
             log("[Error] Could not find Plex server URI in resources")
-            return None
+            return []
 
         except Exception as e:
             log(f"[Error] Failed to read Plex server URI: {e}")
-            return None
+            return []
 
     def _read_playqueue(self) -> Optional[Dict]:
         """Read and parse PlayQueue.json file"""
@@ -197,23 +301,13 @@ class PlexampMetadataMonitor:
             return None
 
     def _download_cover_art(self, cover_url: str) -> Optional[str]:
-        """Download cover art from Plex server and save to web root"""
+        """Download cover art from Plex server and save to web root.
+        Tries multiple server URIs, prioritizing local IPs for reliability.
+        """
         if not cover_url:
             return None
 
         try:
-            # Get Plex server URI
-            server_uri = self._get_plex_server_uri()
-            if not server_uri:
-                log("[Error] Cannot download artwork: no Plex server URI")
-                return None
-
-            # Handle relative URLs (add Plex server URL prefix)
-            if cover_url.startswith('/'):
-                full_url = f"{server_uri}{cover_url}"
-            else:
-                full_url = cover_url
-
             # Create a filename from the URL
             url_hash = hashlib.md5(cover_url.encode()).hexdigest()
             filename = f"{url_hash}.jpg"
@@ -228,28 +322,91 @@ class PlexampMetadataMonitor:
                 log(f"[Artwork] Cached: {filename}")
                 return f"/coverart/{filename}"
 
-            # Download cover art (disable SSL verification for self-signed Plex certs)
-            log(f"[Artwork] Downloading from: {full_url[:100]}")
+            # Handle absolute URLs directly
+            if not cover_url.startswith('/'):
+                full_urls = [cover_url]
+            else:
+                # Get all Plex server URIs to try
+                server_uris = self._get_plex_server_uris()
+                if not server_uris:
+                    log("[Error] Cannot download artwork: no Plex server URIs")
+                    return None
+
+                # If we have a known working URI, try it first
+                if self.working_uri and self.working_uri in server_uris:
+                    uris_to_try = [self.working_uri] + [u for u in server_uris if u != self.working_uri]
+                else:
+                    uris_to_try = server_uris
+
+                full_urls = [f"{uri}{cover_url}" for uri in uris_to_try]
+
+            # Try each URL until one works
             import ssl
             ssl_context = ssl._create_unverified_context()
-            req = urllib.request.Request(full_url, headers={'User-Agent': 'Snapcast/1.0'})
-            with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
-                cover_data = response.read()
 
-            # Save to web root
-            with open(cover_path, "wb") as f:
-                f.write(cover_data)
+            for full_url in full_urls:
+                try:
+                    # Add Plex token if available
+                    if self.plex_token:
+                        separator = '&' if '?' in full_url else '?'
+                        authed_url = f"{full_url}{separator}X-Plex-Token={self.plex_token}"
+                    else:
+                        authed_url = full_url
 
-            # Make sure the file is readable by the web server
-            os.chmod(cover_path, 0o644)
+                    # Shorter timeout (5s) so we fail fast and try next URI
+                    log(f"[Artwork] Trying: {full_url[:80]}...")
+                    req = urllib.request.Request(authed_url, headers={'User-Agent': 'Snapcast/1.0'})
+                    with urllib.request.urlopen(req, timeout=5, context=ssl_context) as response:
+                        cover_data = response.read()
 
-            log(f"[Artwork] Downloaded: {len(cover_data)} bytes → /coverart/{filename}")
-            return f"/coverart/{filename}"
+                    # Success! Save to web root
+                    with open(cover_path, "wb") as f:
+                        f.write(cover_data)
+
+                    # Make sure the file is readable by the web server
+                    os.chmod(cover_path, 0o644)
+
+                    # Remember this working URI for next time
+                    if cover_url.startswith('/'):
+                        base_uri = full_url.replace(cover_url, '')
+                        self.working_uri = base_uri
+                        log(f"[Artwork] ✓ Downloaded {len(cover_data)} bytes from {base_uri[:50]}")
+                    else:
+                        log(f"[Artwork] ✓ Downloaded {len(cover_data)} bytes")
+
+                    return f"/coverart/{filename}"
+
+                except urllib.error.URLError as e:
+                    log(f"[Artwork] Failed ({full_url[:50]}...): {e.reason}")
+                    continue
+                except Exception as e:
+                    log(f"[Artwork] Failed ({full_url[:50]}...): {e}")
+                    continue
+
+            # All local downloads failed - return full external URL for browser to fetch directly
+            # Use the NESTED photo transcode endpoint format that Plexamp uses:
+            # /photo/:/transcode?url=/photo/:/transcode?url=/library/metadata/xxx/thumb/xxx
+            log(f"[Artwork] Local download failed, returning external URL for browser")
+
+            # Get the preferred server URI (first available)
+            server_uris = self._get_plex_server_uris()
+            if server_uris and self.plex_token:
+                server_uri = server_uris[0]
+
+                # Build nested transcode URL like Plexamp does:
+                # Inner: /photo/:/transcode?width=300&height=300&url=/library/metadata/.../thumb/...&format=jpeg&X-Plex-Token=xxx
+                # Outer: /photo/:/transcode?width=300&height=300&url={inner_encoded}&format=jpeg&X-Plex-Token=xxx
+                inner_url = f"/photo/:/transcode?width=300&height=300&url={urllib.request.quote(cover_url, safe='')}&format=jpeg&X-Plex-Token={self.plex_token}"
+                outer_url = f"{server_uri}/photo/:/transcode?width=300&height=300&url={urllib.request.quote(inner_url, safe='')}&format=jpeg&X-Plex-Token={self.plex_token}"
+
+                log(f"[Artwork] External URL: {server_uri}/photo/:/transcode?...")
+                return outer_url
+
+            return None
 
         except Exception as e:
             log(f"[Error] Artwork download failed: {e}")
-            # Return the original URL as fallback
-            return cover_url if not cover_url.startswith('/') else None
+            return None
 
     def _parse_playqueue(self, playqueue_data: Dict) -> Optional[Dict]:
         """Parse PlayQueue.json and extract current track metadata"""
@@ -295,11 +452,12 @@ class PlexampMetadataMonitor:
                     result['album'] = album
                     log(f"[Metadata] Album: {album}")
 
-                # Duration (in milliseconds)
-                duration = track.get('duration')
-                if duration:
-                    result['duration'] = int(duration)
-                    log(f"[Metadata] Duration: {duration}ms")
+                # Duration (Plex provides milliseconds, convert to seconds for Snapcast)
+                duration_ms = track.get('duration')
+                if duration_ms:
+                    duration_s = int(duration_ms) // 1000  # Convert ms to seconds
+                    result['duration'] = duration_s
+                    log(f"[Metadata] Duration: {duration_ms}ms ({duration_s}s)")
 
                 # Album art
                 thumb = track.get('thumb') or track.get('parentThumb') or track.get('grandparentThumb')
@@ -322,26 +480,27 @@ class PlexampMetadataMonitor:
             return None
 
     def _poll_loop(self):
-        """Background thread that polls PlayQueue.json file for metadata and state
+        """Background thread that polls PlayQueue.json file for metadata and timeline API for position.
 
-        IMPORTANT: HTTP API polling removed to prevent deadlock bug in Plexamp 4.11.3+
-        We rely solely on PlayQueue.json file for metadata and infer playback state.
-
-        The frontend uses client-side sync (useAudioSync) to increment position
-        smoothly between server updates.
+        PlayQueue.json: Provides track metadata (title, artist, album, artwork, duration)
+        Timeline API: Provides current position and playback state (with wait=0 to avoid deadlock)
 
         State detection:
-        - Playing: PlayQueue.json exists with valid queue data
-        - Stopped: PlayQueue.json doesn't exist or is empty
-        - Position: Reset to 0 on track changes (accurate position not available without HTTP API)
+        - Playing/Paused: From timeline API state field
+        - Stopped: PlayQueue.json doesn't exist or timeline state is stopped
+        - Position: From timeline API time field (milliseconds)
         """
-        log("[Plexamp] Starting PlayQueue monitoring (HTTP API polling disabled to prevent deadlock)")
+        log("[Plexamp] Starting PlayQueue + Timeline monitoring")
 
         last_has_queue = False
+        last_playback_status = "Stopped"
+        last_volume = 100
+        last_position_s = 0
 
         while self.running:
             try:
                 metadata_updated = False
+                position_updated = False
 
                 # Read PlayQueue.json for metadata
                 playqueue_data = self._read_playqueue()
@@ -355,14 +514,8 @@ class PlexampMetadataMonitor:
                         self.store.update(**metadata)
                         metadata_updated = True
 
-                        # Infer playback state from queue existence
-                        # Note: Without HTTP API, we can't distinguish between Playing/Paused
-                        # so we assume Playing when queue exists
-                        current_has_queue = True
                         if not last_has_queue:
-                            log("[PlayQueue] Playback started (queue detected)")
-                            self.store.update(playback_status='Playing', position=0)
-                            metadata_updated = True
+                            log("[PlayQueue] Queue detected")
                         last_has_queue = True
                 else:
                     # No queue data means stopped
@@ -370,9 +523,63 @@ class PlexampMetadataMonitor:
                         log("[PlayQueue] Playback stopped (no queue)")
                         self.store.update(playback_status='Stopped', position=0)
                         metadata_updated = True
+                        last_playback_status = "Stopped"
                     last_has_queue = False
 
-                # Send notification on changes
+                # Fetch timeline from Plexamp HTTP API for position/state/volume
+                # Using commandID=1&wait=0 for Plexamp compatibility
+                if last_has_queue:
+                    timeline = self.get_timeline()
+                    if timeline:
+                        playback_status = timeline.get('playback_status', 'Stopped')
+                        position_ms = timeline.get('position', 0)
+                        duration_ms = timeline.get('duration', 0)
+                        volume = timeline.get('volume', 100)
+
+                        # Convert position from ms to seconds for Snapcast
+                        # (Snapcast expects position in seconds to match duration)
+                        position_s = position_ms // 1000
+
+                        # Update store with position (seconds)/state/volume
+                        self.store.update(
+                            playback_status=playback_status,
+                            position=position_s,  # Store in seconds
+                            volume=volume
+                        )
+
+                        # Only send Snapcast notification when values actually change
+                        # This prevents frontend flickering from constant updates
+                        if playback_status != last_playback_status:
+                            log(f"[Timeline] State changed: {last_playback_status} → {playback_status}")
+                            last_playback_status = playback_status
+                            metadata_updated = True
+
+                        if volume != last_volume:
+                            log(f"[Timeline] Volume changed: {last_volume}% → {volume}%")
+                            last_volume = volume
+                            metadata_updated = True
+
+                        # Update position tracking (for playback API, not Snapcast notification)
+                        last_position_s = position_s
+
+                        # Post to playback API for remote endpoint sync
+                        # Use duration from store if not in timeline (metadata has it)
+                        store_data = self.store.get_all()
+                        if duration_ms == 0 and store_data.get('duration'):
+                            # Duration is in seconds in store (converted from ms earlier)
+                            duration_ms = store_data['duration'] * 1000
+
+                        post_playback_position(
+                            stream_id="Plexamp",
+                            position_ms=position_ms,
+                            duration_ms=duration_ms,
+                            playback_status=playback_status.lower()
+                        )
+                        position_updated = True
+                    else:
+                        log("[Timeline] Failed to get timeline data")
+
+                # Send notification on metadata/state changes
                 if metadata_updated:
                     if self.on_update:
                         self.on_update()
@@ -449,9 +656,10 @@ class PlexampMetadataMonitor:
             return False
 
     def get_timeline(self) -> Optional[Dict]:
-        """Query Plexamp HTTP API for current timeline (position and state)"""
+        """Query Plexamp HTTP API for current timeline (position, duration, state, volume)"""
         try:
-            req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?wait=0')
+            # commandID=1 is required for Plexamp to return timeline data
+            req = urllib.request.Request('http://127.0.0.1:32500/player/timeline/poll?commandID=1&wait=0')
             with urllib.request.urlopen(req, timeout=2) as response:
                 data = response.read().decode('utf-8')
                 timeline = ET.fromstring(data)
@@ -464,6 +672,7 @@ class PlexampMetadataMonitor:
                     state = elem.get('state', 'stopped')  # playing, paused, stopped
                     time_ms = elem.get('time')  # Current position in milliseconds
                     duration_ms = elem.get('duration')  # Track duration in milliseconds
+                    volume = elem.get('volume')  # Volume 0-100
 
                     result = {}
 
@@ -475,10 +684,17 @@ class PlexampMetadataMonitor:
                     }
                     result['playback_status'] = state_map.get(state.lower(), 'Stopped')
 
-                    # Position
+                    # Position (milliseconds)
                     if time_ms:
                         result['position'] = int(time_ms)
-                        log(f"[Timeline] Position: {time_ms}ms, State: {result['playback_status']}")
+
+                    # Duration (milliseconds)
+                    if duration_ms:
+                        result['duration'] = int(duration_ms)
+
+                    # Volume (0-100)
+                    if volume:
+                        result['volume'] = int(volume)
 
                     return result
 
@@ -534,6 +750,7 @@ class SnapcastControlScript:
         state_data = self.store.get_all()
         playback_status = state_data.get("playback_status", "Stopped")
         position = state_data.get("position", 0)
+        volume = state_data.get("volume", 100)  # Volume from timeline API
         can_control = self.plexamp_monitor.is_available()
 
         # Notification params: include stream ID and all properties
@@ -544,7 +761,7 @@ class SnapcastControlScript:
             "playbackStatus": playback_status,
             "loopStatus": "none",
             "shuffle": False,
-            "volume": 100,
+            "volume": volume,  # Source volume from Plexamp
             "mute": False,
             "rate": 1.0,
             "position": position,
@@ -567,11 +784,11 @@ class SnapcastControlScript:
             title = meta_obj.get('title', 'N/A')
             artist = meta_obj.get('artist', ['N/A'])
             artist_str = artist[0] if isinstance(artist, list) and artist else 'N/A'
-            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] (stream={self.stream_id})")
+            log(f"[Snapcast] Metadata → {title} - {artist_str} [{playback_status}] vol={volume}% (stream={self.stream_id})")
             if "artUrl" in meta_obj:
                 log(f"[Snapcast]   Artwork: {meta_obj['artUrl']}")
         else:
-            log(f"[Snapcast] State → [{playback_status}] (stream={self.stream_id})")
+            log(f"[Snapcast] State → [{playback_status}] vol={volume}% (stream={self.stream_id})")
 
     def handle_command(self, line: str):
         """Handle JSON-RPC command from Snapcast"""
@@ -589,6 +806,7 @@ class SnapcastControlScript:
                 state_data = self.store.get_all()
                 playback_status = state_data.get("playback_status", "Stopped")
                 position = state_data.get("position", 0)
+                volume = state_data.get("volume", 100)  # Volume from timeline API
                 can_control = self.plexamp_monitor.is_available()
 
                 # Build complete properties response per Snapcast Stream Plugin API
@@ -597,7 +815,7 @@ class SnapcastControlScript:
                     "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
-                    "volume": 100,
+                    "volume": volume,  # Source volume from Plexamp
                     "mute": False,
                     "rate": 1.0,
                     "position": position,
@@ -620,7 +838,7 @@ class SnapcastControlScript:
                     "result": properties
                 }
                 print(json.dumps(response), file=sys.stdout, flush=True)
-                log(f"[Snapcast] GetProperties → status={playback_status}, canControl={can_control}, canPlay={can_control}, canPause={can_control}, metadata keys: {list(meta_obj.keys())}")
+                log(f"[Snapcast] GetProperties → status={playback_status}, vol={volume}%, canControl={can_control}, metadata keys: {list(meta_obj.keys())}")
 
             elif method == "Plugin.Stream.Player.Control" or method == "Plugin.Stream.Control":
                 # Handle playback control commands

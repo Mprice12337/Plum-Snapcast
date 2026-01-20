@@ -258,8 +258,26 @@ class MPRISVolumeController:
             # Convert 0-100 to 0.0-1.0 for MPRIS
             mpris_volume = max(0.0, min(1.0, volume / 100.0))
 
-            # Call SetVolume method (not Properties.Set, as Volume property is read-only)
-            # ShairportSync provides org.mpris.MediaPlayer2.Player.SetVolume method
+            # Try standard MPRIS Properties.Set first (works for spotifyd, standard MPRIS players)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume',
+                 f'variant:double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% via Properties.Set")
+                return True, f"Volume set to {volume}%"
+
+            # Fallback to ShairportSync's custom SetVolume method
+            logger.debug(f"Properties.Set failed, trying SetVolume method: {result.stderr}")
             result = subprocess.run(
                 ['dbus-send', '--system', '--print-reply',
                  f'--dest={service}',
@@ -275,7 +293,7 @@ class MPRISVolumeController:
                 logger.error(f"dbus-send failed: {result.stderr}")
                 return False, f"Failed to set volume: {result.stderr}"
 
-            logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% (MPRIS: {mpris_volume:.2f})")
+            logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% via SetVolume method")
             return True, f"Volume set to {volume}%"
 
         except subprocess.TimeoutExpired:

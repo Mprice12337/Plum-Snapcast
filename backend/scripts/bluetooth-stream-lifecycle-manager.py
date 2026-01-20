@@ -43,7 +43,8 @@ SNAPSERVER_PORT = 1780
 LOG_FILE = "/tmp/bluetooth-stream-lifecycle-manager.log"
 
 # Timeout configuration (in seconds)
-IDLE_TIMEOUT = 300  # 5 minutes - time to wait after device disconnects before removing stream
+IDLE_TIMEOUT = 300       # 5 minutes - time to wait when stream is idle/paused but device still connected
+DISCONNECT_TIMEOUT = 30  # 30 seconds - time to wait after device disconnects before removing stream
 
 # Stream configuration
 BLUETOOTH_STREAM_ID = "Bluetooth"
@@ -300,14 +301,21 @@ class SnapcastWebSocketMonitor:
 class StreamLifecycleManager:
     """Manages Bluetooth stream lifecycle based on device connection state"""
 
-    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300):
+    def __init__(self, snapserver_client: SnapserverClient, idle_timeout: int = 300, disconnect_timeout: int = 30):
         self.client = snapserver_client
         self.idle_timeout = idle_timeout
+        self.disconnect_timeout = disconnect_timeout
         self.state = StreamState.IDLE
         self.state_lock = threading.Lock()
         self.timeout_timer = None
+        self.bt_monitor = None  # Set later via set_bluetooth_monitor()
 
-        log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
+        log(f"Initialized - starting in IDLE state (idle_timeout: {idle_timeout}s, disconnect_timeout: {disconnect_timeout}s)")
+
+    def set_bluetooth_monitor(self, monitor: 'BluetoothDeviceMonitor'):
+        """Set reference to Bluetooth device monitor for graceful disconnection"""
+        self.bt_monitor = monitor
+        log("Bluetooth device monitor reference set")
 
     def on_device_connected(self):
         """Handle Bluetooth device connection"""
@@ -329,32 +337,34 @@ class StreamLifecycleManager:
                 log("Event: Device CONNECTED - State: ACTIVE (no change)")
 
     def on_device_disconnected(self):
-        """Handle Bluetooth device disconnection"""
+        """Handle Bluetooth device disconnection - uses short timeout"""
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
-                # Device disconnected - start timeout before removal
-                log(f"Event: Device DISCONNECTED - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
-                self._start_timeout()
+                # Device disconnected - start SHORT timeout before removal
+                log(f"Event: Device DISCONNECTED - State: ACTIVE → TIMEOUT ({self.disconnect_timeout}s)")
+                self._start_timeout(self.disconnect_timeout)
                 self.state = StreamState.TIMEOUT
 
             elif self.state == StreamState.IDLE:
                 log("Event: Device DISCONNECTED - State: IDLE (no stream to remove)")
 
             elif self.state == StreamState.TIMEOUT:
-                log("Event: Device DISCONNECTED - State: TIMEOUT (already waiting)")
+                # Device disconnected while already in timeout - switch to shorter timeout
+                log(f"Event: Device DISCONNECTED - State: TIMEOUT (switching to {self.disconnect_timeout}s timeout)")
+                self._start_timeout(self.disconnect_timeout)
 
     def on_status_idle(self):
-        """Handle Snapcast status change to 'idle'"""
+        """Handle Snapcast status change to 'idle' - uses long timeout (device still connected, just paused)"""
         with self.state_lock:
             if self.state == StreamState.ACTIVE:
-                # Stream went idle - start timeout before removal
+                # Stream went idle but device still connected - start LONG timeout before removal
                 log(f"Event: Status IDLE (Snapcast) - State: ACTIVE → TIMEOUT ({self.idle_timeout}s)")
-                self._start_timeout()
+                self._start_timeout(self.idle_timeout)
                 self.state = StreamState.TIMEOUT
             elif self.state == StreamState.TIMEOUT:
-                # Already in timeout - restart timer
-                log(f"Event: Status IDLE (Snapcast) - State: TIMEOUT (restarting timer)")
-                self._start_timeout()
+                # Already in timeout - don't restart timer (keep existing timeout)
+                # This prevents idle status from overriding a shorter disconnect timeout
+                log(f"Event: Status IDLE (Snapcast) - State: TIMEOUT (keeping existing timer)")
             else:
                 log(f"Event: Status IDLE (Snapcast) - State: {self.state.value} (no action)")
 
@@ -419,21 +429,29 @@ class StreamLifecycleManager:
         # Kill orphaned control scripts (Snapcast doesn't clean them up)
         self._cleanup_control_scripts()
 
+        # Gracefully disconnect Bluetooth devices via D-Bus
+        # This is cleaner than restarting BlueZ services and allows devices to reconnect
+        if self.bt_monitor:
+            log("Gracefully disconnecting Bluetooth device(s)...")
+            self.bt_monitor.disconnect_all_devices()
+        else:
+            log("WARNING: No Bluetooth monitor reference - cannot disconnect devices gracefully")
+
         # Start FIFO keeper to prevent bluealsa-aplay from blocking
         # DO NOT restart Bluetooth services - this causes BlueZ to lose device UUIDs
         # and prevents reconnection (devices show 0 UUIDs and get "Connection Unsuccessful")
         self._start_fifo_keeper()
 
-    def _start_timeout(self):
+    def _start_timeout(self, timeout_seconds: int):
         """Start timeout timer before removing stream"""
         # Cancel any existing timer
         self._cancel_timeout()
 
-        # Start new timer
-        self.timeout_timer = threading.Timer(self.idle_timeout, self._on_timeout_expired)
+        # Start new timer with specified timeout
+        self.timeout_timer = threading.Timer(timeout_seconds, self._on_timeout_expired)
         self.timeout_timer.daemon = True
         self.timeout_timer.start()
-        log(f"Timeout timer started ({self.idle_timeout}s)")
+        log(f"Timeout timer started ({timeout_seconds}s)")
 
     def _cancel_timeout(self):
         """Cancel pending timeout timer"""
@@ -787,12 +805,58 @@ class BluetoothDeviceMonitor:
         if hasattr(self, 'loop'):
             self.loop.quit()
 
+    def disconnect_all_devices(self) -> int:
+        """Disconnect all connected Bluetooth devices gracefully via D-Bus
+
+        Returns the number of devices disconnected.
+        """
+        if not DBUS_AVAILABLE or not self.bus:
+            log("[Bluetooth] Cannot disconnect - D-Bus not available")
+            return 0
+
+        disconnected_count = 0
+        # Copy the set to avoid modification during iteration
+        devices_to_disconnect = list(self.connected_devices)
+
+        for device_path in devices_to_disconnect:
+            try:
+                device_obj = self.bus.get_object('org.bluez', device_path)
+                device_iface = dbus.Interface(device_obj, 'org.bluez.Device1')
+
+                # Get device name for logging
+                device_props = dbus.Interface(device_obj, 'org.freedesktop.DBus.Properties')
+                device_name = str(device_props.Get('org.bluez.Device1', 'Name'))
+
+                log(f"[Bluetooth] Disconnecting device: {device_name} ({device_path})")
+
+                # Call Disconnect() method on Device1 interface
+                device_iface.Disconnect()
+
+                log(f"[Bluetooth] ✓ Device disconnected: {device_name}")
+                disconnected_count += 1
+
+            except dbus.exceptions.DBusException as e:
+                if "NotConnected" in str(e):
+                    log(f"[Bluetooth] Device already disconnected: {device_path}")
+                else:
+                    log(f"[Bluetooth] Failed to disconnect {device_path}: {e}")
+            except Exception as e:
+                log(f"[Bluetooth] Error disconnecting {device_path}: {e}")
+
+        if disconnected_count > 0:
+            log(f"[Bluetooth] ✓ Disconnected {disconnected_count} device(s)")
+        else:
+            log("[Bluetooth] No devices to disconnect")
+
+        return disconnected_count
+
 
 def main():
     parser = argparse.ArgumentParser(description='Bluetooth stream lifecycle manager for Snapcast')
     parser.add_argument('--snapserver-host', default='localhost', help='Snapserver host')
     parser.add_argument('--snapserver-port', type=int, default=1780, help='Snapserver port')
-    parser.add_argument('--idle-timeout', type=int, default=300, help='Idle timeout in seconds')
+    parser.add_argument('--idle-timeout', type=int, default=IDLE_TIMEOUT, help='Idle/paused timeout in seconds (default: 300)')
+    parser.add_argument('--disconnect-timeout', type=int, default=DISCONNECT_TIMEOUT, help='Device disconnect timeout in seconds (default: 30)')
 
     args = parser.parse_args()
 
@@ -800,6 +864,7 @@ def main():
     snapserver_host = args.snapserver_host
     snapserver_port = args.snapserver_port
     idle_timeout = args.idle_timeout
+    disconnect_timeout = args.disconnect_timeout
 
     # Read Bluetooth device name from settings for stream naming
     # Pattern: "{deviceName} Bluetooth" (e.g., "Plum Audio Bluetooth")
@@ -820,7 +885,7 @@ def main():
 
     log("=== Bluetooth Stream Lifecycle Manager Starting ===")
     log(f"Snapserver: {snapserver_host}:{snapserver_port}")
-    log(f"Idle timeout: {idle_timeout}s")
+    log(f"Idle/paused timeout: {idle_timeout}s, Disconnect timeout: {disconnect_timeout}s")
     log("Monitoring BlueZ D-Bus for A2DP connections")
 
     if not DBUS_AVAILABLE:
@@ -830,8 +895,8 @@ def main():
     # Create Snapserver client
     snapserver = SnapserverClient(snapserver_host, snapserver_port)
 
-    # Create lifecycle manager
-    lifecycle = StreamLifecycleManager(snapserver, idle_timeout)
+    # Create lifecycle manager with both timeout values
+    lifecycle = StreamLifecycleManager(snapserver, idle_timeout, disconnect_timeout)
 
     # Create and start WebSocket monitor (runs in background thread)
     ws_monitor = SnapcastWebSocketMonitor(lifecycle, snapserver_host, snapserver_port)
@@ -839,6 +904,9 @@ def main():
 
     # Create and start Bluetooth device monitor
     bt_monitor = BluetoothDeviceMonitor(lifecycle)
+
+    # Connect the Bluetooth monitor to the lifecycle manager for graceful disconnection
+    lifecycle.set_bluetooth_monitor(bt_monitor)
 
     # Run monitor (blocks)
     try:

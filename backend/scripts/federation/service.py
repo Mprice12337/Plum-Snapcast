@@ -173,20 +173,30 @@ class FederationService:
                 import urllib.request
                 import json
 
-                # Run blocking urllib call in thread pool
-                def fetch_name():
+                # Run blocking urllib call in thread pool with retries
+                def fetch_name_with_retry():
                     info_url = f"http://{server.host}:5001/api/federation/info"
-                    with urllib.request.urlopen(info_url, timeout=2) as response:
-                        if response.status == 200:
-                            return json.loads(response.read().decode()).get("name")
+                    # Retry up to 3 times with increasing delay (remote server may be starting)
+                    for attempt in range(3):
+                        try:
+                            with urllib.request.urlopen(info_url, timeout=3) as response:
+                                if response.status == 200:
+                                    return json.loads(response.read().decode()).get("name")
+                        except Exception as retry_err:
+                            if attempt < 2:
+                                time.sleep(1)  # Wait before retry
+                            else:
+                                raise retry_err
                     return None
 
-                fetched_name = await asyncio.to_thread(fetch_name)
+                fetched_name = await asyncio.to_thread(fetch_name_with_retry)
                 if fetched_name:
                     actual_name = fetched_name
                     logger.info(f"Got server name from API: {actual_name} (was: {server.name})")
+                else:
+                    logger.warning(f"API returned no name for {server.host}, using Avahi name: {server.name}")
             except Exception as e:
-                logger.debug(f"Could not fetch server name from API, using Avahi name: {e}")
+                logger.warning(f"Could not fetch server name from API for {server.host}: {e}, using Avahi name")
 
             # Connect to new server
             try:

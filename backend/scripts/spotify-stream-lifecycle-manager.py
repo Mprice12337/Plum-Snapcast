@@ -329,8 +329,14 @@ class StreamLifecycleManager:
         self.timeout_timer = None
         self.instance_id = instance_id  # Instance ID for multi-instance mode
         self.stream_added_at = None  # Track when stream was added (for grace period)
+        self.spotify_monitor = None  # Set later via set_spotify_monitor()
 
         log(f"Initialized - starting in IDLE state (timeout: {idle_timeout}s)")
+
+    def set_spotify_monitor(self, monitor: 'SpotifyPlaybackMonitor'):
+        """Set reference to Spotify playback monitor for graceful stop"""
+        self.spotify_monitor = monitor
+        log("Spotify playback monitor reference set")
 
     def on_playback_started(self):
         """Handle spotifyd playback started (Playing)"""
@@ -455,6 +461,14 @@ class StreamLifecycleManager:
         # This prevents clients from becoming orphaned when the stream disappears
         log(f"Moving clients from '{SPOTIFY_STREAM_ID}' to fallback stream before removal...")
         self.client.move_clients_to_fallback_stream(SPOTIFY_STREAM_ID)
+
+        # Gracefully stop Spotify playback via D-Bus MPRIS
+        # This tells the Spotify client to stop, which is cleaner than just removing the stream
+        if self.spotify_monitor:
+            log("Gracefully stopping Spotify playback...")
+            self.spotify_monitor.stop_playback()
+        else:
+            log("WARNING: No Spotify monitor reference - cannot stop playback gracefully")
 
         # Now remove the stream
         success = self.client.remove_stream(SPOTIFY_STREAM_ID)
@@ -895,6 +909,53 @@ class SpotifyPlaybackMonitor:
         if hasattr(self, 'loop'):
             self.loop.quit()
 
+    def stop_playback(self) -> bool:
+        """Stop Spotify playback gracefully via D-Bus MPRIS
+
+        Calls the Stop method on the MPRIS Player interface to cleanly stop playback.
+        This is cleaner than just removing the stream as it tells the Spotify client to stop.
+
+        Returns:
+            True if stop was successful, False otherwise
+        """
+        if not DBUS_AVAILABLE or not self.bus:
+            log("[Spotify] Cannot stop playback - D-Bus not available")
+            return False
+
+        if not self.expected_mpris_name:
+            log("[Spotify] Cannot stop playback - no MPRIS service name known")
+            return False
+
+        try:
+            log(f"[Spotify] Stopping playback via MPRIS: {self.expected_mpris_name}")
+
+            player_obj = self.bus.get_object(self.expected_mpris_name, '/org/mpris/MediaPlayer2')
+            player_iface = dbus.Interface(player_obj, 'org.mpris.MediaPlayer2.Player')
+
+            # Call Stop method to stop playback
+            player_iface.Stop()
+
+            log(f"[Spotify] ✓ Playback stopped via MPRIS")
+            return True
+
+        except dbus.DBusException as e:
+            if "UnknownMethod" in str(e):
+                # Some players don't support Stop, try Pause instead
+                log(f"[Spotify] Stop not supported, trying Pause...")
+                try:
+                    player_iface.Pause()
+                    log(f"[Spotify] ✓ Playback paused via MPRIS")
+                    return True
+                except Exception as pause_err:
+                    log(f"[Spotify] Failed to pause playback: {pause_err}")
+                    return False
+            else:
+                log(f"[Spotify] D-Bus error stopping playback: {e}")
+                return False
+        except Exception as e:
+            log(f"[Spotify] Error stopping playback: {e}")
+            return False
+
 
 def main():
     parser = argparse.ArgumentParser(description='Spotify stream lifecycle manager for Snapcast')
@@ -962,6 +1023,9 @@ def main():
 
     # Create and start Spotify playback monitor (pass instance_id for multi-instance filtering)
     spotify_monitor = SpotifyPlaybackMonitor(lifecycle, instance_id=instance_id)
+
+    # Connect the Spotify monitor to the lifecycle manager for graceful stop
+    lifecycle.set_spotify_monitor(spotify_monitor)
 
     # Run monitor (blocks)
     try:

@@ -50,9 +50,16 @@ export const useAudioSync = (
         const currentTrack = `${stream.currentTrack?.title || ''}-${stream.currentTrack?.artist || ''}`;
 
         // Get server position: prefer playback.interpolated_position, fallback to stream.progress
-        const serverPosition = stream.playback?.interpolated_position !== undefined
+        // IMPORTANT: Only use playback data if it's not stale to avoid oscillation
+        const hasValidPlaybackData = stream.playback?.interpolated_position !== undefined && !stream.playback.is_stale;
+        const serverPosition = hasValidPlaybackData
             ? stream.playback.interpolated_position / 1000  // Convert ms to seconds
             : stream.progress;
+
+        // DEBUG: Log position sources for Bluetooth streams
+        if (stream.id.includes('Bluetooth')) {
+            console.log(`[useAudioSync] Position sources: playback=${stream.playback?.interpolated_position}ms (stale=${stream.playback?.is_stale}), progress=${stream.progress}s, using=${serverPosition.toFixed(1)}s`);
+        }
 
         // Detect resync conditions
         const isNewStream = stream.id !== lastStreamIdRef.current;
@@ -85,11 +92,17 @@ export const useAudioSync = (
             const now = Date.now();
             const elapsedSeconds = (now - lastServerUpdateTimeRef.current) / 1000;
             const expectedServerPosition = lastServerPositionRef.current + elapsedSeconds;
-            // Use 5-second threshold to account for polling intervals and minor timing differences
-            // Seek = server position differs significantly from what we'd expect
+            // Use 3-second threshold (reduced from 5) for more responsive seek detection
             const positionDelta = Math.abs(serverPosition - expectedServerPosition);
-            if (positionDelta > 5) {
+
+            // DEBUG: Log seek detection for Bluetooth streams
+            if (stream.id.includes('Bluetooth')) {
+                console.log(`[useAudioSync] Seek check: server=${serverPosition.toFixed(1)}s, expected=${expectedServerPosition.toFixed(1)}s, delta=${positionDelta.toFixed(1)}s, threshold=3s`);
+            }
+
+            if (positionDelta > 3) {
                 isSeek = true;
+                console.log(`[useAudioSync] SEEK DETECTED: ${lastProgressRef.current.toFixed(1)}s → ${serverPosition.toFixed(1)}s`);
             }
         }
 
@@ -132,6 +145,9 @@ export const useAudioSync = (
 
             // Update progress immediately
             updateProgress(stream.id, serverPosition);
+        } else if (stream.id.includes('Bluetooth')) {
+            // DEBUG: Log why we didn't resync
+            console.log(`[useAudioSync] No resync: isInitial=${isInitial}, trackChanged=${trackChanged}, transitioningToPlaying=${transitioningToPlaying}, isSeek=${isSeek}, playbackDataJustArrived=${playbackDataJustArrived}`);
         }
 
         // Always update server position tracking (for seek detection on next poll)
