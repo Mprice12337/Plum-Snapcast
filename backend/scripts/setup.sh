@@ -149,19 +149,20 @@ SNAPCONF
         echo "DLNA stream managed dynamically by lifecycle manager"
     fi
 
-    # Plexamp source is managed dynamically by plexamp-stream-lifecycle-manager
-    # The FIFO keeper provides a fallback reader when the stream doesn't exist,
-    # preventing ALSA file plugin from getting "Broken pipe" errors.
+    # Plexamp source is STATICALLY configured (not dynamic lifecycle)
+    # The ALSA file plugin in Plexamp container gets "Broken pipe" errors with dynamic streams
+    # because it can't handle FIFO writes failing when the stream doesn't exist.
+    # Static configuration ensures Snapserver always has the FIFO open for reading.
     if [ "${PLEXAMP_ENABLED}" = "1" ]; then
-        echo "Plexamp stream managed dynamically by lifecycle manager"
-        # Enable FIFO keeper (must run to provide fallback reader)
-        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-fifo-keeper.ini
-        # Enable lifecycle manager
-        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
-        echo "Plexamp FIFO keeper and lifecycle manager enabled"
+        echo "Adding Plexamp source (static stream, sidecar container)..."
+        # Plexamp outputs 44.1kHz/16-bit stereo (CD quality)
+        # Control script provides metadata from PlayQueue.json
+        sed -i '/^\[stream\]/a source = pipe:///tmp/snapcast-fifos/plexamp-fifo?name=Plexamp&sampleformat=44100:16:2&codec=pcm&controlscript=/usr/share/snapserver/plug-ins/plexamp-control-script.py' /app/config/snapserver.conf
+        # Disable the lifecycle manager since we're using static stream
+        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
+        echo "Plexamp static stream configured"
     else
-        # Ensure both are disabled when Plexamp is not enabled
-        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-fifo-keeper.ini 2>/dev/null || true
+        # Ensure lifecycle manager is disabled when Plexamp is not enabled
         sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
     fi
 else
@@ -180,18 +181,18 @@ else
 
     echo "Snapserver configured with device name: ${DEVICE_NAME}"
 
-    # Ensure Plexamp FIFO keeper and lifecycle manager are configured
+    # Ensure Plexamp stream is statically configured if enabled
+    # (Dynamic lifecycle management causes "Broken pipe" errors)
     if [ "${PLEXAMP_ENABLED}" = "1" ]; then
-        # Remove any static Plexamp stream from config (we use dynamic lifecycle now)
-        if grep -q "plexamp-fifo" /app/config/snapserver.conf; then
-            echo "Removing static Plexamp stream from config (using dynamic lifecycle)..."
-            sed -i '/plexamp-fifo/d' /app/config/snapserver.conf
+        if ! grep -q "plexamp-fifo" /app/config/snapserver.conf; then
+            echo "Adding Plexamp source to existing config..."
+            sed -i '/^\[stream\]/a source = pipe:///tmp/snapcast-fifos/plexamp-fifo?name=Plexamp&sampleformat=44100:16:2&codec=pcm&controlscript=/usr/share/snapserver/plug-ins/plexamp-control-script.py' /app/config/snapserver.conf
+            echo "Plexamp static stream added"
+        else
+            echo "Plexamp stream already configured"
         fi
-        # Enable FIFO keeper (provides fallback reader)
-        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-fifo-keeper.ini 2>/dev/null || true
-        # Enable lifecycle manager
-        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini 2>/dev/null || true
-        echo "Plexamp dynamic lifecycle enabled"
+        # Disable lifecycle manager
+        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini 2>/dev/null || true
     fi
 fi
 
