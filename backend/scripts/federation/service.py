@@ -225,7 +225,7 @@ class FederationService:
                 self.remote_snapclient_manager.add_remote_server(
                     server_id=server.id,
                     host=server.host,
-                    port=1705  # Snapclient port (same as local)
+                    port=1704  # Snapclient port (standard)
                 )
 
                 # Schedule async task to discover client ID (only if loop is healthy)
@@ -313,10 +313,14 @@ class FederationService:
         # Initialize remote snapclient manager (load audio settings)
         audio_device = self.config.get("audio_device", "hw:Headphones")
         latency = self.config.get("latency", 0)
+        mixer_type = self.config.get("mixer_type", "software")
+        mixer_name = self.config.get("mixer_name", None)
         self.remote_snapclient_manager = RemoteSnapclientManager(
             local_server_id=self.local_server_id,
             audio_device=audio_device,
-            latency=latency
+            latency=latency,
+            mixer_type=mixer_type,
+            mixer_name=mixer_name
         )
 
         # Initialize router (pass snapclient manager for endpoint lockout)
@@ -584,6 +588,16 @@ def load_config() -> Dict:
         if "device" in audio_output:
             config["audio_device"] = audio_output["device"]
             logger.info(f"Audio device from settings.json: {config['audio_device']}")
+
+        # Load mixer configuration for remote snapclients
+        mixer = audio_output.get("mixer", {})
+        config["mixer_type"] = mixer.get("type", "software")
+        config["mixer_name"] = mixer.get("name", None)
+        if config["mixer_type"] == "hardware" and config["mixer_name"]:
+            logger.info(f"Hardware mixer from settings.json: {config['mixer_name']}")
+        else:
+            logger.info("Using software mixer for remote snapclients")
+
         # Note: latency remains from env var default set in initial config
 
     except Exception as e:

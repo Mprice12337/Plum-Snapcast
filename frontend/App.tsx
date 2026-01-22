@@ -737,9 +737,11 @@ const App: React.FC = () => {
     );
 
     // Other clients: all clients EXCEPT myClient and synced clients
+    // Include clients on "none" streams (idle) even if current stream is also none
+    // This ensures idle devices are visible when viewing from an idle client
     const otherClients = userVisibleClients.filter(c =>
         c.id !== myClient?.id &&
-        c.currentStreamId !== currentStreamId &&
+        (c.currentStreamId !== currentStreamId || c.currentStreamId?.includes('none-')) &&
         !shouldHideClient(c)
     );
 
@@ -1794,6 +1796,34 @@ const App: React.FC = () => {
                 prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
             );
             return;
+        }
+
+        // Check if this is a local hardware client being controlled while federated to remote server
+        // If so, redirect volume control to the remote snapclient that's actually playing audio
+        if (settings.federation.enabled && activeEndpoint.active && activeEndpoint.serverId && activeEndpoint.clientId) {
+            // Check if the client being controlled is a local hardware client (MAC address format)
+            const isMacAddress = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(clientId);
+            const isLocalFederatedClient = clientId.startsWith('server-') && !clientId.startsWith('server-localhost-');
+
+            // If controlling a local hardware client while federated, redirect to remote snapclient
+            if (isMacAddress || (isLocalFederatedClient && clientId.includes(clientId.split('-').slice(0, 5).join('-')))) {
+                // Build the federated client ID for the remote snapclient
+                const remoteClientId = `${activeEndpoint.serverId}-${activeEndpoint.clientId}`;
+
+                // Update local state for the local client (for UI responsiveness)
+                setClients(prevClients =>
+                    prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
+                );
+
+                // Send volume command to remote snapclient via federation API
+                try {
+                    await federationService.setVolume(remoteClientId, volume);
+                    return;
+                } catch (error) {
+                    console.error(`Failed to set volume for remote snapclient ${remoteClientId}:`, error);
+                    // Fall through to try local control as fallback
+                }
+            }
         }
 
         // Update local state immediately for responsiveness

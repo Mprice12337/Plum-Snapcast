@@ -35,6 +35,10 @@ class FederationRouter:
         # Only one endpoint can be active at a time
         self.active_endpoint: Optional[Tuple[str, str, str]] = None
 
+        # Rate limiting for routing operations
+        self.last_route_time = {}  # {client_id: timestamp}
+        self.route_cooldown_seconds = 2.0  # Prevent rapid switching
+
     def parse_federated_id(self, federated_id: str) -> Tuple[str, str]:
         """
         Parse federated ID into server_id and local_id
@@ -77,6 +81,32 @@ class FederationRouter:
             logger.info(f"route_client called: client_id={client_id}, stream_id={stream_id}")
             logger.debug(f"Parsed client: server={client_server_id}, local={client_local_id}")
             logger.debug(f"Parsed stream: server={stream_server_id}, local={stream_local_id}")
+
+            # Rate limiting check
+            import time
+            now = time.time()
+            last_route = self.last_route_time.get(client_id, 0)
+
+            if now - last_route < self.route_cooldown_seconds:
+                remaining = self.route_cooldown_seconds - (now - last_route)
+                logger.warning(f"Rate limit: client {client_id} switched too recently ({remaining:.1f}s remaining)")
+                return {
+                    "success": False,
+                    "message": f"Rate limited: wait {remaining:.1f}s before switching again"
+                }
+
+            # Validate parsed IDs
+            if not client_local_id:
+                return {
+                    "success": False,
+                    "message": f"Invalid client ID format: {client_id}"
+                }
+
+            if stream_id and not stream_local_id:
+                return {
+                    "success": False,
+                    "message": f"Invalid stream ID format: {stream_id}"
+                }
 
             # Get connections
             client_conn = self.ws_manager.get_connection(client_server_id)
@@ -138,30 +168,7 @@ class FederationRouter:
                 # Route the local client to none on its server
                 await self._route_to_none(client_server_id, client_local_id)
 
-                # ALSO: Route ALL other remote snapclients ON this client's server to none
-                # This handles the case where remote clients are playing through this server
-                logger.debug(f"Looking for remote snapclients on {client_server_id} to deactivate")
-
-                client_conn = self.ws_manager.get_connection(client_server_id)
-                if client_conn and client_conn.connected:
-                    try:
-                        client_status = await asyncio.wait_for(client_conn.get_status(), timeout=2.0)
-                        for group in client_status.get("server", {}).get("groups", []):
-                            stream_id = group.get("stream_id", "")
-                            # Skip if already on none
-                            if "none-" in stream_id:
-                                continue
-
-                            for client in group.get("clients", []):
-                                remote_id = client.get("id", "")
-                                # Check if this is a remote snapclient
-                                if remote_id.startswith("remote-server-"):
-                                    logger.debug(f"Found remote snapclient {remote_id} on {client_server_id}, routing to none")
-                                    await self._route_to_none(client_server_id, remote_id)
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout checking for remote snapclients on {client_server_id}")
-
-                # Also find and deactivate any remote snapclient playing for this client
+                # Find and deactivate any remote snapclient FROM this client's server playing on other servers
                 # Remote snapclient would have ID like "remote-{client_server_id}" on another server
                 remote_client_id = f"remote-{client_server_id}"
                 remote_server_id = None
@@ -202,6 +209,9 @@ class FederationRouter:
                 # Clear active endpoint since we're deactivating
                 self.active_endpoint = None
 
+                # Update rate limit timestamp
+                self.last_route_time[client_id] = now
+
                 return {
                     "success": True,
                     "message": "Client routed to none (deactivated)"
@@ -209,7 +219,7 @@ class FederationRouter:
 
             # Deactivate endpoints on OTHER streams (preserves clients already on target stream)
             # This ensures endpoint lockout while allowing multiple clients to listen to the same stream
-            await self._deactivate_all_endpoints(except_stream_id=stream_local_id)
+            await self._deactivate_all_endpoints(except_server_id=stream_server_id, except_stream_id=stream_local_id)
 
 
             # Step 2: Activate new endpoint
@@ -242,6 +252,15 @@ class FederationRouter:
                     return {
                         "success": False,
                         "message": f"Stream not found: {stream_local_id}"
+                    }
+
+                # Check if stream is playable (not idle)
+                stream_status_str = actual_stream.get("status", "unknown")
+                if stream_status_str == "idle":
+                    logger.warning(f"Cannot route to idle stream: {stream_local_id}")
+                    return {
+                        "success": False,
+                        "message": f"Stream '{stream_local_id}' is idle/inactive"
                     }
 
                 # Check if this is cross-server routing (client and stream on different servers)
@@ -311,6 +330,9 @@ class FederationRouter:
                         self.active_endpoint = (client_server_id, client_local_id, f"{self.local_server_id}-{stream_local_id}")
                         logger.info(f"Routed remote client to local stream: {stream_local_id}")
 
+                        # Update rate limit timestamp
+                        self.last_route_time[client_id] = now
+
                         return {
                             "success": True,
                             "message": f"Remote client routed to local stream"
@@ -351,6 +373,9 @@ class FederationRouter:
                     # Update active endpoint tracking (use federated stream ID format for consistency)
                     self.active_endpoint = (client_server_id, client_local_id, f"{client_server_id}-{stream_local_id}")
                     logger.info(f"Routed to stream: {stream_local_id}")
+
+                # Update rate limit timestamp
+                self.last_route_time[client_id] = now
 
                 return {
                     "success": True,
@@ -467,7 +492,7 @@ class FederationRouter:
         # No active endpoint found
         return {"active": False}
 
-    async def _deactivate_all_endpoints(self, except_stream_id: Optional[str] = None):
+    async def _deactivate_all_endpoints(self, except_server_id: Optional[str] = None, except_stream_id: Optional[str] = None):
         """
         Deactivate active endpoints across servers in the federation.
 
@@ -475,12 +500,14 @@ class FederationRouter:
         and routes them to none. Ensures endpoint lockout across federation.
 
         Args:
+            except_server_id: Optional server ID to exclude from deactivation check.
+                              Must be provided together with except_stream_id.
             except_stream_id: Optional local stream ID to exclude from deactivation.
-                              Clients already on this stream will NOT be deactivated.
+                              Clients on THIS stream on THIS server will NOT be deactivated.
                               This allows multiple clients to listen to the same stream.
         """
         if except_stream_id:
-            logger.debug(f"Deactivating endpoints EXCEPT those on stream: {except_stream_id}")
+            logger.debug(f"Deactivating endpoints EXCEPT those on stream: {except_server_id}/{except_stream_id}")
         else:
             logger.debug("Deactivating all active endpoints")
 
@@ -503,9 +530,10 @@ class FederationRouter:
                     if "none-" in group_stream_id:
                         continue
 
-                    # Skip if group is on the target stream (don't deactivate clients already listening)
-                    if except_stream_id and group_stream_id == except_stream_id:
-                        logger.debug(f"Keeping clients on target stream {group_stream_id} active")
+                    # Skip if group is on the target stream ON THE TARGET SERVER (don't deactivate clients already listening)
+                    # Must match BOTH server ID and stream ID to preserve the correct stream
+                    if except_stream_id and except_server_id and conn.server_id == except_server_id and group_stream_id == except_stream_id:
+                        logger.debug(f"Keeping clients on target stream {conn.server_id}/{group_stream_id} active")
                         continue
 
                     # Check each client in this group

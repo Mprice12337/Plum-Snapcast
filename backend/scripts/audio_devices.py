@@ -24,6 +24,24 @@ class DeviceType(Enum):
 
 
 @dataclass
+class MixerInfo:
+    """Represents mixer control information for a device"""
+    type: str  # "hardware" or "software"
+    device: Optional[str] = None  # e.g., "hw:3" for hardware mixer
+    name: Optional[str] = None  # e.g., "Digital" for hardware mixer
+    index: str = "0"  # Mixer index (usually "0")
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "type": self.type,
+            "device": self.device,
+            "name": self.name,
+            "index": self.index
+        }
+
+
+@dataclass
 class AudioDevice:
     """Represents an ALSA audio device"""
     card: int
@@ -35,6 +53,7 @@ class AudioDevice:
     type: DeviceType
     friendly_name: str
     is_available: bool = True
+    mixer: Optional[MixerInfo] = None  # Mixer control information
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
@@ -47,7 +66,8 @@ class AudioDevice:
             "device_name": self.device_name,
             "type": self.type.value,
             "friendly_name": self.friendly_name,
-            "is_available": self.is_available
+            "is_available": self.is_available,
+            "mixer": self.mixer.to_dict() if self.mixer else None
         }
 
 
@@ -65,6 +85,16 @@ class AudioDeviceManager:
         "digi",
         "amp",
     ]
+
+    # Common mixer control names by device type
+    # Priority order: first available mixer will be used
+    MIXER_NAMES_BY_TYPE = {
+        DeviceType.HAT: ["Digital", "PCM", "Master"],
+        DeviceType.USB: ["PCM", "Speaker", "Master"],
+        DeviceType.BUILTIN_HEADPHONES: ["Headphone", "PCM"],
+        DeviceType.BUILTIN_HDMI: ["HDMI"],
+        DeviceType.OTHER: ["PCM", "Master"]
+    }
 
     def __init__(self):
         pass
@@ -127,6 +157,9 @@ class AudioDeviceManager:
                 device_type, card_name, card_description, device_description
             )
 
+            # Detect mixer controls for this device
+            mixer_info = self._find_best_mixer(card, device_type)
+
             # Create device object
             audio_device = AudioDevice(
                 card=card,
@@ -136,11 +169,14 @@ class AudioDeviceManager:
                 card_name=card_name,
                 device_name=device_description,
                 type=device_type,
-                friendly_name=friendly_name
+                friendly_name=friendly_name,
+                mixer=mixer_info
             )
 
             devices.append(audio_device)
-            logger.debug(f"Found device: {audio_device.friendly_name} ({hw_id})")
+            logger.debug(f"Found device: {audio_device.friendly_name} ({hw_id}) - Mixer: {mixer_info.type}")
+            if mixer_info.type == "hardware":
+                logger.debug(f"  Hardware mixer: {mixer_info.name} on {mixer_info.device}")
 
         return devices
 
@@ -216,6 +252,83 @@ class AudioDeviceManager:
         else:
             # Use device description for other devices
             return device_description if device_description else card_description
+
+    def _detect_mixer_controls(self, card: int) -> List[str]:
+        """
+        Detect available mixer controls for a card using amixer
+
+        Args:
+            card: Card number
+
+        Returns:
+            List of available mixer control names
+        """
+        logger.debug(f"Detecting mixer controls for card {card}...")
+
+        success, output = self._run_command(["amixer", "-c", str(card), "scontrols"])
+
+        if not success:
+            logger.warning(f"Failed to detect mixers for card {card}: {output}")
+            return []
+
+        # Parse mixer names from output
+        # Format: Simple mixer control 'MixerName',0
+        mixers = []
+        pattern = r"Simple mixer control '([^']+)',(\d+)"
+
+        for match in re.finditer(pattern, output):
+            mixer_name = match.group(1)
+            mixer_index = match.group(2)
+            mixers.append(mixer_name)
+            logger.debug(f"Found mixer: {mixer_name} (index {mixer_index})")
+
+        return mixers
+
+    def _find_best_mixer(self, card: int, device_type: DeviceType) -> Optional[MixerInfo]:
+        """
+        Find the best mixer control for a device
+
+        Args:
+            card: Card number
+            device_type: Type of device
+
+        Returns:
+            MixerInfo if hardware mixer found, None for software-only
+        """
+        available_mixers = self._detect_mixer_controls(card)
+
+        if not available_mixers:
+            logger.info(f"No hardware mixers found for card {card}, using software volume")
+            return MixerInfo(type="software")
+
+        # Get priority list for this device type
+        priority_mixers = self.MIXER_NAMES_BY_TYPE.get(device_type, self.MIXER_NAMES_BY_TYPE[DeviceType.OTHER])
+
+        # Find first available mixer from priority list
+        for mixer_name in priority_mixers:
+            if mixer_name in available_mixers:
+                logger.info(f"Selected hardware mixer '{mixer_name}' for card {card}")
+                return MixerInfo(
+                    type="hardware",
+                    device=f"hw:{card}",
+                    name=mixer_name,
+                    index="0"
+                )
+
+        # Fallback: use first available mixer
+        if available_mixers:
+            mixer_name = available_mixers[0]
+            logger.info(f"Using fallback mixer '{mixer_name}' for card {card}")
+            return MixerInfo(
+                type="hardware",
+                device=f"hw:{card}",
+                name=mixer_name,
+                index="0"
+            )
+
+        # No mixers available, use software
+        logger.info(f"No suitable hardware mixer for card {card}, using software volume")
+        return MixerInfo(type="software")
 
     def get_playback_devices(self) -> List[AudioDevice]:
         """Get list of all available ALSA playback devices"""

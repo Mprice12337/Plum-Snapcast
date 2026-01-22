@@ -550,13 +550,21 @@ class AudioConfigController:
             # Update settings FIRST (before restarting service)
             # This ensures the service reads the new device when it starts
             try:
+                # Build output settings with mixer configuration
+                output_settings = {
+                    "device": hw_id,
+                    "device_type": device.type.value,
+                    "fallback_device": "hw:Headphones"
+                }
+
+                # Add mixer configuration if available
+                if device.mixer:
+                    output_settings["mixer"] = device.mixer.to_dict()
+                    logger.info(f"Mixer configuration: {device.mixer.type} - {device.mixer.name if device.mixer.name else 'software'}")
+
                 self.settings_manager.update_settings({
                     "audio": {
-                        "output": {
-                            "device": hw_id,
-                            "device_type": device.type.value,
-                            "fallback_device": "hw:Headphones"
-                        }
+                        "output": output_settings
                     }
                 })
                 logger.info("Settings updated successfully")
