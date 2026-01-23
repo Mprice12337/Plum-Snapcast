@@ -1803,10 +1803,10 @@ const App: React.FC = () => {
         if (settings.federation.enabled && activeEndpoint.active && activeEndpoint.serverId && activeEndpoint.clientId) {
             // Check if the client being controlled is a local hardware client (MAC address format)
             const isMacAddress = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(clientId);
-            const isLocalFederatedClient = clientId.startsWith('server-') && !clientId.startsWith('server-localhost-');
 
-            // If controlling a local hardware client while federated, redirect to remote snapclient
-            if (isMacAddress || (isLocalFederatedClient && clientId.includes(clientId.split('-').slice(0, 5).join('-')))) {
+            // ONLY redirect if this is a local hardware client (MAC address)
+            // Do NOT redirect for federated clients (they're already on the remote server)
+            if (isMacAddress) {
                 // Build the federated client ID for the remote snapclient
                 const remoteClientId = `${activeEndpoint.serverId}-${activeEndpoint.clientId}`;
 
