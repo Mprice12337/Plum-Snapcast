@@ -143,7 +143,7 @@ Your HAT should appear in the list. You can also verify detection in the Plum-Sn
 
 ```bash
 # Clone the repository
-git clone <your-repo-url> ~/Plum-Snapcast
+git clone https://github.com/Mprice12337/Plum-Snapcast.git ~/Plum-Snapcast
 cd ~/Plum-Snapcast/docker
 
 # Create .env file from template (optional)

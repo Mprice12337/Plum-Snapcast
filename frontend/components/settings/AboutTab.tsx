@@ -269,7 +269,7 @@ export const AboutTab: React.FC<AboutTabProps> = ({ settings, onSettingsChange }
           </h4>
           <div className="space-y-2 text-sm">
             <a
-              href="https://github.com/your-username/Plum-Snapcast"
+              href="https://github.com/Mprice12337/Plum-Snapcast"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-[var(--accent-color)] hover:underline"

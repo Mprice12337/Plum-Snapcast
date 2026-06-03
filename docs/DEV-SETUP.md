@@ -23,7 +23,7 @@
 
 ```bash
 # Clone the repository
-git clone <your-repo-url> Plum-Snapcast
+git clone https://github.com/Mprice12337/Plum-Snapcast.git Plum-Snapcast
 cd Plum-Snapcast
 
 # Verify you're on the correct branch
@@ -493,7 +493,7 @@ sudo systemctl disable avahi-daemon.socket
 **Deploy Application:**
 ```bash
 # Clone repository
-git clone <repo-url> ~/Plum-Snapcast
+git clone https://github.com/Mprice12337/Plum-Snapcast.git ~/Plum-Snapcast
 cd ~/Plum-Snapcast/docker
 
 # Create .env file
