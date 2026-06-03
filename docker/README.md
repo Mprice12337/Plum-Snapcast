@@ -37,7 +37,7 @@ See `.env.example` for all available configuration options.
 
 ### Required
 
-- `DOCKER_USERNAME`: Your Docker Hub username
+- `DOCKER_USERNAME`: Docker Hub username for the images (default: `dogberttech`)
 
 ### Optional
 

@@ -522,6 +522,9 @@ export class SnapStream {
     private latency: number = 0;
     private bufferNum: number = 0;
     private isPlaying: boolean = false;
+    private connectionPromise?: Promise<void>;
+    private connectionResolve?: () => void;
+    private connectionReject?: (error: Error) => void;
 
     constructor(host: string, port: number = 1780) {
         this.baseUrl = `ws://${host}:${port}`;
@@ -529,22 +532,71 @@ export class SnapStream {
     }
 
     /**
-     * Start the audio stream
+     * Start the audio stream with connection retry
      */
-    async start(): Promise<void> {
+    async start(maxRetries: number = 3): Promise<void> {
         if (this.isPlaying) {
             console.warn("Already playing");
             return;
         }
 
-        // Setup audio context
-        if (!this.setupAudioContext()) {
+        // Check Web Audio API support (don't create context yet - wait for codec header to know sample rate)
+        if (!window.AudioContext) {
             throw new Error("Web Audio API is not supported by your browser");
         }
 
-        // Connect to server
-        this.connect();
-        this.isPlaying = true;
+        // Try to connect with retries
+        let lastError: Error | undefined;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                await this.connectWithTimeout(5000);
+                this.isPlaying = true;
+                return;
+            } catch (error) {
+                lastError = error as Error;
+                console.warn(`SnapStream connection attempt ${attempt}/${maxRetries} failed:`, error);
+                if (attempt < maxRetries) {
+                    // Wait before retry (increasing delay)
+                    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                }
+            }
+        }
+
+        throw lastError || new Error("Failed to connect after retries");
+    }
+
+    /**
+     * Connect with timeout - returns promise that resolves when connected
+     */
+    private connectWithTimeout(timeoutMs: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.connectionResolve = resolve;
+            this.connectionReject = reject;
+
+            // Set timeout for connection
+            const timeout = setTimeout(() => {
+                if (this.streamsocket) {
+                    this.streamsocket.close();
+                }
+                reject(new Error(`Connection timeout after ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            // Create connection promise that clears timeout on success
+            this.connectionPromise = new Promise<void>((res, rej) => {
+                this.connectionResolve = () => {
+                    clearTimeout(timeout);
+                    res();
+                    resolve();
+                };
+                this.connectionReject = (err: Error) => {
+                    clearTimeout(timeout);
+                    rej(err);
+                    reject(err);
+                };
+            });
+
+            this.connect();
+        });
     }
 
     /**
@@ -623,12 +675,25 @@ export class SnapStream {
             return false;
         }
 
+        // If AudioContext already exists with correct sample rate, reuse it
+        if (this.ctx && this.ctx.sampleRate === this.sampleFormat?.rate) {
+            console.log(`Reusing existing AudioContext with sample rate ${this.ctx.sampleRate}`);
+            return true;
+        }
+
+        // Close existing context if sample rate changed
+        if (this.ctx) {
+            console.log(`Closing existing AudioContext (rate ${this.ctx.sampleRate}) for new rate ${this.sampleFormat?.rate}`);
+            this.ctx.close();
+        }
+
         const options: AudioContextOptions = {
             latencyHint: "interactive",
             sampleRate: this.sampleFormat?.rate
         };
 
         this.ctx = new AudioContext(options);
+        console.log(`Created AudioContext with sample rate ${this.ctx.sampleRate}`);
 
         // Create AnalyserNode for visualizer (BEFORE GainNode for volume-independent analysis)
         this.analyserNode = this.ctx.createAnalyser();
@@ -649,25 +714,46 @@ export class SnapStream {
         this.streamsocket.onmessage = (ev) => this.onMessage(ev);
 
         this.streamsocket.onopen = () => {
-            console.log("SnapStream connected");
+            console.log("SnapStream connected to " + this.baseUrl);
             const hello = new HelloMessage();
             hello.mac = "00:00:00:00:00:00";
             hello.arch = "web";
             hello.os = navigator?.platform || "unknown";
-            hello.hostname = "Snapweb client";
+            hello.hostname = "This Browser";
             hello.uniqueId = SnapStream.getClientId();
             this.sendMessage(hello);
             this.syncTime();
             this.syncHandle = window.setInterval(() => this.syncTime(), 1000);
+
+            // Resolve connection promise if waiting
+            if (this.connectionResolve) {
+                this.connectionResolve();
+                this.connectionResolve = undefined;
+                this.connectionReject = undefined;
+            }
         };
 
         this.streamsocket.onerror = (ev) => {
             console.error('SnapStream error:', ev);
+            // Reject connection promise if waiting (connection failed before open)
+            if (this.connectionReject) {
+                this.connectionReject(new Error('WebSocket connection failed'));
+                this.connectionResolve = undefined;
+                this.connectionReject = undefined;
+            }
         };
 
         this.streamsocket.onclose = () => {
             window.clearInterval(this.syncHandle);
             console.info('SnapStream connection lost');
+
+            // Reject connection promise if waiting (connection closed before fully established)
+            if (this.connectionReject) {
+                this.connectionReject(new Error('WebSocket connection closed'));
+                this.connectionResolve = undefined;
+                this.connectionReject = undefined;
+            }
+
             if (this.isPlaying) {
                 console.info('Reconnecting in 1s');
                 this.reconnectHandle = window.setTimeout(() => this.connect(), 1000);
@@ -693,6 +779,13 @@ export class SnapStream {
                 } else {
                     if (this.bufferDurationMs !== 0) {
                         this.bufferFrameCount = Math.floor(this.bufferDurationMs * this.sampleFormat.msRate());
+                    }
+
+                    // Create AudioContext NOW with the correct sample rate from the stream
+                    // This prevents sample rate mismatch that causes "wobbly" audio on first listen
+                    if (!this.setupAudioContext()) {
+                        console.error("Failed to setup AudioContext");
+                        return;
                     }
 
                     this.ctx!.resume();

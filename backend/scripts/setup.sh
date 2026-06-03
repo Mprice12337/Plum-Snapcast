@@ -149,15 +149,19 @@ SNAPCONF
         echo "DLNA stream managed dynamically by lifecycle manager"
     fi
 
-    # Plexamp source is now managed dynamically by plexamp-stream-lifecycle-manager
-    # The lifecycle manager will add/remove the stream based on playback state
-    # This keeps Plexamp available but only creates Snapcast stream when playing
+    # Plexamp source is managed dynamically by plexamp-stream-lifecycle-manager
+    # The FIFO keeper provides a fallback reader when the stream doesn't exist.
+    # The Plexamp container waits for a FIFO reader before starting (entrypoint.sh).
     if [ "${PLEXAMP_ENABLED}" = "1" ]; then
         echo "Plexamp stream managed dynamically by lifecycle manager"
-        # Enable autostart for the lifecycle manager
+        # Enable FIFO keeper (provides fallback reader)
+        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-fifo-keeper.ini
+        # Enable lifecycle manager
         sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
+        echo "Plexamp FIFO keeper and lifecycle manager enabled"
     else
-        # Ensure autostart is disabled when Plexamp is not enabled
+        # Ensure both are disabled when Plexamp is not enabled
+        sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-fifo-keeper.ini 2>/dev/null || true
         sed -i 's/^autostart=true/autostart=false/' /app/supervisord/plexamp-stream-lifecycle-manager.ini
     fi
 else
@@ -175,6 +179,19 @@ else
     fi
 
     echo "Snapserver configured with device name: ${DEVICE_NAME}"
+
+    # Ensure Plexamp FIFO keeper and lifecycle manager are configured
+    if [ "${PLEXAMP_ENABLED}" = "1" ]; then
+        # Remove any static Plexamp stream from config (we use dynamic lifecycle)
+        if grep -q "plexamp-fifo" /app/config/snapserver.conf; then
+            echo "Removing static Plexamp stream (using dynamic lifecycle)..."
+            sed -i '/plexamp-fifo/d' /app/config/snapserver.conf
+        fi
+        # Enable FIFO keeper and lifecycle manager
+        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-fifo-keeper.ini 2>/dev/null || true
+        sed -i 's/^autostart=false/autostart=true/' /app/supervisord/plexamp-stream-lifecycle-manager.ini 2>/dev/null || true
+        echo "Plexamp dynamic lifecycle enabled"
+    fi
 fi
 
 # Note: ALSA configuration for Plexamp is handled in the separate Debian container

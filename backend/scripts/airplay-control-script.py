@@ -1303,10 +1303,13 @@ class DBusControl:
     Instances 2+: org.mpris.MediaPlayer2.ShairportSync.i{PID}
     """
 
-    def __init__(self, instance_id: str):
+    def __init__(self, instance_id: str, store=None, on_volume_change=None):
         self.instance_id = instance_id
         self.mpris_interface = None
+        self.properties_interface = None
         self.bus = None
+        self.store = store
+        self.on_volume_change = on_volume_change
         self._connection_complete = threading.Event()
         self._connected = False
 
@@ -1365,9 +1368,45 @@ class DBusControl:
         try:
             proxy = self.bus.get_object(service_name, "/org/mpris/MediaPlayer2")
             self.mpris_interface = dbus.Interface(proxy, "org.mpris.MediaPlayer2.Player")
+            self.properties_interface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+
+            # Subscribe to PropertiesChanged signal for volume monitoring
+            if self.store and self.on_volume_change:
+                proxy.connect_to_signal(
+                    "PropertiesChanged",
+                    self._on_properties_changed,
+                    dbus_interface="org.freedesktop.DBus.Properties"
+                )
+                log("[DBus] Subscribed to PropertiesChanged signal")
+
             return True
         except:
             return False
+
+    def _on_properties_changed(self, interface_name, changed_properties, invalidated_properties):
+        """Handle MPRIS PropertiesChanged signal"""
+        try:
+            # Only process changes to org.mpris.MediaPlayer2.Player interface
+            if interface_name != "org.mpris.MediaPlayer2.Player":
+                return
+
+            # Check if Volume changed
+            if "Volume" in changed_properties:
+                mpris_volume = float(changed_properties["Volume"])
+                volume_percent = int(mpris_volume * 100)
+
+                log(f"[DBus] Volume changed from source: {volume_percent}%")
+
+                # Update store
+                if self.store:
+                    self.store.update(volume=volume_percent)
+
+                # Trigger callback to notify Snapcast
+                if self.on_volume_change:
+                    self.on_volume_change()
+
+        except Exception as e:
+            log(f"[DBus] Error handling PropertiesChanged: {e}")
 
     def play(self):
         """Send play command via MPRIS"""
@@ -1414,6 +1453,44 @@ class DBusControl:
             except Exception as e:
                 log(f"[DBus] Previous failed: {e}")
 
+    def set_volume(self, volume_percent: int) -> bool:
+        """
+        Set volume via MPRIS (0-100 scale, converted to 0.0-1.0 for MPRIS).
+        Returns True if successful.
+        """
+        if self._connected and self.properties_interface:
+            try:
+                # MPRIS uses 0.0-1.0 scale
+                mpris_volume = max(0.0, min(1.0, volume_percent / 100.0))
+                self.properties_interface.Set(
+                    "org.mpris.MediaPlayer2.Player",
+                    "Volume",
+                    dbus.Double(mpris_volume)
+                )
+                log(f"[DBus] → SetVolume({volume_percent}%)")
+                return True
+            except Exception as e:
+                log(f"[DBus] SetVolume failed: {e}")
+                return False
+        return False
+
+    def get_volume(self) -> int:
+        """
+        Get current volume via MPRIS (returns 0-100 scale).
+        Returns -1 if unavailable.
+        """
+        if self._connected and self.properties_interface:
+            try:
+                mpris_volume = self.properties_interface.Get(
+                    "org.mpris.MediaPlayer2.Player",
+                    "Volume"
+                )
+                return int(float(mpris_volume) * 100)
+            except Exception as e:
+                log(f"[DBus] GetVolume failed: {e}")
+                return -1
+        return -1
+
     def wait_for_connection(self, timeout=5.0):
         """Wait for connection attempt to complete"""
         return self._connection_complete.wait(timeout) and self._connected
@@ -1443,8 +1520,12 @@ class SnapcastControlScript:
             on_position_update=self._on_position_update
         )
 
-        # D-Bus/MPRIS for playback control
-        self.dbus_control = DBusControl(instance_id)
+        # D-Bus/MPRIS for playback control (with volume change monitoring)
+        self.dbus_control = DBusControl(
+            instance_id,
+            store=self.store,
+            on_volume_change=self.send_playback_state_update
+        )
 
         self.metadata_parser = MetadataParser(
             self.store,
@@ -1455,6 +1536,7 @@ class SnapcastControlScript:
         self.last_metadata_update_time = 0  # For debouncing metadata updates
         self.last_playback_state_update_time = 0  # For debouncing playback state updates
         self.last_playback_state = None  # Track last state to detect actual changes
+        self.last_volume = None  # Track last volume to detect volume changes
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
@@ -1485,13 +1567,18 @@ class SnapcastControlScript:
         can_control = self.dbus_control.is_available()
         current_time = time.time()
 
-        # Debounce: Only send update if state actually changed OR at least 1 second has passed
+        # Get source volume from store
+        source_volume = state_data.get("volume", 100)
+
+        # Debounce: Only send update if state/volume actually changed OR at least 1 second has passed
         # This prevents rapid play/idle thrashing from overwhelming the lifecycle manager
+        # BUT we must allow volume changes through immediately for responsive volume control
         state_changed = playback_status != self.last_playback_state
+        volume_changed = source_volume != self.last_volume
         time_elapsed = current_time - self.last_playback_state_update_time
 
-        if not state_changed and time_elapsed < 1.0:
-            # State didn't change and it's been less than 1 second - skip this update
+        if not state_changed and not volume_changed and time_elapsed < 1.0:
+            # Nothing changed and it's been less than 1 second - skip this update
             return
 
         # Include position in properties so frontend can show correct position when paused
@@ -1500,6 +1587,7 @@ class SnapcastControlScript:
             "playbackStatus": playback_status,
             "position": position_ms / 1000 if position_ms else 0,  # Convert ms to seconds
             "duration": duration_ms / 1000 if duration_ms else 0,  # Convert ms to seconds
+            "volume": source_volume,
             "canGoNext": can_control,
             "canGoPrevious": can_control,
             "canPlay": can_control,
@@ -1511,6 +1599,7 @@ class SnapcastControlScript:
 
         # Update tracking
         self.last_playback_state = playback_status
+        self.last_volume = source_volume
         self.last_playback_state_update_time = current_time
 
     def send_metadata_update(self):
@@ -1525,13 +1614,22 @@ class SnapcastControlScript:
         playback_status = state_data.get("playback_status", "stopped")
         can_control = self.dbus_control.is_available()
 
+        # Get source volume from store or D-Bus
+        source_volume = state_data.get("volume")
+        if source_volume is None:
+            source_volume = self.dbus_control.get_volume()
+            if source_volume >= 0:
+                self.store.update(volume=source_volume)
+            else:
+                source_volume = 100
+
         # Build notification params (position excluded - only in GetProperties)
         params = {
             # Playback state (same fields as GetProperties)
             "playbackStatus": playback_status,
             "loopStatus": "none",
             "shuffle": False,
-            "volume": 100,
+            "volume": source_volume,
             "mute": False,
             "rate": 1.0,
 
@@ -1575,13 +1673,23 @@ class SnapcastControlScript:
                 position = self.store.get_current_position()
                 position_seconds = position / 1000.0 if position is not None else 0.0
 
+                # Get current source volume (from D-Bus or stored value)
+                source_volume = state_data.get("volume")
+                if source_volume is None:
+                    # Try to get from D-Bus if not stored
+                    source_volume = self.dbus_control.get_volume()
+                    if source_volume >= 0:
+                        self.store.update(volume=source_volume)
+                    else:
+                        source_volume = 100  # Default if unavailable
+
                 # Build properties response
                 properties = {
                     # Playback state (from MQTT)
                     "playbackStatus": playback_status,
                     "loopStatus": "none",
                     "shuffle": False,
-                    "volume": 100,
+                    "volume": source_volume,
                     "mute": False,
                     "rate": 1.0,
                     "position": position_seconds,  # Convert milliseconds to seconds (float) per Snapcast API
@@ -1611,6 +1719,52 @@ class SnapcastControlScript:
                 # Handle playback control commands
                 command = params.get("command", "")
                 log(f"[Control] Received control command: {command} (params={params})")
+
+                # Handle getProperties command - doesn't require D-Bus
+                if command == "getProperties":
+                    state_data = self.store.get_all()
+                    playback_status = state_data.get("playback_status", "stopped")
+                    meta_obj = self.store.get_metadata_for_snapcast() or {}
+                    can_control = self.dbus_control.is_available()
+
+                    # Get current position with interpolation
+                    position = self.store.get_current_position()
+                    position_seconds = position / 1000.0 if position is not None else 0.0
+
+                    # Get current source volume
+                    source_volume = state_data.get("volume")
+                    if source_volume is None:
+                        source_volume = self.dbus_control.get_volume()
+                        if source_volume >= 0:
+                            self.store.update(volume=source_volume)
+                        else:
+                            source_volume = 100
+
+                    properties = {
+                        "playbackStatus": playback_status,
+                        "loopStatus": "none",
+                        "shuffle": False,
+                        "volume": source_volume,
+                        "mute": False,
+                        "rate": 1.0,
+                        "position": position_seconds,
+                        "canGoNext": can_control,
+                        "canGoPrevious": can_control,
+                        "canPlay": can_control,
+                        "canPause": can_control,
+                        "canSeek": self.dbus_control.can_seek() if can_control else False,
+                        "canControl": can_control,
+                        "metadata": meta_obj
+                    }
+
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": properties
+                    }
+                    print(json.dumps(response), file=sys.stdout, flush=True)
+                    log(f"[Snapcast] Stream.Control getProperties → volume={source_volume}")
+                    return
 
                 if not self.dbus_control.is_available():
                     # Return error if D-Bus not available
@@ -1679,6 +1833,27 @@ class SnapcastControlScript:
                     }
                     print(json.dumps(error_response), file=sys.stdout, flush=True)
                     return
+
+                elif command == "setVolume":
+                    # Set source volume via MPRIS
+                    volume = params.get("volume")
+                    if volume is not None:
+                        try:
+                            volume_int = int(volume)
+                            if 0 <= volume_int <= 100:
+                                success = self.dbus_control.set_volume(volume_int)
+                                if success:
+                                    # Store volume in metadata and send update
+                                    self.store.update(volume=volume_int)
+                                    log(f"[Command] SetVolume({volume_int}%) sent via D-Bus")
+                                else:
+                                    log(f"[Command] SetVolume failed via D-Bus")
+                            else:
+                                log(f"[Command] SetVolume: invalid volume {volume_int} (must be 0-100)")
+                        except (ValueError, TypeError) as e:
+                            log(f"[Command] SetVolume: invalid volume parameter: {e}")
+                    else:
+                        log("[Command] SetVolume: missing volume parameter")
 
                 else:
                     log(f"[Snapcast] Unknown control command: {command}")

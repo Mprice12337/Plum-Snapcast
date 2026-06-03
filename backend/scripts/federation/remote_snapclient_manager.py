@@ -35,7 +35,7 @@ class RemoteSnapclientManager:
     "active" at a time (others are routed to 'none' stream).
     """
 
-    def __init__(self, local_server_id: str, audio_device: str = "hw:Headphones", latency: int = 0):
+    def __init__(self, local_server_id: str, audio_device: str = "hw:Headphones", latency: int = 0, mixer_type: str = "software", mixer_name: Optional[str] = None):
         """
         Initialize remote snapclient manager.
 
@@ -43,17 +43,21 @@ class RemoteSnapclientManager:
             local_server_id: ID of the local server (e.g., "server-192-168-201-133")
             audio_device: ALSA audio device for output (default: hw:Headphones)
             latency: Snapclient latency in milliseconds (default: 0)
+            mixer_type: Mixer type (software or hardware, default: software)
+            mixer_name: Hardware mixer name if mixer_type is hardware (e.g., "Digital")
         """
         # Convert hw:X,Y format to default:CARD=name for remote snapclients
         # This allows ALSA's built-in dmix to handle device sharing
         self.local_server_id = local_server_id
         self.audio_device = self._convert_to_dmix_device(audio_device)
         self.latency = latency
+        self.mixer_type = mixer_type
+        self.mixer_name = mixer_name
         self.processes: Dict[str, subprocess.Popen] = {}  # {server_id: process}
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
         self.server_hosts: Dict[str, tuple] = {}  # {server_id: (host, port)}
 
-        log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device} -> {self.audio_device}, latency={latency})")
+        log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device} -> {self.audio_device}, latency={latency}, mixer={mixer_type}:{mixer_name or 'none'})")
 
     def _get_card_name_from_number(self, card_num: int) -> Optional[str]:
         """
@@ -161,6 +165,11 @@ class RemoteSnapclientManager:
             "--soundcard", self.audio_device,
             "--latency", str(self.latency)
         ]
+
+        # Add mixer configuration if hardware mixer is specified
+        if self.mixer_type == "hardware" and self.mixer_name:
+            cmd.extend(["--mixer", f"hardware:{self.mixer_name}"])
+            log(f"Using hardware mixer: {self.mixer_name}")
 
         try:
             # Spawn snapclient process with logging

@@ -1,4 +1,4 @@
-FROM alpine:3.19
+FROM alpine:3.23
 
 # Build arguments for multi-platform support
 ARG TARGETPLATFORM
@@ -42,6 +42,7 @@ RUN apk add --no-cache \
     mosquitto-clients \
     bluez \
     bluez-alsa \
+    bluez-obexd \
     util-linux \
     gstreamer \
     gst-plugins-base \

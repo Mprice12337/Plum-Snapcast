@@ -273,27 +273,38 @@ export class SnapcastService {
 
                 // First, notify playback state listeners which will trigger App.tsx to check for new streams
                 let playbackStatus = null;
+                let hasControlScriptStatus = false;
 
                 // Prefer properties.playbackStatus if available (from control script)
                 if (stream.properties && stream.properties.playbackStatus) {
                     playbackStatus = stream.properties.playbackStatus;
+                    hasControlScriptStatus = true;
                 }
-                // Fall back to stream.status
-                else if (stream.status) {
+                // CRITICAL: Do NOT fall back to stream.status for Bluetooth/sources with choppy audio
+                // stream.status reflects audio data flow (idle/playing) which can toggle rapidly
+                // This causes the GUI to flicker between play/pause states
+                // Instead, only use stream.status for streams without control scripts
+                // For streams with control scripts, wait for Plugin.Stream.Player.Properties
+                // or use the playback API data (handled separately in App.tsx)
+                else if (stream.status && !streamId.includes('Bluetooth')) {
+                    // Only use stream.status for streams that don't have choppy audio issues
                     // Map stream status to playback status
                     // "playing" -> "Playing", "idle" -> "Paused"
                     playbackStatus = stream.status === 'playing' ? 'Playing' :
                                     stream.status === 'idle' ? 'Paused' : 'Stopped';
                 }
 
-                // Always notify playback state listeners when Stream.OnUpdate is received
-                // The listener in App.tsx will check if this is a new stream and refetch if needed
-                // Use 'Unknown' if no status is available yet (happens when stream is first created)
-                const statusToSend = playbackStatus || 'Unknown';
-                console.log(`[SnapcastService] Stream.OnUpdate: ${streamId} status=${statusToSend}`);
-                this.playbackStateListeners.forEach(listener => {
-                    listener(streamId, statusToSend, stream.properties || {});
-                });
+                // Only notify playback state listeners if we have a definitive status
+                // For Bluetooth streams without properties.playbackStatus, skip notification
+                // The playback API will provide the correct state via polling
+                if (playbackStatus) {
+                    console.log(`[SnapcastService] Stream.OnUpdate: ${streamId} status=${playbackStatus}${hasControlScriptStatus ? ' (from control script)' : ' (from stream.status)'}`);
+                    this.playbackStateListeners.forEach(listener => {
+                        listener(streamId, playbackStatus, stream.properties || {});
+                    });
+                } else {
+                    console.log(`[SnapcastService] Stream.OnUpdate: ${streamId} - skipping playback state update (waiting for control script or playback API)`);
+                }
 
                 // Also check for metadata updates
                 if (stream.properties && stream.properties.metadata) {
@@ -439,6 +450,18 @@ export class SnapcastService {
         }
     }
 
+    // Get full properties directly from control script (includes volume)
+    // This uses Stream.Control with getProperties command which the control script handles
+    async getStreamControlProperties(streamId: string): Promise<any> {
+        try {
+            const result = await this.sendStreamControl(streamId, 'getProperties');
+            return result || {};
+        } catch (error) {
+            console.warn(`Failed to get control properties for ${streamId}:`, error);
+            return {};
+        }
+    }
+
     // Use the correct Stream.Control method for playback commands [[1]](https://github.com/badaix/snapcast/blob/develop/doc/json_rpc_api/stream_plugin.md)
     private async sendStreamControl(streamId: string, command: string, params: any = {}): Promise<any> {
         return this.sendRequest('Stream.Control', {
@@ -534,6 +557,23 @@ export class SnapcastService {
     // Stop playback
     async stopStream(streamId: string): Promise<any> {
         return this.sendStreamControl(streamId, 'stop');
+    }
+
+    // Set source volume (controls the integration - AirPlay, Spotify, etc.)
+    async setStreamVolume(streamId: string, volume: number): Promise<any> {
+        const clampedVolume = Math.max(0, Math.min(100, Math.round(volume)));
+        return this.sendStreamControl(streamId, 'setVolume', {volume: clampedVolume});
+    }
+
+    // Get source volume from stream properties
+    async getStreamVolume(streamId: string): Promise<number> {
+        try {
+            const properties = await this.getStreamProperties(streamId);
+            return properties.volume ?? 100;
+        } catch (error) {
+            console.error(`Failed to get stream volume for ${streamId}:`, error);
+            return 100;
+        }
     }
 
     // Check if stream supports various controls

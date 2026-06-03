@@ -498,6 +498,34 @@ Services: `airplay`, `bluetooth`, `spotify`, `dlna`
 | POST | `/api/audio/input/device` | Add/update input device |
 | DELETE | `/api/audio/input/device/:hw_id` | Remove input device |
 
+**Hardware Mixer Support**:
+
+Audio devices automatically detect available ALSA hardware mixers (e.g., "Digital", "PCM", "Master") when listing output devices. The system uses device-type-specific priority lists to select the best mixer:
+
+- **HAT devices**: Digital → PCM → Master
+- **USB devices**: PCM → Speaker → Master
+- **Built-in Headphones**: Headphone → PCM
+- **Built-in HDMI**: HDMI
+
+When a device with hardware mixer is selected, the mixer configuration is saved to `settings.json` and applied to both local and remote snapclients. This enables proper volume control via hardware mixers instead of software-only mixing.
+
+**Device Format Conversion**: When hardware mixer is enabled, the system automatically converts direct device access (`hw:X,Y`) to dmix format (`default:CARD=name`) to enable both mixer access (card-level) and device sharing between multiple snapclients.
+
+**Response Object** (from `/api/audio/devices/output`):
+```json
+{
+  "hw_id": "hw:3,0",
+  "friendly_name": "snd_rpi_hifiberry_dacplus (HAT)",
+  "type": "HAT",
+  "mixer": {
+    "type": "hardware",
+    "device": "hw:3",
+    "name": "Digital",
+    "index": "0"
+  }
+}
+```
+
 #### Playback Position API
 - **Base URL**: `/api/playback` (via Federation API port 5001)
 - **Implementation**: `backend/scripts/playback_api.py`

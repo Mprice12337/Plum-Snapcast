@@ -1,5 +1,6 @@
 [global]
 device_name = "SPOTIFY_NAME"
+device_id = "SPOTIFY_DEVICE_ID"
 backend = "pipe"
 device = "/tmp/spotify-INSTANCE_ID-fifo"
 cache_path = "/tmp/spotify-INSTANCE_ID-cache"
@@ -9,6 +10,5 @@ dbus_type = "system"
 bitrate = SPOTIFY_BITRATE
 audio_format = "S16"
 device_type = "speaker"
-volume_normalisation = true
-normalisation_pregain = -10
-initial_volume = 50
+volume_normalisation = false
+initial_volume = 100

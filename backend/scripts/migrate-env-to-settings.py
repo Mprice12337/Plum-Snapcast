@@ -194,7 +194,13 @@ def main():
                 # Migrate SNAPCLIENT_SOUNDCARD to audio.output.device
                 "device": os.getenv("SNAPCLIENT_SOUNDCARD", "hw:Headphones"),
                 "device_type": "BUILTIN_HEADPHONES",  # Will be updated when device is selected via GUI
-                "fallback_device": "hw:Headphones"
+                "fallback_device": "hw:Headphones",
+                "mixer": {
+                    "type": "software",  # Will be auto-detected when device is selected via GUI
+                    "device": None,
+                    "name": None,
+                    "index": "0"
+                }
             },
             "input": {
                 "devices": []  # Future: user-enabled input devices

@@ -7,10 +7,11 @@ Provides endpoints for audio device discovery and configuration
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from flask import Blueprint, jsonify, request
 
 # Import AudioDeviceManager and SettingsManager
@@ -22,6 +23,417 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 SUPERVISORCTL_CONF = "/app/supervisord/supervisord.conf"
+
+
+class MPRISVolumeController:
+    """
+    Direct D-Bus/MPRIS volume control for integration sources.
+    Works with AirPlay, Spotify, Bluetooth, etc.
+    Uses subprocess approach to avoid D-Bus session bus connection issues.
+    """
+
+    # Map integration keywords to MPRIS service name patterns
+    # Uses flexible keyword matching instead of strict regex patterns
+    # to support custom stream names like "AirPlay - Office DeskPi - AP 1"
+    INTEGRATION_MPRIS_MAP = {
+        # AirPlay: org.mpris.MediaPlayer2.ShairportSync or ShairportSync.i*
+        'airplay': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
+        # Spotify: org.mpris.MediaPlayer2.spotifyd or spotifyd.instance*
+        'spotify': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
+        # Bluetooth: org.mpris.MediaPlayer2.* (various players)
+        'bluetooth': r'org\.mpris\.MediaPlayer2\.',
+        # DLNA: org.mpris.MediaPlayer2.GMediaRender or gmediarender*
+        'dlna': r'org\.mpris\.MediaPlayer2\.GMediaRender',
+        # Plexamp: org.mpris.MediaPlayer2.Plexamp
+        'plexamp': r'org\.mpris\.MediaPlayer2\.Plexamp$',
+    }
+
+    def __init__(self):
+        pass
+
+    def _find_mpris_service_via_subprocess(self, stream_id: str) -> Optional[str]:
+        """Find MPRIS service using dbus-send command"""
+        try:
+            # List all MPRIS services using dbus-send (use system bus, not session bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--dest=org.freedesktop.DBus',
+                 '--type=method_call', '--print-reply',
+                 '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to list D-Bus services: {result.stderr}")
+                return None
+
+            # Parse output for MPRIS services
+            mpris_services = []
+            for line in result.stdout.split('\n'):
+                if 'org.mpris.MediaPlayer2.' in line:
+                    # Extract service name from dbus-send output
+                    # Format: string "org.mpris.MediaPlayer2.ShairportSync"
+                    match = re.search(r'"(org\.mpris\.MediaPlayer2\.[^"]+)"', line)
+                    if match:
+                        mpris_services.append(match.group(1))
+
+            logger.debug(f"Found MPRIS services: {mpris_services}")
+
+            # Match stream ID to service using flexible keyword matching
+            # Check if any integration keyword appears in the stream ID (case-insensitive)
+            stream_id_lower = stream_id.lower()
+
+            for keyword, mpris_pattern in self.INTEGRATION_MPRIS_MAP.items():
+                if keyword in stream_id_lower:
+                    logger.debug(f"Stream '{stream_id}' contains keyword '{keyword}', looking for MPRIS pattern: {mpris_pattern}")
+                    for service in mpris_services:
+                        if re.match(mpris_pattern, service):
+                            logger.info(f"Found MPRIS service {service} for stream {stream_id}")
+                            return service
+                    # Keyword found but no matching service
+                    logger.warning(f"Keyword '{keyword}' found in stream ID but no matching MPRIS service")
+
+            logger.warning(f"No MPRIS service found for stream {stream_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding MPRIS service: {e}")
+            return None
+
+    def _find_mpris_service(self, stream_id: str) -> Optional[str]:
+        """Find MPRIS service - wrapper that calls subprocess implementation"""
+        return self._find_mpris_service_via_subprocess(stream_id)
+
+    def _find_bluetooth_transport(self) -> Optional[str]:
+        """Find active Bluetooth MediaTransport1 object path for volume control"""
+        try:
+            # Use dbus-send to get all BlueZ managed objects
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez', '/',
+                 'org.freedesktop.DBus.ObjectManager.GetManagedObjects'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.debug(f"Failed to get BlueZ managed objects: {result.stderr}")
+                return None
+
+            # Parse the output to find MediaTransport1 paths
+            # Format: object path "/org/bluez/.../fdN" followed by interface lines
+            # When we see MediaTransport1, the preceding object path is the transport
+            lines = result.stdout.split('\n')
+            current_path = None
+
+            for line in lines:
+                # Look for object path lines - format: object path "/org/bluez/hci0/dev_.../fd0"
+                path_match = re.search(r'object path "(/org/bluez/[^"]+)"', line)
+                if path_match:
+                    current_path = path_match.group(1)
+
+                # Check if this object has MediaTransport1 interface
+                # Format: string "org.bluez.MediaTransport1"
+                if current_path and 'org.bluez.MediaTransport1' in line:
+                    logger.info(f"Found Bluetooth transport: {current_path}")
+                    return current_path
+
+            logger.debug("No active Bluetooth MediaTransport1 found")
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout finding Bluetooth transport")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding Bluetooth transport: {e}")
+            return None
+
+    def _set_bluetooth_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Bluetooth volume via MediaTransport1 (AVRCP Absolute Volume)"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, "No active Bluetooth audio connection found"
+
+        try:
+            # Convert 0-100 to 0-127 for AVRCP
+            raw_volume = int(round(volume * 1.27))
+            raw_volume = max(0, min(127, raw_volume))
+
+            # Set volume using dbus-send on system bus
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume',
+                 f'variant:uint16:{raw_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                # Check if it's because Absolute Volume isn't supported
+                if 'not supported' in result.stderr.lower() or 'permission' in result.stderr.lower():
+                    return False, "Device does not support AVRCP Absolute Volume control"
+                logger.error(f"Failed to set Bluetooth volume: {result.stderr}")
+                return False, f"Failed to set Bluetooth volume: {result.stderr}"
+
+            logger.info(f"Set Bluetooth volume to {volume}% (raw: {raw_volume}/127)")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Bluetooth volume"
+        except Exception as e:
+            logger.error(f"Error setting Bluetooth volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_bluetooth_volume(self) -> Tuple[bool, int, str]:
+        """Get Bluetooth volume via MediaTransport1"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, 0, "No active Bluetooth audio connection found"
+
+        try:
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Bluetooth volume: {result.stderr}"
+
+            # Parse volume from output - format: variant uint16 XX
+            match = re.search(r'uint16\s+(\d+)', result.stdout)
+            if match:
+                raw_volume = int(match.group(1))
+                volume_percent = int(round(raw_volume / 1.27))
+                return True, volume_percent, f"Volume: {volume_percent}%"
+
+            return False, 0, "Could not parse Bluetooth volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
+    # Plexamp HTTP API constants (separate container, no D-Bus access)
+    PLEXAMP_HOST = "127.0.0.1"
+    PLEXAMP_PORT = 32500
+
+    def _set_plexamp_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Plexamp volume via HTTP API (separate container, no MPRIS/D-Bus access)"""
+        try:
+            # Plexamp uses 0-100 scale same as our API
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/playback/setParameters?volume={volume}"
+            result = subprocess.run(
+                ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                 '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout.strip() == '200':
+                logger.info(f"Set Plexamp volume to {volume}% via HTTP API")
+                return True, f"Volume set to {volume}%"
+            else:
+                logger.error(f"Failed to set Plexamp volume: HTTP {result.stdout}")
+                return False, f"Failed to set Plexamp volume: HTTP {result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Plexamp volume"
+        except Exception as e:
+            logger.error(f"Error setting Plexamp volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_plexamp_volume(self) -> Tuple[bool, int, str]:
+        """Get Plexamp volume via HTTP timeline API"""
+        try:
+            import xml.etree.ElementTree as ET
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/timeline/poll?wait=0"
+            result = subprocess.run(
+                ['curl', '-s', '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Plexamp timeline: {result.stderr}"
+
+            # Parse XML response for volume attribute
+            try:
+                root = ET.fromstring(result.stdout)
+                for timeline in root.findall('.//Timeline'):
+                    volume = timeline.get('volume')
+                    if volume is not None:
+                        return True, int(volume), f"Volume: {volume}%"
+            except ET.ParseError:
+                pass
+
+            return False, 0, "Could not parse Plexamp volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
+    def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
+        """
+        Set volume for a stream via D-Bus
+
+        Args:
+            stream_id: Stream ID (e.g., airplay1, spotify2)
+            volume: Volume level (0-100)
+
+        Returns:
+            Tuple of (success, message)
+        """
+        # Extract local stream ID from federated ID if needed
+        # Format: "server-192-168-7-122-airplay1" -> "airplay1"
+        local_stream_id = stream_id
+        if stream_id.startswith("server-"):
+            parts = stream_id.split("-")
+            if len(parts) >= 6:
+                local_stream_id = "-".join(parts[5:])
+                logger.debug(f"Extracted local stream ID: {local_stream_id} from {stream_id}")
+
+        # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
+        if 'bluetooth' in local_stream_id.lower():
+            return self._set_bluetooth_volume(volume)
+
+        # Check if this is a Plexamp stream - use HTTP API (separate container, no D-Bus)
+        if 'plexamp' in local_stream_id.lower():
+            return self._set_plexamp_volume(volume)
+
+        # Find MPRIS service for non-Bluetooth streams
+        service = self._find_mpris_service(local_stream_id)
+        if not service:
+            return False, f"No MPRIS service found for stream {local_stream_id}"
+
+        try:
+            # Convert 0-100 to 0.0-1.0 for MPRIS
+            mpris_volume = max(0.0, min(1.0, volume / 100.0))
+
+            # Try standard MPRIS Properties.Set first (works for spotifyd, standard MPRIS players)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume',
+                 f'variant:double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% via Properties.Set")
+                return True, f"Volume set to {volume}%"
+
+            # Fallback to ShairportSync's custom SetVolume method
+            logger.debug(f"Properties.Set failed, trying SetVolume method: {result.stderr}")
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.mpris.MediaPlayer2.Player.SetVolume',
+                 f'double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"dbus-send failed: {result.stderr}")
+                return False, f"Failed to set volume: {result.stderr}"
+
+            logger.info(f"Set volume for {local_stream_id} ({service}) to {volume}% via SetVolume method")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout setting volume for {local_stream_id}")
+            return False, "Timeout setting volume"
+        except Exception as e:
+            logger.error(f"Failed to set volume for {local_stream_id}: {e}")
+            return False, f"Error setting volume: {str(e)}"
+
+    def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
+        """
+        Get volume for a stream via D-Bus
+
+        Args:
+            stream_id: Stream ID (e.g., airplay1, spotify2)
+
+        Returns:
+            Tuple of (success, volume, message)
+        """
+        # Extract local stream ID from federated ID if needed
+        local_stream_id = stream_id
+        if stream_id.startswith("server-"):
+            parts = stream_id.split("-")
+            if len(parts) >= 6:
+                local_stream_id = "-".join(parts[5:])
+
+        # Check if this is a Bluetooth stream - use MediaTransport1
+        if 'bluetooth' in local_stream_id.lower():
+            return self._get_bluetooth_volume()
+
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in local_stream_id.lower():
+            return self._get_plexamp_volume()
+
+        # Find MPRIS service for non-Bluetooth streams
+        service = self._find_mpris_service(local_stream_id)
+        if not service:
+            return False, 0, f"No MPRIS service found for stream {local_stream_id}"
+
+        try:
+            # Get volume using dbus-send (use system bus, not session bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"dbus-send failed: {result.stderr}")
+                return False, 0, f"Failed to get volume: {result.stderr}"
+
+            # Parse output to get volume value
+            # Format: "variant       double 0.5"
+            match = re.search(r'double\s+([\d.]+)', result.stdout)
+            if not match:
+                logger.error(f"Could not parse volume from dbus-send output: {result.stdout}")
+                return False, 0, "Failed to parse volume"
+
+            mpris_volume = float(match.group(1))
+            volume = int(mpris_volume * 100)
+
+            logger.debug(f"Got volume for {local_stream_id}: {volume}% (MPRIS: {mpris_volume:.2f})")
+            return True, volume, f"Volume: {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout getting volume for {local_stream_id}")
+            return False, 0, "Timeout getting volume"
+        except Exception as e:
+            logger.error(f"Failed to get volume for {local_stream_id}: {e}")
+            return False, 0, f"Error getting volume: {str(e)}"
 
 
 class AudioConfigController:
@@ -138,13 +550,21 @@ class AudioConfigController:
             # Update settings FIRST (before restarting service)
             # This ensures the service reads the new device when it starts
             try:
+                # Build output settings with mixer configuration
+                output_settings = {
+                    "device": hw_id,
+                    "device_type": device.type.value,
+                    "fallback_device": "hw:Headphones"
+                }
+
+                # Add mixer configuration if available
+                if device.mixer:
+                    output_settings["mixer"] = device.mixer.to_dict()
+                    logger.info(f"Mixer configuration: {device.mixer.type} - {device.mixer.name if device.mixer.name else 'software'}")
+
                 self.settings_manager.update_settings({
                     "audio": {
-                        "output": {
-                            "device": hw_id,
-                            "device_type": device.type.value,
-                            "fallback_device": "hw:Headphones"
-                        }
+                        "output": output_settings
                     }
                 })
                 logger.info("Settings updated successfully")
@@ -533,6 +953,9 @@ def create_audio_blueprint(audio_controller: AudioConfigController = None) -> Bl
     if audio_controller is None:
         audio_controller = AudioConfigController()
 
+    # Initialize MPRIS volume controller
+    mpris_controller = MPRISVolumeController()
+
     bp = Blueprint('audio', __name__)
 
     @bp.route("/api/audio/devices/output", methods=["GET"])
@@ -668,6 +1091,63 @@ def create_audio_blueprint(audio_controller: AudioConfigController = None) -> Bl
         except Exception as e:
             logger.error(f"Toggle input device failed: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
+
+    @bp.route("/api/audio/source-volume", methods=["POST"])
+    def set_source_volume():
+        """
+        Set source volume for a stream (controls AirPlay/Spotify/Bluetooth/etc volume via D-Bus MPRIS)
+        This endpoint is always available regardless of federation status
+        """
+        try:
+            data = request.get_json()
+            stream_id = data.get("streamId")
+            volume = data.get("volume")
+
+            logger.info(f"Source volume request - streamId: '{stream_id}', volume: {volume}")
+
+            if not stream_id or volume is None:
+                return jsonify({"error": "streamId and volume required"}), 400
+
+            # The streamId might be a friendly name from the frontend, but we need the actual stream ID
+            # Try to extract the actual stream ID from the Snapcast API
+            # For now, let's accept it and let the MPRIS controller handle it
+
+            # Use direct D-Bus MPRIS control
+            success, message = mpris_controller.set_volume(stream_id, int(volume))
+
+            if success:
+                return jsonify({"success": True, "message": message})
+            else:
+                logger.warning(f"Failed to set volume for '{stream_id}': {message}")
+                return jsonify({"success": False, "message": message}), 400
+
+        except Exception as e:
+            logger.error(f"Set source volume failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/audio/source-volume", methods=["GET"])
+    def get_source_volume():
+        """
+        Get source volume for a stream via D-Bus MPRIS
+        Query parameter: streamId
+        """
+        try:
+            stream_id = request.args.get("streamId")
+
+            if not stream_id:
+                return jsonify({"error": "streamId parameter required"}), 400
+
+            # Get volume via D-Bus MPRIS
+            success, volume, message = mpris_controller.get_volume(stream_id)
+
+            if success:
+                return jsonify({"success": True, "volume": volume, "message": message})
+            else:
+                return jsonify({"success": False, "volume": 0, "message": message}), 400
+
+        except Exception as e:
+            logger.error(f"Get source volume failed: {e}")
+            return jsonify({"error": str(e)}), 500
 
     return bp
 

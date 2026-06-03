@@ -191,15 +191,13 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
                     <p className="text-[var(--text-secondary)]">No other active devices.</p>
                 </div>
                 {onStartBrowserAudio && !browserAudioActive && (
-                    <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
-                        <button
-                            onClick={onStartBrowserAudio}
-                            className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
-                        >
-                            <Icon name="headphones" style={{ color: 'inherit' }} />
-                            Listen in Browser
-                        </button>
-                    </div>
+                    <button
+                        onClick={onStartBrowserAudio}
+                        className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                    >
+                        <Icon name="headphones" style={{ color: 'inherit' }} />
+                        Listen in Browser
+                    </button>
                 )}
             </div>
         );
@@ -265,15 +263,13 @@ export const ClientManager: React.FC<ClientManagerProps> = ({
             )}
 
             {onStartBrowserAudio && !browserAudioActive && (
-                <div className="bg-[var(--bg-tertiary)] p-4 rounded-lg">
-                    <button
-                        onClick={onStartBrowserAudio}
-                        className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
-                    >
-                        <Icon name="headphones" style={{ color: 'inherit' }} />
-                        Listen in Browser
-                    </button>
-                </div>
+                <button
+                    onClick={onStartBrowserAudio}
+                    className="w-full bg-[var(--accent-color)] accent-button-text font-bold py-3 px-4 rounded-lg hover:bg-[var(--accent-color-hover)] transition-colors flex items-center justify-center gap-2"
+                >
+                    <Icon name="headphones" style={{ color: 'inherit' }} />
+                    Listen in Browser
+                </button>
             )}
         </div>
     );

@@ -7,7 +7,7 @@
 # Plum-Snapcast. It installs all required dependencies and configures the system.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/Plum-Snapcast/main/scripts/fresh-pi-setup.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/Mprice12337/Plum-Snapcast/main/scripts/fresh-pi-setup.sh | sudo bash
 #
 # Or download and run locally:
 #   sudo bash fresh-pi-setup.sh
@@ -206,7 +206,7 @@ echo "   # or"
 echo "   sudo reboot"
 echo ""
 echo "2. Clone the Plum-Snapcast repository:"
-echo "   git clone https://github.com/YOUR_USERNAME/Plum-Snapcast.git ~/Plum-Snapcast"
+echo "   git clone https://github.com/Mprice12337/Plum-Snapcast.git ~/Plum-Snapcast"
 echo ""
 echo "3. Deploy the application:"
 echo "   cd ~/Plum-Snapcast/docker"

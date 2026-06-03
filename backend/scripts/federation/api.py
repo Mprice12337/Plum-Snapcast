@@ -8,11 +8,15 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import requests
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+# Subprocess for D-Bus commands (avoids session bus connection issues in containers)
+import subprocess
 
 # Add parent directory to path to import settings_api, integrations_api, audio_api, and playback_api
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,8 +24,415 @@ from settings_api import create_settings_blueprint, SettingsManager
 from integrations_api import create_integrations_blueprint, IntegrationController
 from audio_api import create_audio_blueprint, AudioConfigController
 from playback_api import create_playback_blueprint, playback_store
+from testtone_api import create_testtone_blueprint
 
 logger = logging.getLogger(__name__)
+
+
+class MPRISVolumeController:
+    """
+    Direct D-Bus/MPRIS volume control for integration sources.
+    Uses subprocess approach to avoid D-Bus session bus connection issues in containers.
+    Bypasses Snapcast's Stream.Control which doesn't support setVolume.
+
+    Special handling for Plexamp: Uses HTTP API instead of MPRIS since Plexamp
+    runs in a separate container (no shared D-Bus).
+    """
+
+    # Map integration keywords to MPRIS service name patterns
+    # Uses flexible keyword matching to support custom stream names
+    INTEGRATION_MPRIS_MAP = {
+        # AirPlay: org.mpris.MediaPlayer2.ShairportSync or ShairportSync.i*
+        'airplay': r'org\.mpris\.MediaPlayer2\.ShairportSync(\.i\d+)?$',
+        # Spotify: org.mpris.MediaPlayer2.spotifyd or spotifyd.instance*
+        'spotify': r'org\.mpris\.MediaPlayer2\.spotifyd(\.instance\d+)?$',
+        # DLNA: org.mpris.MediaPlayer2.GMediaRender or gmediarender*
+        'dlna': r'org\.mpris\.MediaPlayer2\.GMediaRender',
+        # Note: Plexamp uses HTTP API, not MPRIS (separate container)
+        # Note: Bluetooth is NOT included - volume is controlled at the source device
+    }
+
+    # Plexamp HTTP API settings
+    PLEXAMP_HOST = '127.0.0.1'
+    PLEXAMP_PORT = 32500
+
+    def __init__(self):
+        pass
+
+    def _set_plexamp_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Plexamp volume via HTTP API (separate container, no MPRIS access)"""
+        try:
+            # Plexamp uses 0-100 scale same as our API
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/playback/setParameters?volume={volume}"
+            result = subprocess.run(
+                ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                 '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout.strip() == '200':
+                logger.info(f"Set Plexamp volume to {volume}% via HTTP API")
+                return True, f"Volume set to {volume}%"
+            else:
+                logger.error(f"Failed to set Plexamp volume: HTTP {result.stdout}")
+                return False, f"Failed to set Plexamp volume: HTTP {result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Plexamp volume"
+        except Exception as e:
+            logger.error(f"Error setting Plexamp volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_plexamp_volume(self) -> Tuple[bool, int, str]:
+        """Get Plexamp volume via HTTP timeline API"""
+        try:
+            url = f"http://{self.PLEXAMP_HOST}:{self.PLEXAMP_PORT}/player/timeline/poll?wait=0"
+            result = subprocess.run(
+                ['curl', '-s', '--connect-timeout', '2', url],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, "Failed to query Plexamp timeline"
+
+            # Parse XML response for volume attribute
+            import xml.etree.ElementTree as ET
+            try:
+                root = ET.fromstring(result.stdout)
+                for timeline in root.findall('.//Timeline[@type="music"]'):
+                    volume = timeline.get('volume')
+                    if volume is not None:
+                        return True, int(volume), f"Volume: {volume}%"
+            except ET.ParseError:
+                pass
+
+            return False, 0, "Could not parse Plexamp volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
+    def _find_mpris_service(self, stream_id: str) -> Optional[str]:
+        """
+        Find the MPRIS service name for a given stream ID using subprocess.
+
+        Args:
+            stream_id: Snapcast stream ID (e.g., "airplay1", "spotify2")
+
+        Returns:
+            MPRIS service name or None if not found
+        """
+        try:
+            # List all D-Bus services using dbus-send (system bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--dest=org.freedesktop.DBus',
+                 '--type=method_call', '--print-reply',
+                 '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to list D-Bus services: {result.stderr}")
+                return None
+
+            # Parse output for MPRIS services
+            mpris_services = []
+            for line in result.stdout.split('\n'):
+                if 'org.mpris.MediaPlayer2.' in line:
+                    # Extract service name from dbus-send output
+                    # Format: string "org.mpris.MediaPlayer2.ShairportSync"
+                    match = re.search(r'"(org\.mpris\.MediaPlayer2\.[^"]+)"', line)
+                    if match:
+                        mpris_services.append(match.group(1))
+
+            logger.debug(f"Found MPRIS services: {mpris_services}")
+
+            # Match stream ID to service using flexible keyword matching
+            stream_id_lower = stream_id.lower()
+
+            for keyword, mpris_pattern in self.INTEGRATION_MPRIS_MAP.items():
+                if keyword in stream_id_lower:
+                    logger.debug(f"Stream '{stream_id}' contains keyword '{keyword}', looking for MPRIS pattern: {mpris_pattern}")
+                    for service in mpris_services:
+                        if re.match(mpris_pattern, service):
+                            logger.info(f"Found MPRIS service {service} for stream {stream_id}")
+                            return service
+                    # Keyword found but no matching service
+                    logger.warning(f"Keyword '{keyword}' found in stream ID but no matching MPRIS service")
+
+            logger.warning(f"No MPRIS service found for stream {stream_id}")
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout listing D-Bus services")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding MPRIS service: {e}")
+            return None
+
+    def _find_bluetooth_transport(self) -> Optional[str]:
+        """Find active Bluetooth MediaTransport1 object path for volume control"""
+        try:
+            # Use dbus-send to get all BlueZ managed objects
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez', '/',
+                 'org.freedesktop.DBus.ObjectManager.GetManagedObjects'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.debug(f"Failed to get BlueZ managed objects: {result.stderr}")
+                return None
+
+            # Parse the output to find MediaTransport1 paths
+            # Format: object path "/org/bluez/.../fdN" followed by interface lines
+            # When we see MediaTransport1, the preceding object path is the transport
+            lines = result.stdout.split('\n')
+            current_path = None
+
+            for line in lines:
+                # Look for object path lines - format: object path "/org/bluez/hci0/dev_.../fd0"
+                path_match = re.search(r'object path "(/org/bluez/[^"]+)"', line)
+                if path_match:
+                    current_path = path_match.group(1)
+
+                # Check if this object has MediaTransport1 interface
+                # Format: string "org.bluez.MediaTransport1"
+                if current_path and 'org.bluez.MediaTransport1' in line:
+                    logger.info(f"Found Bluetooth transport: {current_path}")
+                    return current_path
+
+            logger.warning("No active Bluetooth MediaTransport1 found")
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout finding Bluetooth transport")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding Bluetooth transport: {e}")
+            return None
+
+    def _set_bluetooth_volume(self, volume: int) -> Tuple[bool, str]:
+        """Set Bluetooth volume via MediaTransport1 (AVRCP Absolute Volume)"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, "No active Bluetooth audio connection found"
+
+        try:
+            # Convert 0-100 to 0-127 for AVRCP
+            raw_volume = int(round(volume * 1.27))
+            raw_volume = max(0, min(127, raw_volume))
+
+            # Set volume using dbus-send on system bus
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume',
+                 f'variant:uint16:{raw_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                # Check if it's because Absolute Volume isn't supported
+                if 'not supported' in result.stderr.lower() or 'permission' in result.stderr.lower():
+                    return False, "Device does not support AVRCP Absolute Volume control"
+                logger.error(f"Failed to set Bluetooth volume: {result.stderr}")
+                return False, f"Failed to set Bluetooth volume: {result.stderr}"
+
+            logger.info(f"Set Bluetooth volume to {volume}% (raw: {raw_volume}/127)")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout setting Bluetooth volume"
+        except Exception as e:
+            logger.error(f"Error setting Bluetooth volume: {e}")
+            return False, f"Error: {str(e)}"
+
+    def _get_bluetooth_volume(self) -> Tuple[bool, int, str]:
+        """Get Bluetooth volume via MediaTransport1"""
+        transport_path = self._find_bluetooth_transport()
+        if not transport_path:
+            return False, 0, "No active Bluetooth audio connection found"
+
+        try:
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 '--dest=org.bluez',
+                 transport_path,
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.bluez.MediaTransport1',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return False, 0, f"Failed to get Bluetooth volume: {result.stderr}"
+
+            # Parse volume from output - format: variant uint16 XX
+            match = re.search(r'uint16\s+(\d+)', result.stdout)
+            if match:
+                raw_volume = int(match.group(1))
+                volume_percent = int(round(raw_volume / 1.27))
+                return True, volume_percent, f"Volume: {volume_percent}%"
+
+            return False, 0, "Could not parse Bluetooth volume"
+
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
+    def set_volume(self, stream_id: str, volume: int) -> Tuple[bool, str]:
+        """
+        Set volume for a stream via D-Bus or HTTP API.
+
+        Args:
+            stream_id: Snapcast stream ID
+            volume: Volume level 0-100
+
+        Returns:
+            Tuple of (success, message)
+        """
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in stream_id.lower():
+            return self._set_plexamp_volume(volume)
+
+        # Check if this is a Bluetooth stream - use MediaTransport1 for AVRCP volume
+        if 'bluetooth' in stream_id.lower():
+            return self._set_bluetooth_volume(volume)
+
+        # Find MPRIS service for this stream (AirPlay, Spotify, etc.)
+        service = self._find_mpris_service(stream_id)
+        if not service:
+            return False, f"No MPRIS service found for stream {stream_id}"
+
+        try:
+            # Convert 0-100 to 0.0-1.0 for MPRIS
+            mpris_volume = max(0.0, min(1.0, volume / 100.0))
+
+            # Try standard MPRIS Properties.Set first (works for spotifyd and most players)
+            # This sets the Volume property on org.mpris.MediaPlayer2.Player interface
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Set',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume',
+                 f'variant:double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Set volume for {stream_id} ({service}) to {volume}% via Properties.Set")
+                return True, f"Volume set to {volume}%"
+
+            # If Properties.Set fails, try ShairportSync's custom SetVolume method
+            logger.debug(f"Properties.Set failed, trying SetVolume method: {result.stderr}")
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.mpris.MediaPlayer2.Player.SetVolume',
+                 f'double:{mpris_volume}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Both volume methods failed: {result.stderr}")
+                return False, f"Failed to set volume: {result.stderr}"
+
+            logger.info(f"Set volume for {stream_id} ({service}) to {volume}% via SetVolume method")
+            return True, f"Volume set to {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout setting volume for {stream_id}")
+            return False, "Timeout setting volume"
+        except Exception as e:
+            logger.error(f"Failed to set volume for {stream_id}: {e}")
+            return False, f"Error setting volume: {str(e)}"
+
+    def get_volume(self, stream_id: str) -> Tuple[bool, int, str]:
+        """
+        Get current volume for a stream via D-Bus or HTTP API.
+
+        Args:
+            stream_id: Snapcast stream ID
+
+        Returns:
+            Tuple of (success, volume 0-100, message)
+        """
+        # Check if this is a Plexamp stream - use HTTP API (separate container)
+        if 'plexamp' in stream_id.lower():
+            return self._get_plexamp_volume()
+
+        # Check if this is a Bluetooth stream - use MediaTransport1
+        if 'bluetooth' in stream_id.lower():
+            return self._get_bluetooth_volume()
+
+        # Find MPRIS service for this stream
+        service = self._find_mpris_service(stream_id)
+        if not service:
+            return False, 0, f"No MPRIS service found for stream {stream_id}"
+
+        try:
+            # Get volume using dbus-send (system bus)
+            result = subprocess.run(
+                ['dbus-send', '--system', '--print-reply',
+                 f'--dest={service}',
+                 '/org/mpris/MediaPlayer2',
+                 'org.freedesktop.DBus.Properties.Get',
+                 'string:org.mpris.MediaPlayer2.Player',
+                 'string:Volume'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                logger.error(f"dbus-send Get Volume failed: {result.stderr}")
+                return False, 0, f"Failed to get volume: {result.stderr}"
+
+            # Parse output to get volume value
+            # Format: "variant       double 0.5"
+            match = re.search(r'double\s+([\d.]+)', result.stdout)
+            if not match:
+                logger.error(f"Could not parse volume from dbus-send output: {result.stdout}")
+                return False, 0, "Failed to parse volume"
+
+            mpris_volume = float(match.group(1))
+            volume = int(mpris_volume * 100)
+
+            logger.debug(f"Got volume for {stream_id}: {volume}% (MPRIS: {mpris_volume:.2f})")
+            return True, volume, f"Volume: {volume}%"
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout getting volume for {stream_id}")
+            return False, 0, "Timeout getting volume"
+        except Exception as e:
+            logger.error(f"Failed to get volume for {stream_id}: {e}")
+            return False, 0, f"Error getting volume: {str(e)}"
+
+
+# Global MPRIS volume controller instance
+mpris_volume_controller = MPRISVolumeController()
 
 
 class FederationAPI:
@@ -40,6 +451,7 @@ class FederationAPI:
         self._setup_integrations_api()
         self._setup_audio_api()
         self._setup_playback_api()
+        self._setup_testtone_api()
 
     def _check_loop_health(self) -> bool:
         """Check if the async event loop is healthy"""
@@ -104,6 +516,22 @@ class FederationAPI:
                 return jsonify({"clients": clients})
             except Exception as e:
                 logger.error(f"Get clients failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
+        @self.app.route("/api/federation/snapshot", methods=["GET"])
+        def get_snapshot():
+            """
+            Get atomic snapshot of all federation data (servers, streams, clients).
+
+            This endpoint returns all three data types from a single consistent view
+            of the connection state, preventing race conditions where streams reference
+            servers that don't exist yet, or clients disappear temporarily.
+            """
+            try:
+                snapshot = self.data_aggregator.get_snapshot()
+                return jsonify(snapshot)
+            except Exception as e:
+                logger.error(f"Get snapshot failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
         @self.app.route("/api/federation/active-endpoint", methods=["GET"])
@@ -218,6 +646,75 @@ class FederationAPI:
                 logger.error(f"Stream control failed: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/api/federation/stream/volume", methods=["POST"])
+        def set_stream_volume():
+            """Set source volume for a stream (controls AirPlay/Spotify/etc volume via D-Bus MPRIS)"""
+            try:
+                data = request.get_json()
+                stream_id = data.get("streamId")
+                volume = data.get("volume")
+
+                if not stream_id or volume is None:
+                    return jsonify({"error": "streamId and volume required"}), 400
+
+                if not isinstance(volume, (int, float)):
+                    return jsonify({"error": "volume must be a number"}), 400
+
+                # Parse federated ID to extract server ID and local stream ID
+                # Format: "server-192-168-7-122-airplay1" -> server_id="server-192-168-7-122", local_stream_id="airplay1"
+                server_id = None
+                local_stream_id = stream_id
+                if stream_id.startswith("server-"):
+                    parts = stream_id.split("-")
+                    if len(parts) >= 6:
+                        server_id = "-".join(parts[:5])  # "server-192-168-7-122"
+                        local_stream_id = "-".join(parts[5:])  # "airplay1"
+
+                # Check if this is a remote server
+                is_remote = server_id and server_id != self.data_aggregator.local_server_id
+
+                if is_remote:
+                    # Forward request to remote server's audio API
+                    logger.info(f"Forwarding volume request to remote server {server_id} for stream {local_stream_id}")
+
+                    # Find the connection to get the host
+                    conn = self.data_aggregator.ws_manager.get_connection(server_id)
+                    if not conn or not conn.connected:
+                        return jsonify({"success": False, "message": f"Remote server not connected: {server_id}"}), 400
+
+                    # Forward to remote server's audio API (part of federation service on port 5001)
+                    try:
+                        remote_url = f"http://{conn.host}:5001/api/audio/source-volume"
+                        remote_response = requests.post(
+                            remote_url,
+                            json={"streamId": local_stream_id, "volume": int(volume)},
+                            timeout=5
+                        )
+
+                        if remote_response.status_code == 200:
+                            remote_data = remote_response.json()
+                            return jsonify({"success": True, "message": remote_data.get("message", f"Volume set to {volume}%")})
+                        else:
+                            error_data = remote_response.json()
+                            return jsonify({"success": False, "message": error_data.get("message", error_data.get("error", "Remote server error"))}), 400
+                    except requests.exceptions.Timeout:
+                        return jsonify({"success": False, "message": f"Timeout connecting to remote server {conn.host}"}), 504
+                    except requests.exceptions.RequestException as e:
+                        logger.error(f"Failed to forward volume request to {conn.host}: {e}")
+                        return jsonify({"success": False, "message": f"Failed to connect to remote server: {str(e)}"}), 502
+                else:
+                    # Local server - use direct D-Bus MPRIS control
+                    success, message = mpris_volume_controller.set_volume(local_stream_id, int(volume))
+
+                    if success:
+                        return jsonify({"success": True, "message": message})
+                    else:
+                        return jsonify({"success": False, "message": message}), 400
+
+            except Exception as e:
+                logger.error(f"Set stream volume failed: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/api/federation/server/add", methods=["POST"])
         def add_server():
             """Manually add a server"""
@@ -330,6 +827,12 @@ class FederationAPI:
         playback_bp = create_playback_blueprint()
         self.app.register_blueprint(playback_bp)
         logger.info("Playback API registered")
+
+    def _setup_testtone_api(self):
+        """Register test tone API routes (for volume calibration)"""
+        testtone_bp = create_testtone_blueprint()
+        self.app.register_blueprint(testtone_bp)
+        logger.info("Test Tone API registered")
 
     def run(self, debug: bool = False):
         """Run the Flask server"""
@@ -448,7 +951,12 @@ class DataAggregator:
             server_streams = conn.last_status.get("server", {}).get("streams", [])
 
             for stream in server_streams:
+                # Extract the actual stream ID from Snapcast
+                # The stream dict has: {"id": "airplay1", "uri": {...}, "properties": {...}}
                 stream_id = stream.get("id", "")
+
+                # Debug logging to see what we're getting
+                logger.debug(f"Processing stream - id: '{stream_id}', keys: {list(stream.keys())}")
 
                 federated_id = f"{conn.server_id}-{stream_id}"
 
@@ -476,17 +984,43 @@ class DataAggregator:
                 else:
                     playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
 
+                # Extract source volume from properties (set by control script)
+                source_volume = properties.get("volume")
+
+                # Transform artUrl for remote servers to absolute URL
+                # This ensures the frontend fetches from the correct server
+                art_url = metadata.get("artUrl", "")
+                if not is_local and art_url:
+                    if art_url.startswith("/coverart/"):
+                        # Transform to absolute URL pointing to remote server's coverart proxy
+                        filename = art_url.replace("/coverart/", "")
+                        art_url = f"http://{conn.host}:5001/api/settings/proxy/coverart/{filename}"
+                    elif art_url.startswith("/"):
+                        # Other relative URLs - point to remote server's Snapcast HTTP
+                        art_url = f"http://{conn.host}:1780{art_url}"
+
+                # Extract stream display name from properties or URI
+                stream_name = properties.get("name", "")
+                if not stream_name:
+                    # Try URI query name
+                    uri = stream.get("uri", {})
+                    if isinstance(uri, dict):
+                        query = uri.get("query", {})
+                        stream_name = query.get("name", stream_id)
+                    else:
+                        stream_name = stream_id
+
                 streams.append({
                     "id": federated_id,
                     "serverId": conn.server_id,
                     "serverName": conn.name,
-                    "name": stream.get("status"),
+                    "name": stream_name,  # Fixed: use actual stream name, not status
                     "status": stream_status,
                     "metadata": {
                         "title": metadata.get("title", ""),
                         "artist": metadata.get("artist", ""),
                         "album": metadata.get("album", ""),
-                        "artUrl": metadata.get("artUrl", ""),
+                        "artUrl": art_url,
                         "duration": metadata.get("duration", 0)
                     },
                     "properties": enhanced_properties,
@@ -496,7 +1030,9 @@ class DataAggregator:
                         "interpolated_position": playback_data.get("interpolated_position", 0),
                         "playback_status": playback_data.get("playback_status", "unknown"),
                         "is_stale": playback_data.get("is_stale", True)
-                    }
+                    },
+                    # Source volume at top level for frontend Stream interface
+                    "volume": source_volume
                 })
 
         return streams
@@ -655,6 +1191,291 @@ class DataAggregator:
 
         if updates_made > 0:
             logger.debug(f"Updated {updates_made} client stream assignments based on remote snapclient activity")
+
+        return clients
+
+    def get_snapshot(self) -> Dict:
+        """
+        Get atomic snapshot of all federation data (servers, streams, clients).
+
+        This method captures a consistent view of all data from the same set of connections,
+        preventing race conditions where streams reference servers that don't exist yet.
+
+        Returns:
+            Dict with keys: servers, streams, clients
+        """
+        logger.debug("Building atomic snapshot of federation data")
+
+        # Capture connection list once to ensure consistency
+        connections = list(self.ws_manager.get_all_connections())
+
+        # Build all data from the same connection snapshot
+        servers = self._build_servers_from_connections(connections)
+        streams = self._build_streams_from_connections(connections)
+        clients = self._build_clients_from_connections(connections)
+
+        logger.debug(f"Snapshot: {len(servers)} servers, {len(streams)} streams, {len(clients)} clients")
+
+        return {
+            "servers": servers,
+            "streams": streams,
+            "clients": clients
+        }
+
+    def _build_servers_from_connections(self, connections: List) -> List[Dict]:
+        """Build servers list from a snapshot of connections"""
+        servers = []
+
+        # Add connected servers from snapshot
+        for conn in connections:
+            servers.append({
+                "id": conn.server_id,
+                "name": conn.name,
+                "host": conn.host,
+                "port": conn.port,
+                "connected": conn.connected,
+                "isLocal": conn.server_id == self.local_server_id
+            })
+
+        # Add discovered but not connected servers
+        for server_info in self.discovery.get_servers():
+            if server_info.id not in [s["id"] for s in servers]:
+                servers.append({
+                    "id": server_info.id,
+                    "name": server_info.name,
+                    "host": server_info.host,
+                    "port": server_info.port,
+                    "connected": False,
+                    "isLocal": server_info.id == self.local_server_id
+                })
+
+        return servers
+
+    def _build_streams_from_connections(self, connections: List) -> List[Dict]:
+        """Build streams list from a snapshot of connections (same logic as get_streams)"""
+        streams = []
+
+        # Get local playback position data
+        local_playback = playback_store.get_all()
+
+        # Cache for remote server playback data
+        remote_playback_cache = {}
+
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            # Determine if this is a local or remote server
+            is_local = conn.server_id == self.local_server_id
+
+            # Fetch playback data from remote server if needed
+            if not is_local and conn.server_id not in remote_playback_cache:
+                try:
+                    url = f"http://{conn.host}:5001/api/playback"
+                    response = requests.get(url, timeout=2)
+                    if response.status_code == 200:
+                        data = response.json()
+                        remote_playback_cache[conn.server_id] = data.get("streams", {})
+                    else:
+                        remote_playback_cache[conn.server_id] = {}
+                except Exception as e:
+                    logger.debug(f"Failed to fetch playback from {conn.host}: {e}")
+                    remote_playback_cache[conn.server_id] = {}
+
+            server_streams = conn.last_status.get("server", {}).get("streams", [])
+
+            for stream in server_streams:
+                stream_id = stream.get("id", "")
+                federated_id = f"{conn.server_id}-{stream_id}"
+
+                properties = stream.get("properties", {})
+                metadata = properties.get("metadata", {})
+
+                stream_status = stream.get("status", "idle")
+                playback_status = "playing" if stream_status.lower() == "playing" else "idle"
+
+                enhanced_properties = {
+                    **properties,
+                    "playbackStatus": playback_status,
+                }
+
+                # Get playback position data
+                if is_local:
+                    playback_data = local_playback.get(stream_id, {})
+                else:
+                    playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
+
+                source_volume = properties.get("volume")
+
+                # Transform artUrl for remote servers to absolute URL
+                art_url = metadata.get("artUrl", "")
+                if not is_local and art_url:
+                    if art_url.startswith("/coverart/"):
+                        filename = art_url.replace("/coverart/", "")
+                        art_url = f"http://{conn.host}:5001/api/settings/proxy/coverart/{filename}"
+                    elif art_url.startswith("/"):
+                        art_url = f"http://{conn.host}:1780{art_url}"
+
+                # Extract stream display name
+                stream_name = properties.get("name", "")
+                if not stream_name:
+                    uri = stream.get("uri", {})
+                    if isinstance(uri, dict):
+                        query = uri.get("query", {})
+                        stream_name = query.get("name", stream_id)
+                    else:
+                        stream_name = stream_id
+
+                streams.append({
+                    "id": federated_id,
+                    "serverId": conn.server_id,
+                    "serverName": conn.name,
+                    "name": stream_name,
+                    "status": stream_status,
+                    "metadata": {
+                        "title": metadata.get("title", ""),
+                        "artist": metadata.get("artist", ""),
+                        "album": metadata.get("album", ""),
+                        "artUrl": art_url,
+                        "duration": metadata.get("duration", 0)
+                    },
+                    "properties": enhanced_properties,
+                    "playback": {
+                        "position": playback_data.get("position", 0),
+                        "duration": playback_data.get("duration", 0),
+                        "interpolated_position": playback_data.get("interpolated_position", 0),
+                        "playback_status": playback_data.get("playback_status", "unknown"),
+                        "is_stale": playback_data.get("is_stale", True)
+                    },
+                    "volume": source_volume
+                })
+
+        return streams
+
+    def _build_clients_from_connections(self, connections: List) -> List[Dict]:
+        """Build clients list from a snapshot of connections (simplified version without refresh)"""
+        import asyncio
+        import time
+
+        # Force fresh status from all servers
+        refresh_start = time.time()
+        refresh_success = False
+        try:
+            if hasattr(self, 'loop') and self.loop:
+                logger.debug("Starting status refresh from all servers...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self._refresh_all_statuses(),
+                    self.loop
+                )
+                future.result(timeout=10.0)
+                refresh_success = True
+                logger.debug(f"Status refresh completed in {time.time() - refresh_start:.2f}s")
+            else:
+                logger.warning("No event loop available for status refresh")
+        except asyncio.TimeoutError:
+            logger.error(f"Status refresh timed out after {time.time() - refresh_start:.2f}s")
+        except Exception as e:
+            logger.error(f"Failed to refresh statuses: {e}", exc_info=True)
+
+        if not refresh_success:
+            logger.warning("Building client list with potentially stale data")
+
+        clients = []
+
+        # Build client list from connections snapshot
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            groups = conn.last_status.get("server", {}).get("groups", [])
+
+            for group in groups:
+                current_stream_id = group.get("stream_id", "")
+                federated_stream_id = f"{conn.server_id}-{current_stream_id}" if current_stream_id else None
+
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+                    federated_id = f"{conn.server_id}-{client_id}"
+
+                    config = client.get("config", {})
+                    volume = config.get("volume", {})
+                    host_info = client.get("host", {})
+
+                    client_name = config.get("name") or host_info.get("name", client_id)
+
+                    # If client name is generic, use server name instead
+                    generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+                    if client_name.lower() in generic_names or client_name == client_id:
+                        display_name = conn.name
+                    else:
+                        display_name = client_name
+
+                    clients.append({
+                        "id": federated_id,
+                        "serverId": conn.server_id,
+                        "serverName": conn.name,
+                        "name": display_name,
+                        "connected": client.get("connected", False),
+                        "currentStreamId": federated_stream_id,
+                        "volume": volume.get("percent", 100),
+                        "muted": volume.get("muted", False)
+                    })
+
+        # Fix stream assignments for remote snapclients
+        remote_snapclient_map = {}
+
+        for conn in connections:
+            if not conn.connected or not conn.last_status:
+                continue
+
+            for group in conn.last_status.get("server", {}).get("groups", []):
+                current_stream_id = group.get("stream_id", "")
+
+                if not current_stream_id or "none-" in current_stream_id:
+                    continue
+
+                for client in group.get("clients", []):
+                    client_id = client.get("id", "")
+
+                    if client_id.startswith("remote-server-"):
+                        source_server_id = client_id.replace("remote-", "")
+                        federated_stream_id = f"{conn.server_id}-{current_stream_id}"
+
+                        logger.debug(f"Found remote snapclient: {client_id} on {conn.name}/{current_stream_id}")
+
+                        remote_snapclient_map[source_server_id] = {
+                            "stream": federated_stream_id,
+                            "server": conn.server_id
+                        }
+
+        if remote_snapclient_map:
+            logger.debug(f"Remote snapclient map: {remote_snapclient_map}")
+
+        # Update client stream assignments
+        updates_made = 0
+        for client in clients:
+            if client["currentStreamId"] and "none-" not in client["currentStreamId"]:
+                continue
+
+            server_id = client["serverId"]
+            if server_id in remote_snapclient_map:
+                remote_client_id = f"remote-{server_id}"
+                remote_client = next((c for c in clients if c["id"].endswith(remote_client_id)), None)
+
+                if remote_client:
+                    remote_client_stream = remote_client.get("currentStreamId", "")
+
+                    if remote_client_stream and "none-" not in remote_client_stream:
+                        old_stream = client["currentStreamId"]
+                        new_stream = remote_snapclient_map[server_id]["stream"]
+                        client["currentStreamId"] = new_stream
+                        logger.debug(f"Updated client {client['name']} from {old_stream} to {new_stream}")
+                        updates_made += 1
+                    else:
+                        logger.debug(f"Skipping mapping for {client['name']} - on none stream")
+
+        if updates_made > 0:
+            logger.debug(f"Updated {updates_made} client stream assignments")
 
         return clients
 

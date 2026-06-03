@@ -39,7 +39,7 @@ docker build -t plum-snapcast-server:latest .
 ```bash
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
-    --tag your-username/plum-snapcast-server:latest \
+    --tag dogberttech/plum-snapcast-server:latest \
     --push \
     .
 ```

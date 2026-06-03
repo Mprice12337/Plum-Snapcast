@@ -17,7 +17,7 @@ PROGRAM_TEMPLATE = """
 # ============================================================================
 
 [program:spotifyd-{instance_id}]
-command=/usr/local/bin/spotifyd --no-daemon --config-path /app/config/spotifyd-{instance_id}.conf
+command=/bin/bash /app/scripts/start-spotifyd.sh {instance_id}
 user=snapcast
 directory=/app
 priority={priority}

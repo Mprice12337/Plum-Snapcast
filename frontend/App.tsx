@@ -12,7 +12,8 @@ import {snapcastService} from './services/snapcastService';
 import {federationService} from './services/federationService';
 import {settingsService} from './services/settingsService';
 import {getStreamPlayback} from './services/playbackService';
-import type {Client, PlaybackData, Server, Settings, Stream, VisualizerPreset} from './types';
+import {calibrationService} from './services/calibrationService';
+import type {Client, PlaybackData, Server, Settings, Stream, VisualizerPreset, AudioCalibrationSettings} from './types';
 import {DEFAULT_VISUALIZER_SETTINGS, BUILT_IN_PRESETS} from './types';
 import {useAudioSync} from './hooks/useAudioSync';
 import {useBrowserAudioClient} from './hooks/useBrowserAudioClient';
@@ -75,16 +76,25 @@ const App: React.FC = () => {
     const [extractedAlbumArtColors, setExtractedAlbumArtColors] = useState<DualColorExtractionResult | null>(null);
     const [isExtractingColor, setIsExtractingColor] = useState(false);
 
+    // Volume calibration state
+    const [calibrations, setCalibrations] = useState<AudioCalibrationSettings>({});
+
     // Track recent user-initiated changes to prevent polling from overwriting them
     const [recentPlaybackChange, setRecentPlaybackChange] = useState<{streamId: string, timestamp: number} | null>(null);
     const [recentUserChanges, setRecentUserChanges] = useState<{type: string, timestamp: number, data: any} | null>(null);
     // Use refs to avoid stale closure in WebSocket and polling callbacks
     const recentPlaybackChangeRef = useRef<{streamId: string, timestamp: number} | null>(null);
     const recentUserChangesRef = useRef<{type: string, timestamp: number, data: any} | null>(null);
+    // Track volume change timestamps to reject stale polling data
+    const volumeChangeTimestamps = useRef<Record<string, {volume: number, timestamp: number}>>({});
     // Use ref to access current streams without circular dependency
     const streamsRef = useRef<Stream[]>(streams);
     // Use ref to prevent concurrent fetchData calls
     const isFetchingRef = useRef(false);
+    // Track last seen timestamps for clients to prevent removing them during transient backend issues
+    const clientLastSeenRef = useRef<Record<string, number>>({});
+    // Grace period for keeping clients that temporarily disappear from snapshots (10 seconds)
+    const CLIENT_RETENTION_GRACE_MS = 10000;
 
     // Settings loaded from settingsService (server + local storage)
     const [settings, setSettings] = useState<Settings>(settingsService.getMergedSettings());
@@ -98,6 +108,18 @@ const App: React.FC = () => {
     // Update streamsRef when streams changes
     useEffect(() => {
         streamsRef.current = streams;
+
+        // Track volume changes to reject stale polling data
+        const now = Date.now();
+        streams.forEach(stream => {
+            if (stream.volume !== undefined) {
+                const lastKnown = volumeChangeTimestamps.current[stream.id];
+                if (!lastKnown || lastKnown.volume !== stream.volume) {
+                    // Volume changed - update timestamp
+                    volumeChangeTimestamps.current[stream.id] = {volume: stream.volume, timestamp: now};
+                }
+            }
+        });
     }, [streams]);
 
     // Browser audio client for "Listen in Browser" functionality
@@ -319,31 +341,81 @@ const App: React.FC = () => {
     };
 
     // Helper to get the effective browser audio client ID
-    // In federation mode, local clients get "server-{ip}-" prefix from federation API
+    // In federation mode, clients get "server-{ip}-" prefix based on which server they're connected to
     const getBrowserAudioClientId = (): string => {
         if (!browserAudio.state.clientId) return '';
 
         if (settings.federation.enabled) {
-            // Find the local server ID (isLocal=true)
+            // Determine which server the browser is connected to
+            const currentHost = browserAudio.state.currentHost;
+
+            if (currentHost) {
+                // Find the server by host IP
+                const connectedServer = servers.find(s => s.host === currentHost);
+                if (connectedServer) {
+                    return `${connectedServer.id}-${browserAudio.state.clientId}`;
+                }
+            }
+
+            // Fallback to local server ID
             const localServer = getLocalServer();
             if (localServer) {
                 return `${localServer.id}-${browserAudio.state.clientId}`;
             }
-            // Fallback to localhost prefix if local server not found yet
+            // Fallback to localhost prefix if no server found yet
             return `server-localhost-${browserAudio.state.clientId}`;
         }
 
         return browserAudio.state.clientId;
     };
 
+    // Helper to get server for a stream ID
+    // Stream IDs are prefixed with server ID: "server-192-168-1-100-airplay-0"
+    const getServerForStream = (streamId: string): Server | undefined => {
+        if (!settings.federation.enabled || !streamId) return undefined;
+        return servers.find(s => streamId.startsWith(`${s.id}-`));
+    };
+
+    // Helper to extract host from a federated stream ID
+    // Stream ID format: "server-192-168-1-100-streamname" -> "192.168.1.100"
+    const extractHostFromStreamId = (streamId: string): string | undefined => {
+        if (!streamId || !streamId.startsWith('server-')) return undefined;
+        // Extract: server-192-168-1-100-streamname -> 192-168-1-100
+        const match = streamId.match(/^server-(\d+-\d+-\d+-\d+)-/);
+        if (match) {
+            // Convert dashes back to dots: 192-168-1-100 -> 192.168.1.100
+            return match[1].replace(/-/g, '.');
+        }
+        return undefined;
+    };
+
     // Find the primary client to control
     // Prefer MAC address format (integrated snapclient on Raspberry Pi), otherwise use first client
-    // Exclude browser audio client from being selected as primary
+    // Exclude browser audio client and remote snapclients from being selected as primary
     const browserClientId = getBrowserAudioClientId();
-    const myClient = clients.find(c =>
+    const localServer = servers.find(s => s.isLocal);
+    const localServerId = localServer?.id;
+
+    // Helper to extract the local part of a client ID (strip server prefix in federation mode)
+    const getClientLocalPart = (clientId: string): string => {
+        if (localServerId && clientId.startsWith(`${localServerId}-`)) {
+            return clientId.replace(`${localServerId}-`, '');
+        }
+        return clientId;
+    };
+
+    // Find the primary client - prefer local hardware client with MAC address
+    const myClient = clients.find(c => {
+        if (c.id === browserClientId) return false;
+        // Skip remote snapclients (infrastructure, not user devices)
+        if (c.id.includes('-remote-server-')) return false;
+        // Check if local part is a MAC address
+        const localPart = getClientLocalPart(c.id);
+        return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart);
+    }) || clients.find(c =>
         c.id !== browserClientId &&
-        /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(c.id)
-    ) || clients.find(c => c.id !== browserClientId);
+        !c.id.includes('-remote-server-')
+    );
 
     // Determine current stream:
     // In federation mode, each GUI should show its LOCAL client's stream
@@ -381,6 +453,11 @@ const App: React.FC = () => {
         currentStreamId = myClient?.currentStreamId;
     }
     const currentStream = streams.find(s => s.id === currentStreamId);
+
+    // Debug logging
+    if (currentStream && currentStream.volume !== undefined) {
+        console.log(`[CurrentStream] id='${currentStream.id}', name='${currentStream.name}', volume=${currentStream.volume}`);
+    }
 
     // Treat none-* streams the same as no stream selected (hide controls)
     // In multi-server mode, none stream IDs are like "server-192-168-201-133-none-snapserver"
@@ -429,6 +506,12 @@ const App: React.FC = () => {
             return; // Browser audio not active, nothing to do
         }
 
+        // Skip if we're still in the auto-assign phase (haven't assigned a stream yet)
+        // This prevents a race condition where this effect runs before auto-assign completes
+        if (!browserClientAutoAssigned) {
+            return;
+        }
+
         // Find the browser audio client in the client list
         const browserClient = clients.find(c => c.id === browserClientId);
         if (!browserClient) {
@@ -453,7 +536,7 @@ const App: React.FC = () => {
             // Stream was removed - stop the browser audio client
             browserAudio.stop();
         }
-    }, [browserAudio.state.isActive, streams, clients, browserClientId]);
+    }, [browserAudio.state.isActive, streams, clients, browserClientId, browserClientAutoAssigned]);
 
     // Visualizer preset cycling on track change
     useEffect(() => {
@@ -580,14 +663,10 @@ const App: React.FC = () => {
     const allClients = clients.map(c => {
         // If this is our browser audio client, ensure proper naming, local volume, and connection status
         if (browserAudio.state.isActive && c.id === browserClientId) {
-            // Determine client name based on endpoint name or device name
-            const endpointName = settings.deviceName || 'Device';
-            const visualizerClientName = `${endpointName}-Visualizer`;
-
             return {
                 ...c,
-                // Use visualizer-specific naming
-                name: visualizerClientName,
+                // Always show as "This Browser" to distinguish from hardware clients
+                name: 'This Browser',
                 // Override volume with local state (browser audio volume is local only)
                 volume: browserAudio.state.volume,
                 // Override connection status - if browser audio is active, it's connected
@@ -603,12 +682,9 @@ const App: React.FC = () => {
 
         if (!serverHasClient) {
             // Server hasn't seen the client yet - add temporary placeholder
-            const endpointName = settings.deviceName || 'Device';
-            const visualizerClientName = `${endpointName}-Visualizer`;
-
             const browserClient: Client = {
                 id: browserClientId,
-                name: `${visualizerClientName} (Connecting...)`,
+                name: 'This Browser (Connecting...)',
                 currentStreamId: null,
                 volume: browserAudio.state.volume,
                 connected: false
@@ -618,21 +694,15 @@ const App: React.FC = () => {
     }
 
     // Helper function to detect if a client should be hidden
-    // Hide clients ending with "-Visualizer" only when browser audio is muted (visualizer mode)
-    // Show them when unmuted (listening mode)
+    // Hide snapweb/browser clients that are auto-created by the server
     const shouldHideClient = (client: Client): boolean => {
-        // Check if this is our browser audio visualizer client
-        if (client.name.endsWith('-Visualizer')) {
-            // If browser audio is active, check if it's muted
-            if (browserAudio.state.isActive && client.id === browserClientId) {
-                // Hide if muted (visualizer-only mode), show if unmuted (listening mode)
-                return browserAudio.state.muted;
-            }
-            // Hide other visualizer clients
-            return true;
+        // Hide snapweb/browser clients (auto-created by server), but not our browser audio client
+        if (browserAudio.state.isActive && client.id === browserClientId) {
+            // Never hide our browser audio client
+            return false;
         }
 
-        // Also hide other snapweb/browser clients (auto-created by server)
+        // Hide other snapweb/browser clients (auto-created by server)
         const browserIndicators = ['snapweb', 'browser'];
         const clientName = client.name.toLowerCase();
         const isSnapwebClient = browserIndicators.some(indicator => clientName.includes(indicator));
@@ -667,9 +737,11 @@ const App: React.FC = () => {
     );
 
     // Other clients: all clients EXCEPT myClient and synced clients
+    // Include clients on "none" streams (idle) even if current stream is also none
+    // This ensures idle devices are visible when viewing from an idle client
     const otherClients = userVisibleClients.filter(c =>
         c.id !== myClient?.id &&
-        c.currentStreamId !== currentStreamId &&
+        (c.currentStreamId !== currentStreamId || c.currentStreamId?.includes('none-')) &&
         !shouldHideClient(c)
     );
 
@@ -827,7 +899,13 @@ const App: React.FC = () => {
         const unsubscribe = snapcastService.onPlaybackStateUpdate(async (streamId, playbackStatus, properties) => {
             // Handle refresh signal - fetch latest state for all streams
             if (playbackStatus === 'REFRESH') {
-                // Fetch latest state for all streams
+                // In federation mode, skip local refresh - let federation polling handle it
+                // Calling fetchData() in federation mode would overwrite federation data with local-only data
+                if (settings.federation.enabled) {
+                    return;
+                }
+
+                // Fetch latest state for all streams (non-federation mode only)
                 const serverStatus = await snapcastService.getServerStatus();
                 if (serverStatus && serverStatus.server && serverStatus.server.streams) {
                     // Get all current stream IDs (without federation prefix)
@@ -865,9 +943,13 @@ const App: React.FC = () => {
                                     if (stream.isPlaying !== isPlaying && hasRecentChange) {
                                         return stream; // Keep current state during grace period
                                     }
+                                    // Only update volume if explicitly provided in properties
+                                    // Using conditional spread to avoid overwriting with undefined
+                                    const sourceVolume = serverStream.properties?.volume;
                                     return {
                                         ...stream,
-                                        isPlaying: isPlaying
+                                        isPlaying: isPlaying,
+                                        ...(typeof sourceVolume === 'number' ? { volume: sourceVolume } : {})
                                     };
                                 }
                                 return stream;
@@ -881,12 +963,28 @@ const App: React.FC = () => {
             // Handle direct playback status update
             const isPlaying = playbackStatus.toLowerCase() === 'playing';
 
+            // DEBUG: Log playback state updates for Bluetooth
+            if (streamId.includes('Bluetooth')) {
+                console.log(`[DEBUG onPlaybackStateUpdate] streamId=${streamId}, playbackStatus='${playbackStatus}', isPlaying=${isPlaying}`);
+            }
+
             // Check if this is a new stream that doesn't exist yet
             const federatedStreamId = getFederatedStreamId(streamId);
             const streamExists = streamsRef.current.some(stream => stream.id === federatedStreamId);
 
             if (!streamExists) {
-                // This is a NEW stream - fetch all data to include it (only if not already fetching)
+                // This is a NEW stream - need to fetch data to include it
+                // IMPORTANT: In federation mode, DO NOT call fetchData() as it uses local WebSocket data
+                // which would overwrite the federation data and cause other servers' devices to disappear.
+                // Instead, trigger an immediate federation poll which will properly update state.
+                if (settings.federation.enabled) {
+                    federationService.triggerPoll().catch(() => {
+                        // Silent failure - federation polling will retry
+                    });
+                    return;
+                }
+
+                // Non-federation mode: fetch all data (only if not already fetching)
                 if (!isFetchingRef.current) {
                     await fetchData();
                 }
@@ -911,9 +1009,13 @@ const App: React.FC = () => {
                         if (stream.isPlaying !== isPlaying && hasRecentChange) {
                             return stream; // Keep current state during grace period
                         }
+                        // Only update volume if explicitly provided in properties
+                        // Using conditional spread to avoid overwriting with undefined
+                        const sourceVolume = properties?.volume;
                         return {
                             ...stream,
-                            isPlaying: isPlaying
+                            isPlaying: isPlaying,
+                            ...(typeof sourceVolume === 'number' ? { volume: sourceVolume } : {})
                         };
                     }
                     return stream;
@@ -930,6 +1032,13 @@ const App: React.FC = () => {
         if (!snapcastService) return;
 
         const unsubscribe = snapcastService.onPositionUpdate((streamId, position, duration) => {
+            // CRITICAL: Skip position updates for Bluetooth streams
+            // Bluetooth uses playback API with server-side interpolation, not Stream.OnUpdate position updates
+            // Stream.OnUpdate position for Bluetooth would conflict with playback API and cause timeline jumping
+            if (streamId.includes('Bluetooth')) {
+                return;
+            }
+
             // Position and duration come in SECONDS from backend (already converted by control script)
             const progressInSeconds = Math.floor(position);
 
@@ -969,6 +1078,7 @@ const App: React.FC = () => {
     // AirPlay artwork can take 1-10 seconds to arrive in the backend cache
     useEffect(() => {
         if (!currentStream) return;
+        if (settings.federation.enabled) return; // Federation mode handles artwork via polling
 
         // Check if current stream has placeholder artwork
         const hasPlaceholder = currentStream.currentTrack.albumArtUrl === musicNotePlaceholder;
@@ -1015,6 +1125,11 @@ const App: React.FC = () => {
 
         const syncStreamState = async () => {
             try {
+                // DEBUG: Log that sync is running for Bluetooth
+                if (currentStream.id.includes('Bluetooth')) {
+                    console.log(`[DEBUG syncStreamState] Running for ${currentStream.id}`);
+                }
+
                 // Fetch both Snapcast stream data and our playback API data in parallel
                 // Skip playback API for none streams (they don't have position data)
                 const [serverStream, playbackData] = await Promise.all([
@@ -1028,6 +1143,18 @@ const App: React.FC = () => {
                     // Prefer playback API for position, fall back to Snapcast properties
                     let positionSeconds = 0;
                     let durationSeconds = 0;
+
+                    // DEBUG: Log playback API data
+                    if (currentStream.id.includes('Bluetooth')) {
+                        console.log(`[DEBUG] Playback API data:`, playbackData ? {
+                            is_stale: playbackData.is_stale,
+                            playback_status: playbackData.playback_status,
+                            position: playbackData.position,
+                            interpolated_position: playbackData.interpolated_position
+                        } : 'null');
+                        console.log(`[DEBUG] serverStream.status: ${serverStream.status}`);
+                        console.log(`[DEBUG] isStreamPlaying result: ${isPlaying}`);
+                    }
 
                     if (playbackData && !playbackData.is_stale) {
                         // Use playback API (includes server-side interpolation)
@@ -1121,14 +1248,37 @@ const App: React.FC = () => {
                                     }
                                 }
 
-                                // Sync position from playback API (server-side interpolation)
-                                if (isPlaying && positionSeconds > 0 && playbackData && !playbackData.is_stale) {
-                                    // Update if position changed significantly (>2s) or initial load
-                                    const positionDiff = Math.abs(positionSeconds - s.progress);
-                                    if (positionDiff > 2 || s.progress === 0) {
-                                        updatedStream.progress = positionSeconds;
+                                // Attach playback API data to stream for useAudioSync hook
+                                if (playbackData && !playbackData.is_stale) {
+                                    updatedStream.playback = {
+                                        position: playbackData.position || 0,
+                                        duration: playbackData.duration || 0,
+                                        interpolated_position: playbackData.interpolated_position || 0,
+                                        playback_status: playbackData.playback_status || 'unknown',
+                                        is_stale: playbackData.is_stale ?? true
+                                    };
+
+                                    // CRITICAL: Update isPlaying from playback API for streams with choppy audio
+                                    // For Bluetooth and other sources, stream.status toggles rapidly (idle/playing)
+                                    // but playback API provides stable playback state from the control script
+                                    const playbackApiIsPlaying = playbackData.playback_status === 'playing';
+
+                                    // DEBUG: Always log for Bluetooth streams
+                                    if (s.id.includes('Bluetooth')) {
+                                        console.log(`[DEBUG] isPlaying comparison: current=${updatedStream.isPlaying}, playbackAPI=${playbackApiIsPlaying}, status='${playbackData.playback_status}'`);
+                                    }
+
+                                    if (updatedStream.isPlaying !== playbackApiIsPlaying) {
+                                        console.log(`[PlaybackAPI] Updating ${s.id} isPlaying: ${updatedStream.isPlaying} → ${playbackApiIsPlaying}`);
+                                        updatedStream.isPlaying = playbackApiIsPlaying;
                                     }
                                 }
+
+                                // NOTE: Don't directly update progress here - useAudioSync handles
+                                // progress updates with smooth local interpolation. App.tsx only
+                                // attaches playback data to the stream; useAudioSync reads it and
+                                // manages the actual progress value to avoid oscillation between
+                                // the two sources fighting over the progress value.
 
                                 return updatedStream;
                             }
@@ -1137,11 +1287,16 @@ const App: React.FC = () => {
                     );
                 }
             } catch (error) {
-                // Silently handle errors to avoid spam
+                // Log errors for Bluetooth streams to debug
+                if (currentStream.id.includes('Bluetooth')) {
+                    console.error('[DEBUG syncStreamState] Error:', error);
+                }
+                // Silently handle errors to avoid spam for other streams
             }
         };
 
-        // Poll every 2 seconds for active streams (more aggressive than before)
+        // Immediately sync on stream change, then poll every 2 seconds
+        syncStreamState();
         const interval = setInterval(syncStreamState, 2000);
 
         return () => clearInterval(interval);
@@ -1160,7 +1315,63 @@ const App: React.FC = () => {
         try {
             const {initialStreams, initialClients, serverName: snapServerName} = await getSnapcastData();
 
-            setStreams(initialStreams);
+            // Check grace period before updating streams
+            const now = Date.now();
+            const GRACE_PERIOD = 20000; // 20 second grace period (longer to account for D-Bus signal propagation)
+            const recentChanges = recentUserChangesRef.current;
+            const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
+
+            // Merge streams with grace period respect
+            setStreams(prevStreams => {
+                return initialStreams.map(newStream => {
+                    const existingStream = prevStreams.find(s => s.id === newStream.id);
+
+                    // Grace period for source volume changes (user-initiated from GUI)
+                    if (existingStream && hasRecentChange && recentChanges!.type === 'sourceVolume' && recentChanges!.data.streamId === newStream.id) {
+                        return {
+                            ...newStream,
+                            volume: recentChanges!.data.volume
+                        };
+                    }
+
+                    // Grace period for seek operations (user-initiated from GUI)
+                    if (existingStream && hasRecentChange && recentChanges!.type === 'seek' && recentChanges!.data.streamId === newStream.id) {
+                        return {
+                            ...newStream,
+                            progress: recentChanges!.data.position
+                        };
+                    }
+
+                    // Reject stale volume data: if we have a volume and new data doesn't match, prefer current
+                    // This prevents cached stale data from overwriting fresh D-Bus signals
+                    if (existingStream &&
+                        existingStream.volume !== undefined &&
+                        newStream.volume !== undefined &&
+                        existingStream.volume !== newStream.volume) {
+
+                        const lastKnown = volumeChangeTimestamps.current[newStream.id];
+                        const VOLUME_CHANGE_GRACE = 3000; // 3 second grace to reject stale data
+
+                        if (lastKnown && (now - lastKnown.timestamp) < VOLUME_CHANGE_GRACE) {
+                            // Recent volume change - only accept if it matches what we know or is newer
+                            if (newStream.volume === lastKnown.volume) {
+                                // Polling caught up - accept it
+                                return newStream;
+                            } else {
+                                // Stale data - reject it by keeping existing stream (preserves object identity to prevent re-renders)
+                                return existingStream;
+                            }
+                        } else {
+                            // No recent change or grace expired - accept and track
+                            volumeChangeTimestamps.current[newStream.id] = {volume: newStream.volume, timestamp: now};
+                            return newStream;
+                        }
+                    }
+
+                    return newStream;
+                });
+            });
+
             setClients(initialClients);
             setServerName(snapServerName || 'Snapcast Server');
 
@@ -1182,6 +1393,14 @@ const App: React.FC = () => {
                 setClientGroupMap(groupMap);
             } catch (error) {
                 console.error('[Init] Could not build client group mapping:', error);
+            }
+
+            // Load volume calibration settings
+            try {
+                const cals = await calibrationService.getAllCalibrations();
+                setCalibrations(cals);
+            } catch (error) {
+                console.error('[Init] Could not load calibration settings:', error);
             }
 
             // Check if we got error data (connection failed)
@@ -1298,7 +1517,8 @@ const App: React.FC = () => {
             }
 
             // Transform federated stream data to match frontend Stream type
-            const transformFederatedStream = (federatedStream: any): Stream => {
+            // Note: servers array from the same snapshot is used to derive serverName if not provided
+            const transformFederatedStream = (federatedStream: any, snapshotServers: Server[]): Stream => {
                 const metadata = federatedStream.metadata || {};
                 const properties = federatedStream.properties || {};
                 const playbackData = federatedStream.playback;
@@ -1315,6 +1535,14 @@ const App: React.FC = () => {
 
                 const streamName = extractStreamName(federatedStream.id, federatedStream.serverId);
 
+                // Derive serverName: prefer provided value, fallback to lookup from servers, then serverId
+                let serverName = federatedStream.serverName;
+                if (!serverName) {
+                    // Try to find server name from the snapshot's servers list
+                    const matchingServer = snapshotServers.find(s => s.id === federatedStream.serverId);
+                    serverName = matchingServer?.name || federatedStream.serverId || 'Unknown Server';
+                }
+
                 // Build playback object if available from federation API
                 const playback: PlaybackData | undefined = playbackData ? {
                     position: playbackData.position || 0,
@@ -1327,7 +1555,7 @@ const App: React.FC = () => {
                 return {
                     id: federatedStream.id,
                     serverId: federatedStream.serverId,
-                    serverName: federatedStream.serverName,
+                    serverName: serverName,
                     name: streamName,
                     sourceDevice: streamName,
                     currentTrack: {
@@ -1335,12 +1563,19 @@ const App: React.FC = () => {
                         title: metadata.title || 'Unknown Track',
                         artist: Array.isArray(metadata.artist) ? metadata.artist.join(', ') : (metadata.artist || 'Unknown Artist'),
                         album: metadata.album || 'Unknown Album',
-                        albumArtUrl: metadata.artUrl ? (metadata.artUrl.startsWith('/') ? `http://${window.location.hostname}:1780${metadata.artUrl}` : metadata.artUrl) : musicNotePlaceholder,
+                        albumArtUrl: metadata.artUrl ? (
+                            metadata.artUrl.startsWith('/coverart/')
+                                ? `http://${window.location.hostname}:5001/api/settings/proxy/coverart/${metadata.artUrl.replace('/coverart/', '')}`
+                                : metadata.artUrl.startsWith('/')
+                                    ? `http://${window.location.hostname}:1780${metadata.artUrl}`
+                                    : metadata.artUrl
+                        ) : musicNotePlaceholder,
                         duration: metadata.duration ? Math.floor(metadata.duration) : 0  // Already in seconds
                     },
                     isPlaying: properties.playbackStatus === 'playing',
                     progress: properties.position ? Math.floor(properties.position) : 0,  // Already in seconds (legacy)
-                    playback  // Server-provided playback position data
+                    playback,  // Server-provided playback position data
+                    volume: typeof federatedStream.volume === 'number' ? federatedStream.volume : undefined  // Source volume from control script
                 };
             };
 
@@ -1385,7 +1620,10 @@ const App: React.FC = () => {
 
             // Start polling for federated data
             federationService.startPolling((data) => {
-                setServers(data.servers);
+                // Only update servers if we received data (prevent clearing on empty snapshots)
+                if (data.servers.length > 0) {
+                    setServers(data.servers);
+                }
 
                 // Also fetch active endpoint to determine current stream in multi-server mode
                 federationService.getActiveEndpoint().then(endpoint => {
@@ -1397,7 +1635,7 @@ const App: React.FC = () => {
                 // Check if we should ignore polling updates due to recent user changes
                 // Use ref to avoid stale closure
                 const now = Date.now();
-                const GRACE_PERIOD = 7000; // 7 second grace period for user changes (longer than 5s polling interval)
+                const GRACE_PERIOD = 20000; // 20 second grace period for user changes (accounts for D-Bus signal propagation delay)
                 const recentChanges = recentUserChangesRef.current;
                 const hasRecentChange = recentChanges && (now - recentChanges.timestamp) < GRACE_PERIOD;
 
@@ -1405,10 +1643,16 @@ const App: React.FC = () => {
                 if (data.streams.length > 0) {
                     setStreams(prevStreams => {
                         const transformedStreams = data.streams.map(federatedStream => {
-                            const newStream = transformFederatedStream(federatedStream);
+                            const newStream = transformFederatedStream(federatedStream, data.servers);
 
-                            // Find existing stream to preserve client-side progress
+                            // Find existing stream to preserve client-side progress and serverName
                             const existingStream = prevStreams.find(s => s.id === newStream.id);
+
+                            // CRITICAL: Preserve serverName from existing stream if new one is undefined/empty
+                            // This prevents "Unknown Server" flash during backend state transitions
+                            if (existingStream && existingStream.serverName && !newStream.serverName) {
+                                newStream.serverName = existingStream.serverName;
+                            }
 
                             // CRITICAL: Grace period check FIRST - applies regardless of isPlaying state
                             // This prevents server state from overwriting user's recent play/pause action
@@ -1420,6 +1664,49 @@ const App: React.FC = () => {
                                     isPlaying: existingStream.isPlaying,
                                     progress: existingStream.progress
                                 };
+                            }
+
+                            // Grace period for source volume changes (user-initiated from GUI)
+                            if (existingStream && hasRecentChange && recentChanges!.type === 'sourceVolume' && recentChanges!.data.streamId === newStream.id) {
+                                // User recently changed source volume - preserve their action
+                                return {
+                                    ...newStream,
+                                    volume: recentChanges!.data.volume
+                                };
+                            }
+
+                            // Grace period for seek operations (user-initiated from GUI)
+                            if (existingStream && hasRecentChange && recentChanges!.type === 'seek' && recentChanges!.data.streamId === newStream.id) {
+                                // User recently seeked - preserve their seek position
+                                return {
+                                    ...newStream,
+                                    progress: recentChanges!.data.position
+                                };
+                            }
+
+                            // Reject stale volume data from ANY source (not just user-initiated)
+                            if (existingStream &&
+                                existingStream.volume !== undefined &&
+                                newStream.volume !== undefined &&
+                                existingStream.volume !== newStream.volume) {
+
+                                const lastKnown = volumeChangeTimestamps.current[newStream.id];
+                                const VOLUME_CHANGE_GRACE = 3000; // 3 second grace to reject stale data
+
+                                if (lastKnown && (now - lastKnown.timestamp) < VOLUME_CHANGE_GRACE) {
+                                    // Recent volume change - only accept if it matches what we know or is newer
+                                    if (newStream.volume === lastKnown.volume) {
+                                        // Polling caught up - accept it
+                                        return newStream;
+                                    } else {
+                                        // Stale data - reject it by keeping existing stream (preserves object identity to prevent re-renders)
+                                        return existingStream;
+                                    }
+                                } else {
+                                    // No recent change or grace expired - accept and track
+                                    volumeChangeTimestamps.current[newStream.id] = {volume: newStream.volume, timestamp: now};
+                                    return newStream;
+                                }
                             }
 
                             if (existingStream && existingStream.isPlaying) {
@@ -1440,9 +1727,8 @@ const App: React.FC = () => {
                     });
                 }
 
-                // Transform and set federated clients
+                // Transform and MERGE federated clients (prevent temporary disappearance during backend state changes)
                 if (data.clients.length > 0) {
-                    // If there was a recent client routing change, preserve that client's stream assignment
                     const transformedClients = data.clients.map(client => {
                         const transformed = transformFederatedClient(client);
 
@@ -1455,7 +1741,36 @@ const App: React.FC = () => {
 
                         return transformed;
                     });
-                    setClients(transformedClients);
+
+                    // Update last seen timestamps for all clients in this snapshot
+                    const newClientIds = new Set(transformedClients.map(c => c.id));
+                    transformedClients.forEach(client => {
+                        clientLastSeenRef.current[client.id] = now;
+                    });
+
+                    // Merge: keep existing clients that were recently seen but missing from this snapshot
+                    // This prevents clients from disappearing during transient backend state changes
+                    setClients(prevClients => {
+                        // Start with all transformed clients from the snapshot
+                        const mergedClients = [...transformedClients];
+
+                        // Check for any previously-existing clients that are missing from this snapshot
+                        prevClients.forEach(existingClient => {
+                            if (!newClientIds.has(existingClient.id)) {
+                                // Client is missing from this snapshot - check if we should retain it
+                                const lastSeen = clientLastSeenRef.current[existingClient.id];
+                                const retentionExpired = !lastSeen || (now - lastSeen) > CLIENT_RETENTION_GRACE_MS;
+
+                                if (!retentionExpired) {
+                                    // Client was recently seen - keep it to prevent flickering
+                                    mergedClients.push(existingClient);
+                                }
+                                // If retention expired, the client is truly gone - don't add it back
+                            }
+                        });
+
+                        return mergedClients;
+                    });
                 }
             }, 5000);
         };
@@ -1481,6 +1796,34 @@ const App: React.FC = () => {
                 prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
             );
             return;
+        }
+
+        // Check if this is a local hardware client being controlled while federated to remote server
+        // If so, redirect volume control to the remote snapclient that's actually playing audio
+        if (settings.federation.enabled && activeEndpoint.active && activeEndpoint.serverId && activeEndpoint.clientId) {
+            // Check if the client being controlled is a local hardware client (MAC address format)
+            const isMacAddress = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(clientId);
+
+            // ONLY redirect if this is a local hardware client (MAC address)
+            // Do NOT redirect for federated clients (they're already on the remote server)
+            if (isMacAddress) {
+                // Build the federated client ID for the remote snapclient
+                const remoteClientId = `${activeEndpoint.serverId}-${activeEndpoint.clientId}`;
+
+                // Update local state for the local client (for UI responsiveness)
+                setClients(prevClients =>
+                    prevClients.map(c => (c.id === clientId ? {...c, volume} : c))
+                );
+
+                // Send volume command to remote snapclient via federation API
+                try {
+                    await federationService.setVolume(remoteClientId, volume);
+                    return;
+                } catch (error) {
+                    console.error(`Failed to set volume for remote snapclient ${remoteClientId}:`, error);
+                    // Fall through to try local control as fallback
+                }
+            }
         }
 
         // Update local state immediately for responsiveness
@@ -1511,6 +1854,78 @@ const App: React.FC = () => {
         } catch (error) {
             console.error(`Failed to set volume for client ${localClientId}:`, error);
             // Could revert local state here if needed
+        }
+    };
+
+    // Handle source/integration volume changes (AirPlay, Spotify, etc.)
+    const handleSourceVolumeChange = async (streamId: string, volume: number) => {
+        console.log(`[handleSourceVolumeChange] Called with streamId='${streamId}', volume=${volume}`);
+
+        // Track user change with grace period to prevent polling from overwriting
+        const timestamp = Date.now();
+        const userChange = {type: 'sourceVolume', timestamp, data: {streamId, volume}};
+        recentUserChangesRef.current = userChange;
+        setRecentUserChanges(userChange);
+        // Also track in volumeChangeTimestamps to reject stale polling data
+        volumeChangeTimestamps.current[streamId] = {volume, timestamp};
+        console.log(`[VolumeGrace] Set grace period for volume=${volume}%, expires in 7s`);
+
+        // Update local stream state immediately for responsiveness
+        setStreams(prevStreams =>
+            prevStreams.map(s => (s.id === streamId ? {...s, volume} : s))
+        );
+
+        // Determine if this is a remote federated stream
+        // Pattern: server-192-168-X-X-streamname (but NOT server-localhost-*)
+        const isLocalFederated = streamId.startsWith('server-localhost-');
+        const isRemoteFederated = settings.federation.enabled && streamId.startsWith('server-') && !isLocalFederated;
+
+        try {
+            if (isRemoteFederated) {
+                // Remote federated stream - use federation API to forward to remote server
+                console.log(`[handleSourceVolumeChange] Remote federated stream, using federation API`);
+                const result = await federationService.setStreamVolume(streamId, volume);
+                if (!result.success) {
+                    console.error(`Failed to set source volume via federation: ${result.message}`);
+                    // Clear the grace period on failure
+                    console.log(`[VolumeGrace] Cleared grace period due to federation API failure`);
+                    recentUserChangesRef.current = null;
+                    setRecentUserChanges(null);
+                } else {
+                    console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for remote stream ${streamId}`);
+                }
+            } else {
+                // Local stream - use direct audio API with D-Bus MPRIS control
+                // Strip the server-localhost- prefix if present
+                const localStreamId = isLocalFederated ? streamId.replace('server-localhost-', '') : streamId;
+                const payload = { streamId: localStreamId, volume };
+                console.log(`[handleSourceVolumeChange] Local stream, sending payload:`, payload);
+
+                const response = await fetch('/api/audio/source-volume', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error(`Failed to set source volume: ${error.message || error.error}`);
+                    // Clear the grace period on failure
+                    console.log(`[VolumeGrace] Cleared grace period due to API failure`);
+                    recentUserChangesRef.current = null;
+                    setRecentUserChanges(null);
+                } else {
+                    console.log(`[handleSourceVolumeChange] Successfully set volume to ${volume} for stream ${streamId}`);
+                }
+            }
+        } catch (error) {
+            console.error(`Failed to set source volume for stream ${streamId}:`, error);
+            // Clear the grace period on error
+            console.log(`[VolumeGrace] Cleared grace period due to error`);
+            recentUserChangesRef.current = null;
+            setRecentUserChanges(null);
         }
     };
 
@@ -1676,17 +2091,18 @@ const App: React.FC = () => {
         const isStreamLocal = streamId ? isLocalId(streamId) : true;
         const localServer = getLocalServer();
 
-        // Check if browser audio client is trying to access remote stream
-        // Browser clients connect via WebSocket to local server - they cannot play remote streams
+        // Check if browser audio client needs to switch servers for remote streams
         const isBrowserClient = clientId === browserClientId || clientId === getBrowserAudioClientId();
-        if (settings.federation.enabled && isClientLocal && !isStreamLocal && streamId && isBrowserClient) {
-            console.error('[StreamChange] ERROR: Browser audio cannot play remote streams');
-            alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-            // Revert local state
-            setClients(prevClients =>
-                prevClients.map(c => (c.id === clientId ? {...c, currentStreamId: c.currentStreamId} : c))
-            );
-            return;
+        if (settings.federation.enabled && isBrowserClient && streamId) {
+            const newServer = getServerForStream(streamId);
+            const newHost = newServer?.host || window.location.hostname;
+            const currentHost = browserAudio.state.currentHost;
+
+            // If browser client is switching to a stream on a different server, restart connection
+            if (currentHost && newHost !== currentHost) {
+                console.log(`[StreamChange] Browser audio switching from ${currentHost} to ${newHost}`);
+                browserAudio.restart(newHost, browserAudio.state.muted, newServer?.port || 1780);
+            }
         }
 
         // Use federation API for:
@@ -1735,6 +2151,11 @@ const App: React.FC = () => {
                 if (result.success) {
                     // Trigger immediate poll to refresh UI with backend state
                     await federationService.triggerPoll();
+
+                    // Apply dB-matched volume if joining a stream (not null/none)
+                    if (targetStreamId && !targetStreamId.includes('none-')) {
+                        await applyDbMatchedVolume(clientId, targetStreamId);
+                    }
                 } else {
                     console.error('[StreamChange] Routing failed:', result.message);
                     // Revert local state on error
@@ -1758,10 +2179,39 @@ const App: React.FC = () => {
         const localStreamId = streamId ? stripServerPrefix(streamId) : null;
 
         try {
-            const groupId = clientGroupMap[localClientId];
+            let groupId = clientGroupMap[localClientId];
+
+            // If group not in cache, fetch it dynamically (handles newly connected clients)
+            if (!groupId) {
+                console.log(`[StreamChange] Group not in cache for ${localClientId}, fetching from server...`);
+                try {
+                    const serverStatus = await snapcastService.getServerStatus();
+                    if (serverStatus.server && serverStatus.server.groups) {
+                        for (const group of serverStatus.server.groups) {
+                            if (group.clients) {
+                                const foundClient = group.clients.find((c: any) => c.id === localClientId);
+                                if (foundClient) {
+                                    groupId = group.id;
+                                    // Update the cache for future calls
+                                    setClientGroupMap(prev => ({...prev, [localClientId]: group.id}));
+                                    console.log(`[StreamChange] Found group ${groupId} for client ${localClientId}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (fetchError) {
+                    console.error(`[StreamChange] Failed to fetch server status:`, fetchError);
+                }
+            }
 
             if (groupId && localStreamId) {
                 await snapcastService.setGroupStream(groupId, localStreamId);
+
+                // Apply dB-matched volume when joining a stream
+                if (streamId) {
+                    await applyDbMatchedVolume(clientId, streamId);
+                }
             } else if (groupId && localStreamId === null) {
                 // streamId is null - handled via local state update only
             } else {
@@ -1810,6 +2260,96 @@ const App: React.FC = () => {
         // Construct federated ID: server ID + local stream ID
         return `${localServer.id}-${localStreamId}`;
     };
+
+    /**
+     * Apply dB-matched volume when a client joins a stream.
+     * Finds existing clients on the stream, calculates matching volume using calibration data,
+     * and sets the joining client's volume to match the dB level.
+     */
+    const applyDbMatchedVolume = useCallback(async (joiningClientId: string, targetStreamId: string) => {
+        // Don't apply if no calibrations loaded
+        if (Object.keys(calibrations).length === 0) {
+            return;
+        }
+
+        // Find existing clients on the target stream (excluding the joining client)
+        const existingClientsOnStream = clients.filter(c =>
+            c.currentStreamId === targetStreamId &&
+            c.id !== joiningClientId &&
+            c.connected
+        );
+
+        if (existingClientsOnStream.length === 0) {
+            // No other clients on stream - nothing to match against
+            // Could apply default volume from calibration here
+            const joiningCal = calibrations[joiningClientId] || calibrations[stripServerPrefix(joiningClientId)];
+            if (joiningCal && joiningCal.defaultVolume !== undefined) {
+                console.log(`[dB-Match] No reference clients, applying default volume ${joiningCal.defaultVolume}% for ${joiningClientId}`);
+                // Set the default volume
+                const localClientId = stripServerPrefix(joiningClientId);
+                try {
+                    await snapcastService.setClientVolume(localClientId, joiningCal.defaultVolume);
+                } catch (error) {
+                    console.error('[dB-Match] Failed to set default volume:', error);
+                }
+            }
+            return;
+        }
+
+        // Find a reference client - prefer calibrated ones
+        let referenceClient = existingClientsOnStream.find(c => {
+            const cal = calibrations[c.id] || calibrations[stripServerPrefix(c.id)];
+            return cal?.calibrated;
+        });
+
+        // Fall back to first client if no calibrated ones
+        if (!referenceClient) {
+            referenceClient = existingClientsOnStream[0];
+        }
+
+        // Get calibrations for both clients
+        const refCal = calibrations[referenceClient.id] || calibrations[stripServerPrefix(referenceClient.id)];
+        const joiningCal = calibrations[joiningClientId] || calibrations[stripServerPrefix(joiningClientId)];
+
+        // Both clients need calibration for dB matching
+        if (!refCal?.calibrated || !joiningCal?.calibrated) {
+            console.log('[dB-Match] Skipping - one or both clients not calibrated');
+            // If joining client has a default, use that
+            if (joiningCal?.defaultVolume !== undefined) {
+                const localClientId = stripServerPrefix(joiningClientId);
+                try {
+                    await snapcastService.setClientVolume(localClientId, joiningCal.defaultVolume);
+                } catch (error) {
+                    console.error('[dB-Match] Failed to set default volume:', error);
+                }
+            }
+            return;
+        }
+
+        // Calculate matching volume
+        const matchingVolume = calibrationService.getMatchingSliderVolume(
+            referenceClient.volume,
+            refCal,
+            joiningCal
+        );
+
+        if (matchingVolume !== null && matchingVolume !== referenceClient.volume) {
+            console.log(`[dB-Match] Setting ${joiningClientId} volume to ${matchingVolume}% to match ${referenceClient.name} at ${referenceClient.volume}%`);
+
+            // Update local state
+            setClients(prevClients =>
+                prevClients.map(c => c.id === joiningClientId ? {...c, volume: matchingVolume} : c)
+            );
+
+            // Apply to Snapcast
+            const localClientId = stripServerPrefix(joiningClientId);
+            try {
+                await snapcastService.setClientVolume(localClientId, matchingVolume);
+            } catch (error) {
+                console.error('[dB-Match] Failed to set matched volume:', error);
+            }
+        }
+    }, [clients, calibrations]);
 
     // Track last play/pause command time to debounce rapid toggling
     // This prevents FIFO pipe issues when pause/play are sent too quickly
@@ -2014,6 +2554,14 @@ const App: React.FC = () => {
 
             if (capabilities.canSeek) {
                 const positionInMs = positionInSeconds * 1000;
+
+                // Set grace period to prevent polling from overwriting the seek position
+                const timestamp = Date.now();
+                const userChange = {type: 'seek', timestamp, data: {streamId: currentStream.id, position: positionInSeconds}};
+                recentUserChangesRef.current = userChange;
+                setRecentUserChanges(userChange);
+                console.log(`[SeekGrace] Set grace period for position=${positionInSeconds}s, expires in 7s`);
+
                 updateStreamProgress(currentStream.id, positionInSeconds);
                 await snapcastService.seekTo(localStreamId, positionInMs);
             } else {
@@ -2102,6 +2650,8 @@ const App: React.FC = () => {
                                     stream={currentStream}
                                     volume={myClient.volume}
                                     onVolumeChange={(vol) => handleVolumeChange(myClient.id, vol)}
+                                    sourceVolume={currentStream.volume}
+                                    onSourceVolumeChange={(vol) => handleSourceVolumeChange(currentStream.id, vol)}
                                     onPlayPause={handlePlayPause}
                                     onSkip={handleSkip}
                                 />
@@ -2139,13 +2689,15 @@ const App: React.FC = () => {
                             onGroupMute={handleGroupMute}
                             onStartBrowserAudio={() => {
                                 const targetStream = myClient?.currentStreamId || null;
-                                // Block browser audio if current stream is remote
-                                if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
-                                    alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-                                    return;
-                                }
+                                // Get the server for this stream (local or remote)
+                                const server = targetStream ? getServerForStream(targetStream) : undefined;
+                                // Fallback chain: server.host -> extract from stream ID -> window.location.hostname
+                                const extractedHost = targetStream ? extractHostFromStreamId(targetStream) : undefined;
+                                const targetHost = server?.host || extractedHost || window.location.hostname;
+                                const targetPort = server?.port || 1780;
+
                                 setTargetStreamForBrowserAudio(targetStream);
-                                browserAudio.start();
+                                browserAudio.start(false, targetHost, targetPort);
                             }}
                             browserAudioActive={browserAudio.state.isActive}
                             federationEnabled={settings.federation.enabled}
@@ -2212,13 +2764,15 @@ const App: React.FC = () => {
                 }}
                 onStartBrowserAudio={() => {
                     const targetStream = myClient?.currentStreamId || null;
-                    // Block browser audio if current stream is remote
-                    if (settings.federation.enabled && targetStream && !isLocalId(targetStream)) {
-                        alert('Browser audio can only play streams from the local server. To listen to remote streams, use the hardware audio output.');
-                        return;
-                    }
+                    // Get the server for this stream (local or remote)
+                    const server = targetStream ? getServerForStream(targetStream) : undefined;
+                    // Fallback chain: server.host -> extract from stream ID -> window.location.hostname
+                    const extractedHost = targetStream ? extractHostFromStreamId(targetStream) : undefined;
+                    const targetHost = server?.host || extractedHost || window.location.hostname;
+                    const targetPort = server?.port || 1780;
+
                     setTargetStreamForBrowserAudio(targetStream);
-                    browserAudio.start(true); // Start muted for visualizer mode
+                    browserAudio.start(true, targetHost, targetPort); // Start muted for visualizer mode
                 }}
                 onToggleBrowserAudioMute={() => browserAudio.toggleMute()}
                 onClose={() => setIsVisualizerOpen(false)}

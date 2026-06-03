@@ -1,7 +1,10 @@
-import React, {useState, useEffect} from 'react';
-import type {Settings as SettingsType} from '../../types';
+import React, {useState, useEffect, useCallback} from 'react';
+import type {Settings as SettingsType, EndpointCalibration, AudioCalibrationSettings} from '../../types';
 import {audioService, type AudioDevice, type ConfiguredInputDevice, DeviceType} from '../../services/audioService';
+import {calibrationService} from '../../services/calibrationService';
+import {snapcastService} from '../../services/snapcastService';
 import {Icon} from '../Icon';
+import {CalibrationWizard} from './CalibrationWizard';
 
 interface AudioTabProps {
   settings: SettingsType;
@@ -26,10 +29,24 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
   const [expandedInputDevice, setExpandedInputDevice] = useState<string | null>(null);
   const [editingNames, setEditingNames] = useState<Record<string, string>>({});
 
+  // Endpoint calibration state
+  interface SnapcastEndpoint {
+    id: string;
+    name: string;
+    ip?: string;
+    isLocal: boolean;
+    connected: boolean;
+  }
+  const [endpoints, setEndpoints] = useState<SnapcastEndpoint[]>([]);
+  const [calibrations, setCalibrations] = useState<AudioCalibrationSettings>({});
+  const [calibrationLoadingState, setCalibrationLoadingState] = useState<LoadingState>('idle');
+  const [calibratingEndpoint, setCalibratingEndpoint] = useState<SnapcastEndpoint | null>(null);
+
   // Load output devices on mount
   useEffect(() => {
     loadDevices();
     loadInputDevices();
+    loadEndpointsAndCalibrations();
   }, []);
 
   const loadDevices = async () => {
@@ -117,6 +134,96 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
       console.error('Failed to load input devices:', error);
       setInputLoadingState('error');
     }
+  };
+
+  const loadEndpointsAndCalibrations = useCallback(async () => {
+    setCalibrationLoadingState('loading');
+
+    try {
+      // Fetch Snapcast clients directly via WebSocket
+      const serverStatus = await snapcastService.getServerStatus();
+
+      if (serverStatus?.server?.groups) {
+        const clientList: SnapcastEndpoint[] = [];
+
+        // Generic names that should be replaced with deviceName
+        const genericNames = ['snapserver', 'snapclient', 'localhost', '127.0.0.1', '::1'];
+
+        serverStatus.server.groups.forEach((group: any) => {
+          if (group.clients) {
+            group.clients.forEach((client: any) => {
+              // Extract IP from host object, strip IPv6-mapped prefix if present
+              let ip = client.host?.ip;
+              if (ip?.startsWith('::ffff:')) {
+                ip = ip.substring(7); // Remove ::ffff: prefix
+              }
+
+              // Check if this is the local snapclient (127.0.0.1, ::1, or localhost)
+              const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+
+              // Get client name with fallback logic
+              let clientName = client.config?.name || client.host?.name || client.id;
+
+              // Replace generic names with deviceName from settings
+              if (genericNames.includes(clientName.toLowerCase()) || clientName === client.id) {
+                clientName = settings.deviceName || 'Plum Snapcast';
+              }
+
+              clientList.push({
+                id: client.id,
+                name: clientName,
+                ip: ip,
+                isLocal: isLocal,
+                connected: client.connected
+              });
+            });
+          }
+        });
+
+        setEndpoints(clientList);
+      }
+
+      // Load calibration settings
+      const cals = await calibrationService.getAllCalibrations();
+      setCalibrations(cals);
+
+      setCalibrationLoadingState('success');
+    } catch (error) {
+      console.error('Failed to load endpoints and calibrations:', error);
+      setCalibrationLoadingState('error');
+    }
+  }, [settings.deviceName]);
+
+  const handleCalibrationComplete = useCallback(async (calibration: EndpointCalibration) => {
+    // Reload calibrations
+    const cals = await calibrationService.getAllCalibrations();
+    setCalibrations(cals);
+    setCalibratingEndpoint(null);
+  }, []);
+
+  const handleResetCalibration = useCallback(async (clientId: string) => {
+    if (confirm('Are you sure you want to reset calibration for this endpoint?')) {
+      await calibrationService.deleteCalibration(clientId);
+      const cals = await calibrationService.getAllCalibrations();
+      setCalibrations(cals);
+    }
+  }, []);
+
+  const getCalibrationSummary = (cal: EndpointCalibration): string => {
+    if (!cal.calibrated) {
+      return `Default: ${cal.defaultVolume}%`;
+    }
+
+    const dbRange = calibrationService.getDbRange(cal);
+    const maxDisplay = cal.maxLimit.mode === 'decibel'
+      ? `${cal.maxLimit.value} dB`
+      : `${cal.maxLimit.value}%`;
+
+    if (dbRange) {
+      return `Range: ${dbRange.minDb}-${dbRange.maxDb} dB | Max: ${maxDisplay} | Default: ${cal.defaultVolume}%`;
+    }
+
+    return `Max: ${maxDisplay} | Default: ${cal.defaultVolume}%`;
   };
 
   const isInputDeviceEnabled = (hwId: string): boolean => {
@@ -510,6 +617,167 @@ export const AudioTab: React.FC<AudioTabProps> = ({settings, onSettingsChange}) 
           </div>
         )}
       </div>
+
+      {/* Endpoint Volume Calibration Section */}
+      <div className="pt-4 border-t border-[var(--border-color)]">
+        <div className="flex items-center gap-2 mb-2">
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Volume Calibration</h3>
+          <span className="px-2 py-0.5 text-xs font-semibold bg-blue-500/20 text-blue-400 rounded border border-blue-500/30">
+            NEW
+          </span>
+        </div>
+        <p className="text-sm text-[var(--text-secondary)] mb-4">
+          Calibrate volume levels for each endpoint to enable dB-matched multi-room audio. When calibrated, endpoints joining a stream will automatically match the volume level.
+        </p>
+
+        {calibrationLoadingState === 'loading' && (
+          <div className="flex items-center justify-center py-8">
+            <div className="text-[var(--text-secondary)]">Loading endpoints...</div>
+          </div>
+        )}
+
+        {calibrationLoadingState === 'error' && (
+          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Icon name="circle-exclamation" className="text-red-400 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-400">Error Loading Endpoints</p>
+                <button
+                  onClick={loadEndpointsAndCalibrations}
+                  className="mt-2 text-sm text-red-300 hover:text-red-200 underline"
+                >
+                  Try Again
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {calibrationLoadingState === 'success' && endpoints.length === 0 && (
+          <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Icon name="circle-exclamation" className="text-yellow-400 mt-0.5" />
+              <div>
+                <p className="text-sm text-yellow-300">No Snapcast endpoints found</p>
+                <p className="text-xs text-yellow-300/80 mt-1">
+                  Endpoints will appear here when clients connect to the Snapcast server.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {calibrationLoadingState === 'success' && endpoints.length > 0 && (
+          <div className="space-y-2">
+            {endpoints.map((endpoint) => {
+              const cal = calibrations[endpoint.id];
+              const isCalibrated = cal?.calibrated || false;
+
+              return (
+                <div
+                  key={endpoint.id}
+                  className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg p-3"
+                >
+                  <div className="flex items-start gap-3">
+                    <Icon
+                      name="volume-high"
+                      className={`text-xl flex-shrink-0 mt-0.5 ${
+                        endpoint.connected ? 'text-[var(--accent-color)]' : 'text-[var(--text-secondary)]'
+                      }`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-[var(--text-primary)]">
+                          {endpoint.name}
+                        </span>
+                        {isCalibrated ? (
+                          <span className="px-2 py-0.5 text-xs font-medium bg-green-500/20 text-green-400 rounded">
+                            Calibrated
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 text-xs font-medium bg-gray-500/20 text-gray-400 rounded">
+                            Not Calibrated
+                          </span>
+                        )}
+                        {!endpoint.connected && (
+                          <span className="px-2 py-0.5 text-xs font-medium bg-red-500/20 text-red-400 rounded">
+                            Offline
+                          </span>
+                        )}
+                        {endpoint.isLocal && (
+                          <span className="px-2 py-0.5 text-xs font-medium bg-purple-500/20 text-purple-400 rounded">
+                            Local
+                          </span>
+                        )}
+                      </div>
+                      {endpoint.ip && !endpoint.isLocal && (
+                        <p className="text-xs text-[var(--text-secondary)] font-mono">
+                          {endpoint.ip}
+                        </p>
+                      )}
+                      {cal && (
+                        <p className="text-xs text-[var(--text-secondary)] mt-1">
+                          {getCalibrationSummary(cal)}
+                        </p>
+                      )}
+                      {!cal && (
+                        <p className="text-xs text-[var(--text-secondary)] mt-1">
+                          Default: 80% (uncalibrated)
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => setCalibratingEndpoint(endpoint)}
+                        disabled={!endpoint.connected}
+                        className="px-3 py-1.5 text-sm bg-[var(--accent-color)] accent-button-text rounded hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isCalibrated ? 'Edit' : 'Calibrate'}
+                      </button>
+                      {isCalibrated && (
+                        <button
+                          onClick={() => handleResetCalibration(endpoint.id)}
+                          className="px-3 py-1.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded"
+                          title="Reset calibration"
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Info box about calibration */}
+        <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+          <div className="flex items-start gap-2">
+            <Icon name="circle-info" className="text-blue-400 mt-0.5 flex-shrink-0" />
+            <div className="text-sm text-blue-300">
+              <p className="font-medium">How Calibration Works</p>
+              <ul className="text-xs text-blue-300/80 mt-1 space-y-1 list-disc list-inside">
+                <li>Use a phone dB meter app to measure volume at two reference points</li>
+                <li>Set maximum output and default startup levels</li>
+                <li>When endpoints join a stream, volume auto-adjusts to match dB levels</li>
+                <li>Slider 0-100% maps to your configured 0-max range</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Calibration Wizard Modal */}
+      {calibratingEndpoint && (
+        <CalibrationWizard
+          clientId={calibratingEndpoint.id}
+          clientName={calibratingEndpoint.name}
+          existingCalibration={calibrations[calibratingEndpoint.id]}
+          onComplete={handleCalibrationComplete}
+          onCancel={() => setCalibratingEndpoint(null)}
+        />
+      )}
     </div>
   );
 };

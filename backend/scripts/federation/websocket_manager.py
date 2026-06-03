@@ -18,12 +18,14 @@ logger = logging.getLogger(__name__)
 class SnapcastConnection:
     """Represents a WebSocket connection to a single Snapcast server"""
 
-    def __init__(self, server_id: str, host: str, port: int, name: str, use_https: bool = False):
+    def __init__(self, server_id: str, host: str, port: int, name: str, use_https: bool = False, connect_via: str = None):
         self.server_id = server_id
-        self.host = host
+        self.host = host  # Public-facing host (for browser clients)
         self.port = port
         self.name = name
         self.use_https = use_https
+        # Internal connection host (defaults to self.host if not specified)
+        self._connect_via = connect_via or host
         self.ws = None
         self.connected = False
         self.last_status = None
@@ -40,8 +42,9 @@ class SnapcastConnection:
 
     @property
     def url(self) -> str:
+        """WebSocket URL for internal connection (uses connect_via if set)"""
         protocol = "wss" if self.use_https else "ws"
-        return f"{protocol}://{self.host}:{self.port}/jsonrpc"
+        return f"{protocol}://{self._connect_via}:{self.port}/jsonrpc"
 
     def add_event_callback(self, callback: Callable):
         """Add callback for server events"""
@@ -288,13 +291,24 @@ class WebSocketManager:
         """Add global event callback"""
         self._event_callbacks.append(callback)
 
-    async def add_server(self, server_id: str, host: str, port: int, name: str, use_https: bool = False):
-        """Add and connect to a server"""
+    async def add_server(self, server_id: str, host: str, port: int, name: str, use_https: bool = False, connect_via: str = None):
+        """Add and connect to a server
+
+        Args:
+            server_id: Unique identifier for this server
+            host: Public-facing host address (reported to browser clients)
+            port: Server port
+            name: Display name for this server
+            use_https: Whether to use WSS instead of WS
+            connect_via: Internal host to use for the actual WebSocket connection
+                        (defaults to host if not specified). Useful for local server
+                        where we want to connect via localhost but report the LAN IP.
+        """
         if server_id in self.connections:
             logger.warning(f"Server {server_id} already exists")
             return
 
-        conn = SnapcastConnection(server_id, host, port, name, use_https)
+        conn = SnapcastConnection(server_id, host, port, name, use_https, connect_via)
 
         # Add event callback
         conn.add_event_callback(self._on_server_event)

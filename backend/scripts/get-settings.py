@@ -158,7 +158,57 @@ def main():
     # Audio settings
     audio = settings.get('audio', {})
     audio_output = audio.get('output', {})
-    print(f"export AUDIO_OUTPUT_DEVICE=\"{audio_output.get('device', 'hw:Headphones')}\"")
+    raw_device = audio_output.get('device', 'hw:Headphones')
+
+    # Mixer settings for snapclient volume control
+    mixer = audio_output.get('mixer', {})
+    mixer_type = mixer.get('type', 'software')
+    print(f"export AUDIO_MIXER_TYPE=\"{mixer_type}\"")
+
+    # When using hardware mixer, convert hw:X,Y to default:CARD=name format
+    # This allows both mixer access (card-level) and device sharing (via dmix)
+    if mixer_type == 'hardware':
+        mixer_device = mixer.get('device', '')
+        mixer_name = mixer.get('name', '')
+        mixer_index = mixer.get('index', '0')
+        print(f"export AUDIO_MIXER_DEVICE=\"{mixer_device}\"")
+        print(f"export AUDIO_MIXER_NAME=\"{mixer_name}\"")
+        print(f"export AUDIO_MIXER_INDEX=\"{mixer_index}\"")
+
+        # Convert hw:X,Y to dmix format for mixer compatibility
+        # Need to read /proc/asound/cards to get card name
+        if raw_device.startswith('hw:') and ',' in raw_device:
+            try:
+                card_num = raw_device.split(':')[1].split(',')[0]
+                card_found = False
+                with open('/proc/asound/cards', 'r') as f:
+                    for line in f:
+                        # Format: " 3 [sndrpihifiberry]: HifiberryDacp - snd_rpi_hifiberry_dacplus"
+                        if '[' in line:
+                            parts = line.split('[')
+                            num = parts[0].strip()
+                            if num == card_num:
+                                card_name = parts[1].split(']')[0].strip()
+                                dmix_device = f"default:CARD={card_name}"
+                                print(f"export AUDIO_OUTPUT_DEVICE=\"{dmix_device}\"")
+                                card_found = True
+                                break
+
+                if not card_found:
+                    # Fallback if card name not found
+                    print(f"export AUDIO_OUTPUT_DEVICE=\"{raw_device}\"")
+            except Exception:
+                # Fallback on error
+                print(f"export AUDIO_OUTPUT_DEVICE=\"{raw_device}\"")
+        else:
+            # Not hw:X,Y format, use as-is
+            print(f"export AUDIO_OUTPUT_DEVICE=\"{raw_device}\"")
+    else:
+        # Software mixer - use device as-is
+        print(f"export AUDIO_OUTPUT_DEVICE=\"{raw_device}\"")
+        print(f"export AUDIO_MIXER_DEVICE=\"\"")
+        print(f"export AUDIO_MIXER_NAME=\"\"")
+        print(f"export AUDIO_MIXER_INDEX=\"\"")
 
     # Note: Snapclient, network, and other infrastructure settings remain in environment variables
     # Plexamp availability is determined by PLEXAMP_ENABLED env var (checked in migrate script)

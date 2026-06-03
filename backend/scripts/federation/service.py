@@ -173,20 +173,30 @@ class FederationService:
                 import urllib.request
                 import json
 
-                # Run blocking urllib call in thread pool
-                def fetch_name():
+                # Run blocking urllib call in thread pool with retries
+                def fetch_name_with_retry():
                     info_url = f"http://{server.host}:5001/api/federation/info"
-                    with urllib.request.urlopen(info_url, timeout=2) as response:
-                        if response.status == 200:
-                            return json.loads(response.read().decode()).get("name")
+                    # Retry up to 3 times with increasing delay (remote server may be starting)
+                    for attempt in range(3):
+                        try:
+                            with urllib.request.urlopen(info_url, timeout=3) as response:
+                                if response.status == 200:
+                                    return json.loads(response.read().decode()).get("name")
+                        except Exception as retry_err:
+                            if attempt < 2:
+                                time.sleep(1)  # Wait before retry
+                            else:
+                                raise retry_err
                     return None
 
-                fetched_name = await asyncio.to_thread(fetch_name)
+                fetched_name = await asyncio.to_thread(fetch_name_with_retry)
                 if fetched_name:
                     actual_name = fetched_name
                     logger.info(f"Got server name from API: {actual_name} (was: {server.name})")
+                else:
+                    logger.warning(f"API returned no name for {server.host}, using Avahi name: {server.name}")
             except Exception as e:
-                logger.debug(f"Could not fetch server name from API, using Avahi name: {e}")
+                logger.warning(f"Could not fetch server name from API for {server.host}: {e}, using Avahi name")
 
             # Connect to new server
             try:
@@ -215,7 +225,7 @@ class FederationService:
                 self.remote_snapclient_manager.add_remote_server(
                     server_id=server.id,
                     host=server.host,
-                    port=1705  # Snapclient port (same as local)
+                    port=1704  # Snapclient port (standard)
                 )
 
                 # Schedule async task to discover client ID (only if loop is healthy)
@@ -303,10 +313,14 @@ class FederationService:
         # Initialize remote snapclient manager (load audio settings)
         audio_device = self.config.get("audio_device", "hw:Headphones")
         latency = self.config.get("latency", 0)
+        mixer_type = self.config.get("mixer_type", "software")
+        mixer_name = self.config.get("mixer_name", None)
         self.remote_snapclient_manager = RemoteSnapclientManager(
             local_server_id=self.local_server_id,
             audio_device=audio_device,
-            latency=latency
+            latency=latency,
+            mixer_type=mixer_type,
+            mixer_name=mixer_name
         )
 
         # Initialize router (pass snapclient manager for endpoint lockout)
@@ -325,15 +339,19 @@ class FederationService:
             self.loop
         )
 
-        # Add local server connection (localhost)
+        # Add local server connection
+        # Use local_host from config (auto-detected IP) for the server record,
+        # but connect via localhost for reliability
+        local_host = self.config.get("local_host", "localhost")
         try:
-            logger.info("Connecting to local Snapcast server...")
+            logger.info(f"Connecting to local Snapcast server (host: {local_host})...")
             await self.ws_manager.add_server(
                 server_id=self.local_server_id,
-                host="localhost",
+                host=local_host,  # Use actual IP so browser clients can connect
                 port=1780,
                 name=self.local_server_name,
-                use_https=False
+                use_https=False,
+                connect_via="localhost"  # Connect internally via localhost
             )
         except Exception as e:
             logger.error(f"Failed to connect to local server: {e}")
@@ -570,6 +588,16 @@ def load_config() -> Dict:
         if "device" in audio_output:
             config["audio_device"] = audio_output["device"]
             logger.info(f"Audio device from settings.json: {config['audio_device']}")
+
+        # Load mixer configuration for remote snapclients
+        mixer = audio_output.get("mixer", {})
+        config["mixer_type"] = mixer.get("type", "software")
+        config["mixer_name"] = mixer.get("name", None)
+        if config["mixer_type"] == "hardware" and config["mixer_name"]:
+            logger.info(f"Hardware mixer from settings.json: {config['mixer_name']}")
+        else:
+            logger.info("Using software mixer for remote snapclients")
+
         # Note: latency remains from env var default set in initial config
 
     except Exception as e:

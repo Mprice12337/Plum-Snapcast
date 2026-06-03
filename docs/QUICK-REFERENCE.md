@@ -321,7 +321,7 @@ sudo systemctl disable avahi-daemon.service
 sudo systemctl disable avahi-daemon.socket
 
 # 4. Clone and deploy
-git clone <repo-url> ~/Plum-Snapcast
+git clone https://github.com/Mprice12337/Plum-Snapcast.git ~/Plum-Snapcast
 cd ~/Plum-Snapcast/docker
 cp .env.example .env
 nano .env  # Edit configuration

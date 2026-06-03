@@ -100,6 +100,20 @@ DEFAULT_SETTINGS = {
         },
         "input": {
             "devices": []  # Future: user-enabled input devices
+        },
+        "calibration": {
+            # Per-endpoint volume calibration for dB-matched multi-room audio
+            # Keys are Snapcast client IDs, values are calibration data
+            # Example:
+            # "client-abc123": {
+            #     "name": "Living Room",
+            #     "calibrated": true,
+            #     "lowRef": {"volume": 38, "measuredDb": 42},
+            #     "highRef": {"volume": 80, "measuredDb": 68},
+            #     "maxLimit": {"mode": "percentage", "value": 85},
+            #     "defaultVolume": 80,
+            #     "lastCalibrated": "2024-01-15T10:30:00Z"
+            # }
         }
     }
 }

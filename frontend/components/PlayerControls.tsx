@@ -4,8 +4,10 @@ import { Icon, type IconName } from './Icon';
 
 interface PlayerControlsProps {
     stream: Stream;
-    volume: number;
+    volume: number;                              // Hardware/endpoint volume (Snapcast client)
     onVolumeChange: (volume: number) => void;
+    sourceVolume?: number;                       // Source/integration volume (AirPlay, Spotify, etc.)
+    onSourceVolumeChange?: (volume: number) => void;
     onPlayPause: () => void;
     onSkip: (direction: 'next' | 'prev') => void;
 }
@@ -35,12 +37,21 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
                                                                   stream,
                                                                   volume,
                                                                   onVolumeChange,
+                                                                  sourceVolume,
+                                                                  onSourceVolumeChange,
                                                                   onPlayPause,
                                                                   onSkip
                                                               }) => {
     const volumePercentage = volume;
     const sliderStyle = {
         background: `linear-gradient(to right, var(--accent-color) ${volumePercentage}%, var(--border-color) ${volumePercentage}%)`
+    };
+
+    // Source volume slider style (uses a different color to distinguish)
+    const hasSourceVolume = sourceVolume !== undefined && onSourceVolumeChange !== undefined;
+    const sourceVolumePercentage = sourceVolume ?? 100;
+    const sourceSliderStyle = {
+        background: `linear-gradient(to right, var(--text-secondary) ${sourceVolumePercentage}%, var(--border-color) ${sourceVolumePercentage}%)`
     };
 
     return (
@@ -56,21 +67,42 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
                 <ControlButton icon="forward-step" onClick={() => onSkip('next')}/>
             </div>
 
-            {/* Volume Control - order-1 on mobile, order-2 on desktop */}
+            {/* Volume Controls - order-1 on mobile, order-2 on desktop */}
             {/* On desktop: flex-1 to fill remaining space (same as text area above) */}
-            <div className="flex items-center gap-3 w-full max-w-xs order-1 md:order-2 md:flex-1 md:max-w-none">
-                <Icon name="volume-low" className="text-[var(--text-secondary)] w-6 text-center" style={{ color: 'inherit' }} aria-hidden />
-                <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={volume}
-                    onChange={(e) => onVolumeChange(Number(e.target.value))}
-                    className="w-full h-2 rounded-lg appearance-none cursor-pointer volume-slider"
-                    style={sliderStyle}
-                    aria-label="Volume control"
-                />
-                <Icon name="volume-high" className="text-[var(--text-secondary)] w-6 text-center" style={{ color: 'inherit' }} aria-hidden />
+            <div className="flex flex-col gap-2 w-full max-w-xs order-1 md:order-2 md:flex-1 md:max-w-none">
+                {/* Source Volume (controls integration - AirPlay, Spotify, etc.) */}
+                {hasSourceVolume && (
+                    <div className="flex items-center gap-3 w-full">
+                        <Icon name="tower-broadcast" className="text-[var(--text-secondary)] w-6 text-center flex-shrink-0" style={{ color: 'inherit' }} aria-hidden />
+                        <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={sourceVolume}
+                            onChange={(e) => onSourceVolumeChange(Number(e.target.value))}
+                            className="w-full h-2 rounded-lg appearance-none cursor-pointer volume-slider"
+                            style={sourceSliderStyle}
+                            aria-label="Source volume control"
+                        />
+                        <span className="text-xs text-[var(--text-secondary)] w-8 text-right flex-shrink-0">{sourceVolume}%</span>
+                    </div>
+                )}
+
+                {/* Hardware Volume (controls Snapcast endpoint output) */}
+                <div className="flex items-center gap-3 w-full">
+                    <Icon name="volume-low" className="text-[var(--text-secondary)] w-6 text-center flex-shrink-0" style={{ color: 'inherit' }} aria-hidden />
+                    <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={volume}
+                        onChange={(e) => onVolumeChange(Number(e.target.value))}
+                        className="w-full h-2 rounded-lg appearance-none cursor-pointer volume-slider"
+                        style={sliderStyle}
+                        aria-label="Hardware volume control"
+                    />
+                    <Icon name="volume-high" className="text-[var(--text-secondary)] w-6 text-center flex-shrink-0" style={{ color: 'inherit' }} aria-hidden />
+                </div>
             </div>
         </div>
     );

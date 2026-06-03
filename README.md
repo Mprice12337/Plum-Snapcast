@@ -94,11 +94,56 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-#### 3. Clone and Deploy
+#### 3. Configure Audio HATs (Optional)
+
+If you're using a Raspberry Pi HAT (Hardware Attached on Top) audio board, you'll need to configure it before deploying the container. Raspberry Pi OS doesn't auto-detect audio HATs - they require explicit device tree overlay configuration.
+
+**Supported HATs**: Plum-Snapcast automatically detects and supports HATs including HiFiBerry, IQaudio, Pisound, AudioInjector, JustBoom, and others. HATs will appear with a "(HAT)" suffix in the Audio Settings within the web UI.
+
+##### Configuration Steps:
+
+1. Edit the Raspberry Pi boot configuration file:
+   ```bash
+   sudo nano /boot/firmware/config.txt
+   # On older systems, use: sudo nano /boot/config.txt
+   ```
+
+2. Add the appropriate device tree overlay for your HAT model. For example, HiFiBerry AMP60/AMP100:
+   ```bash
+   # /boot/firmware/config.txt
+   dtoverlay=hifiberry-amp100
+   ```
+
+3. Save the file and reboot:
+   ```bash
+   sudo reboot
+   ```
+
+##### Verification:
+
+After rebooting, verify your HAT is detected:
+```bash
+# Check available audio devices
+aplay -l
+```
+
+Your HAT should appear in the list. You can also verify detection in the Plum-Snapcast web UI under **Settings → Audio** - HATs will be labeled with "(HAT)".
+
+##### Troubleshooting:
+
+- **HAT not detected**: Verify the overlay name matches your HAT model exactly
+- **Check kernel logs**: Run `dmesg | grep -i audio` to see if the HAT was initialized
+- **Consult documentation**: Different HAT models may require different overlay names or additional parameters
+
+**Resources**:
+- HiFiBerry Documentation: https://www.hifiberry.com/docs/
+- Raspberry Pi HAT Documentation: https://www.raspberrypi.com/documentation/accessories/
+
+#### 4. Clone and Deploy
 
 ```bash
 # Clone the repository
-git clone <your-repo-url> ~/Plum-Snapcast
+git clone https://github.com/Mprice12337/Plum-Snapcast.git ~/Plum-Snapcast
 cd ~/Plum-Snapcast/docker
 
 # Create .env file from template (optional)
@@ -110,7 +155,7 @@ sudo docker compose pull
 sudo docker compose up -d
 ```
 
-#### 4. Reboot
+#### 5. Reboot
 
 ```bash
 sudo reboot

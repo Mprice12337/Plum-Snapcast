@@ -3,34 +3,46 @@ import { SnapStream } from '../services/snapStreamService';
 
 export interface BrowserAudioClientState {
     isActive: boolean;
+    isConnecting: boolean; // True while connection is in progress
     isPlaying: boolean;
     volume: number;
     muted: boolean;
     clientId: string;
+    currentHost: string | null; // Track which host we're connected to
 }
 
-export function useBrowserAudioClient(host: string) {
+export function useBrowserAudioClient(defaultHost: string) {
     const [state, setState] = useState<BrowserAudioClientState>({
         isActive: false,
+        isConnecting: false,
         isPlaying: false,
         volume: 100,
         muted: false,
-        clientId: SnapStream.getClientId()
+        clientId: SnapStream.getClientId(),
+        currentHost: null
     });
 
     const snapStreamRef = useRef<SnapStream | null>(null);
 
-    // Start the browser audio client
-    const start = async (startMuted: boolean = false) => {
-        if (snapStreamRef.current) {
-            console.warn("Browser audio client already started");
+    // Start the browser audio client (optionally with a different host)
+    const start = async (startMuted: boolean = false, host?: string, port: number = 1780) => {
+        const targetHost = host || defaultHost;
+
+        // Prevent multiple simultaneous connection attempts
+        if (snapStreamRef.current || state.isConnecting) {
+            console.warn("Browser audio client already started or connecting");
             return;
         }
 
+        // Set connecting state
+        setState(prev => ({ ...prev, isConnecting: true }));
+
         try {
-            const stream = new SnapStream(host, 1780);
+            const stream = new SnapStream(targetHost, port);
+            // SnapStream.start() now has built-in retry logic and waits for connection
             await stream.start();
             stream.resume(); // Resume audio context (requires user interaction)
+
             snapStreamRef.current = stream;
 
             // Set initial volume (muted or unmuted)
@@ -41,20 +53,38 @@ export function useBrowserAudioClient(host: string) {
             setState(prev => ({
                 ...prev,
                 isActive: true,
+                isConnecting: false,
                 isPlaying: true,
-                muted: startMuted
+                muted: startMuted,
+                currentHost: targetHost
             }));
 
-            console.log(`Browser audio client started (${startMuted ? 'muted' : 'unmuted'})`);
+            console.log(`Browser audio client started on ${targetHost}:${port} (${startMuted ? 'muted' : 'unmuted'})`);
         } catch (error) {
+            // Clear connecting state on failure
+            setState(prev => ({ ...prev, isConnecting: false }));
             console.error("Failed to start browser audio client:", error);
             throw error;
         }
     };
 
+    // Restart the browser audio client with a different host
+    const restart = async (newHost: string, startMuted: boolean = false, port: number = 1780) => {
+        // Stop current connection if any
+        if (snapStreamRef.current) {
+            snapStreamRef.current.stop();
+            snapStreamRef.current = null;
+        }
+
+        // Start with new host
+        await start(startMuted, newHost, port);
+    };
+
     // Stop the browser audio client
     const stop = () => {
         if (!snapStreamRef.current) {
+            // Still clear connecting state in case we're stopping during connection
+            setState(prev => ({ ...prev, isConnecting: false }));
             return;
         }
 
@@ -64,6 +94,7 @@ export function useBrowserAudioClient(host: string) {
         setState(prev => ({
             ...prev,
             isActive: false,
+            isConnecting: false,
             isPlaying: false
         }));
 
@@ -115,6 +146,7 @@ export function useBrowserAudioClient(host: string) {
         state,
         start,
         stop,
+        restart, // Restart with a different host (for switching servers)
         setVolume,
         toggleMute,
         isMuted,
