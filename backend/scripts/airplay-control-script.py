@@ -48,6 +48,24 @@ def log(message: str):
     except:
         pass
 
+
+def sanitize_utf8(s: str) -> str:
+    """Strip lone surrogates that survive a UTF-8 decode with errors='ignore'.
+
+    shairport-sync sometimes delivers metadata in WTF-8 (surrogates encoded as
+    3-byte UTF-8 sequences, e.g. U+DCB3 → 0xED 0xB2 0xB3). These bytes are
+    syntactically valid UTF-8, so errors='ignore' passes them through as lone
+    surrogate code points in the Python str.  When json.dumps() escapes them as
+    \\udcXX and snapserver's nlohmann JSON parser stores the surrogate, nlohmann's
+    dump() later raises json.exception.type_error.316 and aborts snapserver.
+
+    Re-encoding through UTF-8 with errors='ignore' drops any lone surrogates,
+    producing a snapserver-safe string without data loss for normal characters.
+    """
+    if not s:
+        return s
+    return s.encode('utf-8', errors='ignore').decode('utf-8')
+
 def signal_stream_end():
     """Signal to lifecycle manager that stream should be removed"""
     try:
@@ -243,15 +261,17 @@ class MetadataStore:
             meta = {}
 
             # Snapcast metadata fields (simple names, not MPRIS)
+            # sanitize_utf8() strips lone surrogates (from WTF-8 encoded MQTT payloads)
+            # that would otherwise crash snapserver via nlohmann json.exception.type_error.316
             if self.data.get("title"):
-                meta["title"] = self.data["title"]
+                meta["title"] = sanitize_utf8(self.data["title"])
 
             if self.data.get("artist"):
                 # Snapcast expects artist as an array
-                meta["artist"] = [self.data["artist"]]
+                meta["artist"] = [sanitize_utf8(self.data["artist"])]
 
             if self.data.get("album"):
-                meta["album"] = self.data["album"]
+                meta["album"] = sanitize_utf8(self.data["album"])
 
             # Only include artwork if we have a valid, non-empty URL
             artwork_url = self.data.get("artwork_url")
@@ -343,7 +363,7 @@ class MetadataParser:
             decoded = ""
             if encoding == "base64" and data_text and code != "PICT":
                 try:
-                    decoded = base64.b64decode(data_text).decode('utf-8', errors='ignore')
+                    decoded = sanitize_utf8(base64.b64decode(data_text).decode('utf-8', errors='ignore'))
                 except:
                     decoded = ""
 
@@ -426,9 +446,6 @@ class MetadataParser:
 
                 # ===== PLAYBACK STATE EVENTS (ssnc) =====
                 elif code == "pbeg":
-                    # Play stream begin - clear GUI pause timestamp (new session)
-                    # IMPORTANT: Don't reset position to 0 - preserve existing position for resume
-                    # Actual position will come from prgr or frame_position_and_time events
                     log(f"[Session] Play stream BEGIN")
                     current_state = self.store.get_all()
 
@@ -465,14 +482,10 @@ class MetadataParser:
                     return False
 
                 elif code == "pend":
-                    # Play stream end - Can indicate pause from source device or track end
-                    # NOTE: Also happens during track changes, but in that case pbeg will follow
+                    # Play stream end - can indicate pause from source device or track end.
+                    # NOTE: Also happens during track changes, but in that case pbeg will follow.
+                    # The pause notification delay is handled centrally in send_playback_state_update.
                     log(f"[Session] Play stream END (pend)")
-                    current_state = self.store.get_all().get("playback_status", "stopped")
-
-                    # Treat pend as pause - stream goes idle
-                    # Always update playback API and notify (frontend needs this for source device pause)
-                    # CRITICAL: Track pend time so active_end can distinguish graceful pause from network disconnect
                     self.store.update(playback_status="paused", last_pend_time=time.time())
                     state_data = self.store.get_all()
                     if self.on_position_update:
@@ -481,12 +494,10 @@ class MetadataParser:
                             state_data.get("duration", 0),
                             "paused"
                         )
-
-                    # Always send immediate Snapcast notification for pause from source
                     if self.on_state_change:
                         self.on_state_change()
                     log(f"[State] Playback state → paused (stream ended) - Snapcast notified")
-                    return False  # Don't trigger duplicate notification from pipe monitor
+                    return False
 
                 elif code == "prgr":
                     # Progress information: "start_rtp/current_rtp/end_rtp" (RTP timestamps at 44.1kHz)
@@ -972,7 +983,7 @@ class MQTTControl:
         """Process incoming MQTT messages from shairport-sync"""
         try:
             topic = msg.topic
-            payload = msg.payload.decode('utf-8', errors='ignore')
+            payload = sanitize_utf8(msg.payload.decode('utf-8', errors='ignore'))
 
             # Extract subtopic (everything after topic_prefix/)
             if not topic.startswith(self.topic_prefix + '/'):
@@ -1312,6 +1323,8 @@ class DBusControl:
         self.on_volume_change = on_volume_change
         self._connection_complete = threading.Event()
         self._connected = False
+        self._volume_debounce_timer = None
+        self._pending_volume = None
 
         if not DBUS_AVAILABLE:
             log("[DBus] D-Bus not available - controls disabled")
@@ -1395,18 +1408,29 @@ class DBusControl:
                 mpris_volume = float(changed_properties["Volume"])
                 volume_percent = int(mpris_volume * 100)
 
-                log(f"[DBus] Volume changed from source: {volume_percent}%")
+                log(f"[DBus] Volume changed from source: {volume_percent}% (debouncing 500ms)")
 
-                # Update store
-                if self.store:
-                    self.store.update(volume=volume_percent)
-
-                # Trigger callback to notify Snapcast
-                if self.on_volume_change:
-                    self.on_volume_change()
+                # Debounce rapid volume events (iOS sends many signals while slider moves).
+                # Coalesce into a single Snapcast notification 500ms after the last event.
+                self._pending_volume = volume_percent
+                if self._volume_debounce_timer:
+                    self._volume_debounce_timer.cancel()
+                self._volume_debounce_timer = threading.Timer(0.5, self._fire_volume_change)
+                self._volume_debounce_timer.daemon = True
+                self._volume_debounce_timer.start()
 
         except Exception as e:
             log(f"[DBus] Error handling PropertiesChanged: {e}")
+
+    def _fire_volume_change(self):
+        """Debounced volume change — fires once after 500ms of no new volume events."""
+        self._volume_debounce_timer = None
+        volume_percent = self._pending_volume
+        if volume_percent is not None and self.store:
+            self.store.update(volume=volume_percent)
+            log(f"[DBus] Volume debounce fired: {volume_percent}%")
+        if self.on_volume_change:
+            self.on_volume_change()
 
     def play(self):
         """Send play command via MPRIS"""
@@ -1537,6 +1561,9 @@ class SnapcastControlScript:
         self.last_playback_state_update_time = 0  # For debouncing playback state updates
         self.last_playback_state = None  # Track last state to detect actual changes
         self.last_volume = None  # Track last volume to detect volume changes
+        # Track-change guard: when playing→paused, hold the Snapcast notification for 2s.
+        # If playing arrives within that window (pbeg/play_start), cancel — it was a track change.
+        self._pause_notify_timer = None
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
@@ -1580,6 +1607,26 @@ class SnapcastControlScript:
         if not state_changed and not volume_changed and time_elapsed < 1.0:
             # Nothing changed and it's been less than 1 second - skip this update
             return
+
+        # Track-change guard: playing→paused happens both on real pauses AND during track changes.
+        # Hold the notification 2s — if playing arrives within that window it was a track change.
+        if playback_status == "paused" and self.last_playback_state == "playing":
+            if self._pause_notify_timer is None:
+                log("[State] playing→paused: holding 2s (track change guard)")
+                self.last_playback_state = "paused"  # Update now to prevent re-triggering
+                def _send_delayed_pause():
+                    self._pause_notify_timer = None
+                    self.send_playback_state_update()
+                self._pause_notify_timer = threading.Timer(2.0, _send_delayed_pause)
+                self._pause_notify_timer.daemon = True
+                self._pause_notify_timer.start()
+            return
+
+        # playing arrived while pause guard is active → track change confirmed, cancel guard
+        if playback_status == "playing" and self._pause_notify_timer is not None:
+            self._pause_notify_timer.cancel()
+            self._pause_notify_timer = None
+            log("[State] playing arrived: cancelled pause guard (was a track change)")
 
         # Include position in properties so frontend can show correct position when paused
         # Position is in SECONDS for Snapcast properties (matches frontend expectations)

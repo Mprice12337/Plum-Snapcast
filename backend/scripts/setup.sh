@@ -19,6 +19,20 @@ if [ -f /app/scripts/get-settings.py ]; then
     eval "$(python3 /app/scripts/get-settings.py 2>/dev/null || true)"
 fi
 
+# Configure ALSA null output for federation remote snapclients.
+# Remote snapclients only need to register presence on remote servers (for stream routing);
+# they must not fight with the main snapclient over the real audio hardware.
+# Most DACs (e.g. HiFiBerry) don't have dmix configured, so default:CARD=X is exclusive.
+mkdir -p /etc/asound.d
+cat > /etc/asound.d/99-plum-null.conf << 'ALSACONF'
+pcm.plum_null {
+    type null
+}
+ctl.plum_null {
+    type null
+}
+ALSACONF
+
 # Clean up any stale sockets/pids from previous runs
 # Container runs its own D-Bus and Avahi (fully self-contained)
 rm -rf /var/run/dbus/*
@@ -93,7 +107,7 @@ if [ ! -f /app/config/snapserver.conf ]; then
 
     cat > /app/config/snapserver.conf << SNAPCONF
 [stream]
-port = 1705
+port = 1704
 # None stream - placeholder for local announcements (e.g., Home Assistant)
 # Uses unique name to avoid conflicts in federated setups
 # Uses dedicated FIFO to avoid conflicts with dynamic streams (AirPlay, Spotify, etc.)
@@ -114,7 +128,7 @@ key_file = /app/certs/snapserver.key
 
 [tcp]
 enabled = true
-port = 1704
+port = 1705
 
 [server]
 datadir = /app/data

@@ -171,6 +171,7 @@ All services run in single Alpine container (supervisord). Plexamp runs in optio
 - **WebSocket**: Check `isConnected` before requests, handle failures gracefully
 - **TypeScript**: Use explicit types from `types.ts`, avoid `any`
 - **Icons**: Local SVG icons (not Font Awesome) - add to `frontend/src/assets/icons/`
+- **WiFi management**: Lives on the host, NOT in the container (NetworkManager owns `wlan0`). Captive-portal first-boot setup runs as a host systemd service installed from `scripts/wifi-setup/` — see `docs/WIFI-SETUP.md`.
 
 ### Error Handling
 - **Backend**: Auto-restart via supervisord

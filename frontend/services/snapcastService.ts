@@ -350,7 +350,9 @@ export class SnapcastService {
                 params
             };
 
+            let settled = false;
             this.callbacks.set(id, (response: SnapcastResponse) => {
+                settled = true;
                 if (response.result !== undefined) {
                     resolve(response.result);
                 } else if (response.error) {
@@ -367,9 +369,10 @@ export class SnapcastService {
 
             this.ws.send(JSON.stringify(request));
 
-            // Timeout after 5 seconds
+            // Timeout after 5 seconds. Uses a local settled flag (not callbacks.has) so
+            // reconnectTo's callbacks.clear() doesn't cause the reject to be silently dropped.
             setTimeout(() => {
-                if (this.callbacks.has(id)) {
+                if (!settled) {
                     this.callbacks.delete(id);
                     reject(new Error('Request timeout'));
                 }
@@ -650,6 +653,40 @@ export class SnapcastService {
      */
     getHttpUrl(): string {
         return `http://${this.host}:${this.port}`;
+    }
+
+    /**
+     * Reconnect to a different Snapcast server host/port.
+     * Used when slave mode switches snapclient to a remote master server.
+     */
+    async reconnectTo(host: string, port: number): Promise<void> {
+        if (this.host === host && this.port === port && this.isConnected) {
+            return; // Already connected to this target
+        }
+
+        console.log(`[SnapcastService] Switching connection: ${this.host}:${this.port} → ${host}:${port}`);
+
+        // Cancel any pending reconnect timer
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.reconnectAttempts = 0;
+
+        // Close existing connection without triggering auto-reconnect
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.onerror = null;
+            this.ws.close();
+            this.ws = null;
+        }
+        this.isConnected = false;
+        this.callbacks.clear(); // settled flags in each timeout will fire the reject after 5s
+
+        // Update target and connect
+        this.host = host;
+        this.port = port;
+        return this.connect();
     }
 
     disconnect() {

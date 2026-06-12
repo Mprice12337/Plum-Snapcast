@@ -396,60 +396,64 @@ const App: React.FC = () => {
     const localServer = servers.find(s => s.isLocal);
     const localServerId = localServer?.id;
 
-    // Helper to extract the local part of a client ID (strip server prefix in federation mode)
+    // Helper to extract the raw snapclient ID (strip any server-X-X-X-X- prefix).
+    // In slave mode the local snapclient appears on a REMOTE server, so we must
+    // strip any server prefix (not just the local one) to expose the MAC for detection.
     const getClientLocalPart = (clientId: string): string => {
-        if (localServerId && clientId.startsWith(`${localServerId}-`)) {
-            return clientId.replace(`${localServerId}-`, '');
-        }
+        const match = clientId.match(/^server-[\d-]+-(.+)$/);
+        if (match) return match[1];
         return clientId;
     };
 
-    // Find the primary client - prefer local hardware client with MAC address
+    // Helper: returns true if a client belongs to the local server (by ID prefix or
+    // the localServerId field added by the federation dedup layer for slave clients).
+    // In slave mode the client's ID carries the master's serverId, but localServerId
+    // is set to the home server so the frontend still identifies it as local.
+    const isLocalServerClient = (c: { id: string; [key: string]: unknown }): boolean => {
+        if (!localServerId) return false;
+        return c.id.startsWith(`${localServerId}-`) || (c as any).localServerId === localServerId;
+    };
+
+    // Find the primary hardware client for this GUI.
+    // In federation mode, prefer clients that are on (or came from) the local server —
+    // this ensures that the secondary (slave) GUI controls its own hardware, not the master's.
     const myClient = clients.find(c => {
         if (c.id === browserClientId) return false;
-        // Skip remote snapclients (infrastructure, not user devices)
         if (c.id.includes('-remote-server-')) return false;
-        // Check if local part is a MAC address
+        const localPart = getClientLocalPart(c.id);
+        if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart)) return false;
+        // In federation mode, only pick a local-server client in the first pass
+        return localServerId ? isLocalServerClient(c) : true;
+    }) || clients.find(c => {
+        // Fallback: any MAC-format client that isn't infrastructure or a remote-server client.
+        // In federation mode still exclude remote-server hardware clients to avoid controlling
+        // the wrong device when the local snapclient is temporarily disconnected.
+        if (c.id === browserClientId) return false;
+        if (c.id.includes('-remote-server-')) return false;
+        if (localServerId && !isLocalServerClient(c)) return false;
         const localPart = getClientLocalPart(c.id);
         return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart);
     }) || clients.find(c =>
-        c.id !== browserClientId &&
-        !c.id.includes('-remote-server-')
+        c.id !== browserClientId && !c.id.includes('-remote-server-')
     );
 
     // Determine current stream:
     // In federation mode, each GUI should show its LOCAL client's stream
     // NOT the federation-wide active endpoint (which is used for lockout, not display)
     let currentStreamId: string | undefined;
-    if (settings.federation.enabled) {
-        // Find the local server (the server this GUI is connected to)
-        const localServer = servers.find(s => s.isLocal);
-        const localServerId = localServer?.id;
+    if (settings.federation.enabled && localServerId) {
+        // Find the LOCAL hardware client (output client on this server).
+        // Matches by ID prefix (client is on local server) OR by localServerId field
+        // (client physically lives here but is connected to a remote master in slave mode).
+        const localHardwareClient = clients.find(c => {
+            if (!isLocalServerClient(c)) return false;
+            const localPart = getClientLocalPart(c.id);
+            return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart);
+        });
 
-        if (localServerId) {
-            // Find the LOCAL hardware client (output client on this server)
-            // This is the client that belongs to the local server (not browser, not remote snapclients)
-            const localHardwareClient = clients.find(c => {
-                // Must be on the local server
-                if (!c.id.startsWith(`${localServerId}-`)) return false;
-                // Must be a hardware client (MAC address format)
-                const localPart = c.id.replace(`${localServerId}-`, '');
-                return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(localPart);
-            });
-
-            if (localHardwareClient) {
-                // Show this GUI's local hardware client stream
-                currentStreamId = localHardwareClient.currentStreamId;
-            } else {
-                // Fallback: use myClient if local hardware client not found
-                currentStreamId = myClient?.currentStreamId;
-            }
-        } else {
-            // No local server identified - fallback to myClient
-            currentStreamId = myClient?.currentStreamId;
-        }
+        currentStreamId = localHardwareClient?.currentStreamId ?? myClient?.currentStreamId;
     } else {
-        // Non-federation mode: use myClient's stream
+        // Non-federation mode or no local server found: use myClient's stream
         currentStreamId = myClient?.currentStreamId;
     }
     const currentStream = streams.find(s => s.id === currentStreamId);

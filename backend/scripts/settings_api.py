@@ -92,6 +92,15 @@ DEFAULT_SETTINGS = {
         "autoDiscover": True
         # localServerName removed - now uses deviceName
     },
+    "autoSwitch": {
+        "localActivity": True,   # Auto-switch idle groups when a local source connects
+        "slave": {
+            "enabled": False,
+            "masterHost": "",        # Hostname/IP of the unit to follow
+            "masterWsPort": 1780,    # WebSocket (HTTP) port on master
+            "masterStreamPort": 1704 # Snapclient streaming port on master
+        }
+    },
     "audio": {
         "output": {
             "device": "hw:Headphones",
@@ -328,6 +337,12 @@ def create_settings_blueprint(settings_manager: SettingsManager = None) -> Bluep
         """Get current server settings"""
         try:
             settings = settings_manager.get_settings()
+            # Expose runtime snapclient target (not persisted in settings.json)
+            try:
+                with open("/app/data/snapclient_target", "r") as f:
+                    settings["snapclientTarget"] = f.read().strip()
+            except Exception:
+                settings["snapclientTarget"] = "127.0.0.1:1704"
             return jsonify(settings)
         except Exception as e:
             logger.error(f"Get settings failed: {e}")

@@ -35,6 +35,10 @@ class RemoteSnapclientManager:
     "active" at a time (others are routed to 'none' stream).
     """
 
+    # Null ALSA device written by setup.sh — lets remote snapclients register as routing
+    # presence on remote servers without competing for the real audio hardware.
+    NULL_DEVICE = "plum_null"
+
     def __init__(self, local_server_id: str, audio_device: str = "hw:Headphones", latency: int = 0, mixer_type: str = "software", mixer_name: Optional[str] = None):
         """
         Initialize remote snapclient manager.
@@ -46,94 +50,21 @@ class RemoteSnapclientManager:
             mixer_type: Mixer type (software or hardware, default: software)
             mixer_name: Hardware mixer name if mixer_type is hardware (e.g., "Digital")
         """
-        # Convert hw:X,Y format to default:CARD=name for remote snapclients
-        # This allows ALSA's built-in dmix to handle device sharing
         self.local_server_id = local_server_id
-        self.audio_device = self._convert_to_dmix_device(audio_device)
+        # Remote snapclients use a null output: their only job is to appear as a
+        # routing client on the remote server. Real audio comes from the main
+        # snapclient (managed by supervisord/auto-switch). Using the real device
+        # causes "Resource busy" conflicts on DACs without dmix configured.
+        self.audio_device = self.NULL_DEVICE
         self.latency = latency
         self.mixer_type = mixer_type
         self.mixer_name = mixer_name
         self.processes: Dict[str, subprocess.Popen] = {}  # {server_id: process}
         self.client_ids: Dict[str, str] = {}  # {server_id: snapcast_client_id}
         self.server_hosts: Dict[str, tuple] = {}  # {server_id: (host, port)}
+        self._last_restart: Dict[str, float] = {}  # {server_id: timestamp}
 
         log(f"Initialized (local_server_id={local_server_id}, audio_device={audio_device} -> {self.audio_device}, latency={latency}, mixer={mixer_type}:{mixer_name or 'none'})")
-
-    def _get_card_name_from_number(self, card_num: int) -> Optional[str]:
-        """
-        Look up ALSA card name from card number using /proc/asound/cards.
-
-        Args:
-            card_num: The card number (e.g., 0, 1, 3)
-
-        Returns:
-            The card name (e.g., "Headphones", "sndrpihifiberry") or None if not found
-        """
-        try:
-            with open("/proc/asound/cards", "r") as f:
-                for line in f:
-                    # Format: " 0 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones"
-                    # We need to extract the card number and name in brackets
-                    line = line.strip()
-                    if not line or line.startswith(" "):
-                        continue
-                    # Parse: "0 [Headphones     ]:"
-                    parts = line.split("[")
-                    if len(parts) >= 2:
-                        try:
-                            num = int(parts[0].strip())
-                            if num == card_num:
-                                # Extract name from "[Headphones     ]"
-                                name_part = parts[1].split("]")[0].strip()
-                                return name_part
-                        except ValueError:
-                            continue
-        except Exception as e:
-            log(f"Warning: Could not read /proc/asound/cards: {e}")
-        return None
-
-    def _convert_to_dmix_device(self, audio_device: str) -> str:
-        """
-        Convert hw:X,Y format to default:CARD=name for dmix support.
-
-        Remote snapclients need to use the 'default' device with explicit card
-        specification to enable ALSA's dmix (device mixing), which allows multiple
-        snapclient processes to share the same audio device.
-
-        Args:
-            audio_device: Device in hw:X,Y or hw:NAME format
-
-        Returns:
-            Device in default:CARD=NAME format
-        """
-        # Already in correct format
-        if audio_device.startswith("default:") or audio_device.startswith("sysdefault:"):
-            return audio_device
-
-        # Convert hw:X,Y or hw:NAME to default:CARD=NAME
-        if audio_device.startswith("hw:"):
-            device_spec = audio_device[3:]  # Remove "hw:" prefix
-
-            # Check if it's hw:X,Y format (card number)
-            if "," in device_spec:
-                try:
-                    card_num = int(device_spec.split(",")[0])
-                    card_name = self._get_card_name_from_number(card_num)
-                    if card_name:
-                        log(f"Resolved card {card_num} to name '{card_name}'")
-                        return f"default:CARD={card_name}"
-                    else:
-                        log(f"Warning: Could not resolve card number {card_num}, using Headphones as fallback")
-                        return "default:CARD=Headphones"
-                except ValueError:
-                    pass
-
-            # hw:NAME format - use name directly (e.g., hw:Headphones)
-            return f"default:CARD={device_spec}"
-
-        # Fallback - return as-is
-        log(f"Warning: Unknown audio device format '{audio_device}', using as-is")
-        return audio_device
 
     def add_remote_server(self, server_id: str, host: str, port: int):
         """
@@ -164,12 +95,8 @@ class RemoteSnapclientManager:
             "--hostID", host_id,
             "--soundcard", self.audio_device,
             "--latency", str(self.latency)
+            # No --mixer: null device has no hardware mixer
         ]
-
-        # Add mixer configuration if hardware mixer is specified
-        if self.mixer_type == "hardware" and self.mixer_name:
-            cmd.extend(["--mixer", f"hardware:{self.mixer_name}"])
-            log(f"Using hardware mixer: {self.mixer_name}")
 
         try:
             # Spawn snapclient process with logging
@@ -185,6 +112,7 @@ class RemoteSnapclientManager:
 
             self.processes[server_id] = proc
             self.server_hosts[server_id] = (host, port)
+            self._last_restart[server_id] = time.time()
 
             log(f"Remote snapclient spawned for {server_id} (PID: {proc.pid}, log: {log_file})")
 
@@ -324,11 +252,20 @@ class RemoteSnapclientManager:
         """
         Monitor snapclient processes and restart if crashed.
 
-        Should be called periodically (e.g., every 10 seconds).
+        A 30-second per-server cooldown prevents rapid crash-restart cycles
+        that occur when a snapclient connects to an idle stream (no audio for
+        5s closes ALSA, which causes an XRUN Broken pipe and process exit).
+        Without the cooldown, the reconnect storm triggers Server.OnUpdate
+        cascades that cause resyncs and audible glitches on all clients.
         """
+        now = time.time()
         for server_id in list(self.processes.keys()):
             if not self.is_process_running(server_id):
+                last = self._last_restart.get(server_id, 0)
+                if now - last < 30:
+                    continue  # still in cooldown, don't restart yet
                 log(f"Remote snapclient for {server_id} has crashed, restarting")
+                self._last_restart[server_id] = now
                 self.restart_remote_client(server_id)
 
 

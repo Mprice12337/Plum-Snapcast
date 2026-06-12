@@ -63,6 +63,15 @@ const DEFAULT_SERVER_SETTINGS = {
     enabled: false,
     autoDiscover: true,
   },
+  autoSwitch: {
+    localActivity: true,
+    slave: {
+      enabled: false,
+      masterHost: '',
+      masterWsPort: 1780,
+      masterStreamPort: 1704,
+    },
+  },
 };
 
 interface ServerSettings {
@@ -70,6 +79,8 @@ interface ServerSettings {
   hostname: Settings['hostname'];
   integrations: Settings['integrations'];
   federation: Settings['federation'];
+  autoSwitch?: Settings['autoSwitch'];
+  snapclientTarget?: string;
 }
 
 interface LocalSettings {
@@ -147,10 +158,18 @@ class SettingsService {
     const data = await response.json();
     const serverVersion = data.version || 0;
     const currentVersion = this.serverSettings.version || 0;
+    const newTarget = data.snapclientTarget as string | undefined;
+    const currentTarget = this.serverSettings.snapclientTarget;
 
     if (serverVersion > currentVersion) {
       console.log(`[Settings] Version changed: ${currentVersion} → ${serverVersion}`);
       await this.fetchServerSettings();
+      const merged = this.getMergedSettings();
+      this.notifyListeners(merged);
+    } else if (newTarget !== currentTarget) {
+      // snapclientTarget changed without a version bump (auto-switch service wrote the file)
+      console.log(`[Settings] Snapclient target changed: ${currentTarget} → ${newTarget}`);
+      this.serverSettings = { ...this.serverSettings, snapclientTarget: newTarget };
       const merged = this.getMergedSettings();
       this.notifyListeners(merged);
     }
@@ -181,6 +200,8 @@ class SettingsService {
       hostname: data.hostname || DEFAULT_SERVER_SETTINGS.hostname,
       integrations: data.integrations || DEFAULT_SERVER_SETTINGS.integrations,
       federation: data.federation || DEFAULT_SERVER_SETTINGS.federation,
+      autoSwitch: data.autoSwitch ?? DEFAULT_SERVER_SETTINGS.autoSwitch,
+      snapclientTarget: data.snapclientTarget,
     };
   }
 
@@ -241,10 +262,13 @@ class SettingsService {
 
       const data = await response.json();
       this.serverSettings = {
+        version: data.version || this.serverSettings.version,
         deviceName: data.deviceName || this.serverSettings.deviceName,
         hostname: data.hostname || this.serverSettings.hostname,
         integrations: data.integrations || this.serverSettings.integrations,
         federation: data.federation || this.serverSettings.federation,
+        autoSwitch: data.autoSwitch ?? this.serverSettings.autoSwitch,
+        snapclientTarget: data.snapclientTarget ?? this.serverSettings.snapclientTarget,
       };
 
       const merged = this.getMergedSettings();
@@ -298,6 +322,9 @@ class SettingsService {
     }
     if (updates.federation) {
       serverUpdates.federation = updates.federation;
+    }
+    if (updates.autoSwitch !== undefined) {
+      serverUpdates.autoSwitch = updates.autoSwitch;
     }
     if (updates.theme) {
       localUpdates.theme = updates.theme;

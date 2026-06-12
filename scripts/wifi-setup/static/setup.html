@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#5a3d8a">
+  <title>Plum Audio - WiFi Setup</title>
+  <style>
+    :root {
+      --bg: #1b1430;
+      --panel: #2a1f48;
+      --panel-2: #362a5a;
+      --text: #f4eefc;
+      --muted: #b6a8d1;
+      --accent: #b388eb;
+      --accent-strong: #8857d6;
+      --danger: #ff7a7a;
+      --success: #6cd99a;
+      --border: rgba(255,255,255,0.08);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100%;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex; justify-content: center;
+      padding: max(env(safe-area-inset-top), 16px) 16px max(env(safe-area-inset-bottom), 32px);
+    }
+    main {
+      width: 100%; max-width: 480px;
+    }
+    header { text-align: center; margin-bottom: 24px; }
+    header h1 {
+      margin: 0; font-size: 22px; letter-spacing: 0.3px;
+    }
+    header p {
+      margin: 6px 0 0; color: var(--muted); font-size: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+      background: rgba(255,255,255,0.06); color: var(--muted);
+    }
+    .pill.ok { color: #0a2e1a; background: var(--success); }
+    .pill.warn { color: #2f1010; background: var(--danger); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    button, .btn {
+      appearance: none; border: 0; cursor: pointer;
+      background: var(--accent-strong); color: white;
+      padding: 12px 16px; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      transition: transform 0.05s ease, opacity 0.2s;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    button:not(:disabled):active { transform: translateY(1px); }
+    .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+    .btn-row > * { flex: 1; }
+
+    ul.networks {
+      list-style: none; margin: 0; padding: 0;
+      max-height: 48vh; overflow-y: auto;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+    }
+    ul.networks li {
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; cursor: pointer;
+    }
+    ul.networks li:last-child { border-bottom: 0; }
+    ul.networks li:hover { background: rgba(255,255,255,0.04); }
+    ul.networks li.selected { background: rgba(179,136,235,0.15); }
+    ul.networks li .ssid { flex: 1; font-weight: 500; }
+    ul.networks li .meta { font-size: 12px; color: var(--muted); }
+
+    .bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+    .bars span { width: 3px; background: var(--muted); border-radius: 1px; opacity: 0.4; }
+    .bars span.on { opacity: 1; background: var(--accent); }
+    .bars span:nth-child(1) { height: 25%; }
+    .bars span:nth-child(2) { height: 50%; }
+    .bars span:nth-child(3) { height: 75%; }
+    .bars span:nth-child(4) { height: 100%; }
+
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 12px 14px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--panel-2);
+      color: var(--text); font-size: 16px; outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    .show-pw { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+
+    .status-msg { margin-top: 12px; font-size: 14px; color: var(--muted); }
+    .status-msg.err { color: var(--danger); }
+    .status-msg.ok { color: var(--success); }
+
+    .spin {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+      display: inline-block; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Plum Audio</h1>
+    <p>WiFi Setup</p>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div style="font-size:14px;font-weight:600;">Status</div>
+        <div id="status-text" style="color:var(--muted);font-size:13px;margin-top:2px;">Checking&hellip;</div>
+      </div>
+      <span id="status-pill" class="pill"><span class="dot"></span><span id="status-pill-text">&hellip;</span></span>
+    </div>
+  </div>
+
+  <div class="card" id="picker-card">
+    <div class="row" style="margin-bottom: 10px;">
+      <div style="font-size:14px;font-weight:600;">Available networks</div>
+      <button id="rescan" class="ghost" style="padding:6px 12px;font-size:13px;">Rescan</button>
+    </div>
+    <ul id="networks" class="networks"><li style="color:var(--muted);">Scanning&hellip;</li></ul>
+  </div>
+
+  <div class="card hidden" id="connect-card">
+    <div style="font-weight:600;margin-bottom:10px;">Connect to <span id="chosen-ssid"></span></div>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <label class="show-pw"><input type="checkbox" id="show-pw"> Show password</label>
+    <div class="btn-row">
+      <button id="cancel" class="ghost">Cancel</button>
+      <button id="connect">Connect</button>
+    </div>
+    <div id="connect-msg" class="status-msg"></div>
+  </div>
+
+  <footer>
+    Connected to AP <strong id="ap-ssid">plum-setup</strong>. Once your home WiFi is set, this page will disconnect.
+  </footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    statusText: $("status-text"),
+    pill: $("status-pill"),
+    pillText: $("status-pill-text"),
+    list: $("networks"),
+    rescan: $("rescan"),
+    picker: $("picker-card"),
+    connectCard: $("connect-card"),
+    chosenSsid: $("chosen-ssid"),
+    password: $("password"),
+    showPw: $("show-pw"),
+    connect: $("connect"),
+    cancel: $("cancel"),
+    msg: $("connect-msg"),
+    apSsid: $("ap-ssid"),
+  };
+
+  let chosen = null;
+  let connecting = false;
+
+  async function api(path, opts) {
+    const r = await fetch(path, Object.assign({ headers: { "Accept": "application/json" } }, opts || {}));
+    if (!r.ok && r.status !== 409) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+
+  function setPill(kind, text) {
+    els.pill.className = "pill" + (kind ? " " + kind : "");
+    els.pillText.textContent = text;
+  }
+
+  function bars(signal) {
+    const lvl = signal >= 75 ? 4 : signal >= 50 ? 3 : signal >= 25 ? 2 : 1;
+    let html = '<span class="bars">';
+    for (let i = 1; i <= 4; i++) html += '<span class="' + (i <= lvl ? "on" : "") + '"></span>';
+    return html + "</span>";
+  }
+
+  function renderNetworks(networks) {
+    if (!networks.length) {
+      els.list.innerHTML = '<li style="color:var(--muted);">No networks found.</li>';
+      return;
+    }
+    els.list.innerHTML = networks.map((n, i) => `
+      <li data-idx="${i}" data-ssid="${escapeAttr(n.ssid)}" data-sec="${escapeAttr(n.security)}">
+        ${bars(n.signal)}
+        <div class="ssid">${escapeHtml(n.ssid)}</div>
+        <div class="meta">${escapeHtml(n.security && n.security !== "--" ? n.security : "Open")}</div>
+      </li>
+    `).join("");
+    Array.from(els.list.querySelectorAll("li")).forEach(li => {
+      li.addEventListener("click", () => selectNetwork(li.dataset.ssid, li.dataset.sec));
+    });
+  }
+
+  function selectNetwork(ssid, security) {
+    chosen = { ssid, security };
+    els.chosenSsid.textContent = ssid;
+    els.password.value = "";
+    els.msg.textContent = "";
+    els.msg.className = "status-msg";
+    const isOpen = !security || security === "--" || security === "" || security.toLowerCase() === "open";
+    els.password.placeholder = isOpen ? "(open network — no password)" : "WiFi password";
+    els.password.disabled = isOpen;
+    els.connectCard.classList.remove("hidden");
+    els.connectCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    els.password.focus();
+  }
+
+  function clearSelection() {
+    chosen = null;
+    els.connectCard.classList.add("hidden");
+    els.msg.textContent = "";
+  }
+
+  async function rescan() {
+    els.list.innerHTML = '<li style="color:var(--muted);">Scanning&hellip;</li>';
+    try {
+      const data = await api("/api/scan");
+      renderNetworks(data.networks || []);
+    } catch (e) {
+      els.list.innerHTML = '<li style="color:var(--danger);">Scan failed. Try again.</li>';
+    }
+  }
+
+  async function pollStatus() {
+    try {
+      const s = await api("/api/status");
+      els.apSsid.textContent = s.ssid || "plum-setup";
+      if (s.connecting) {
+        setPill("", "Connecting…");
+        els.statusText.innerHTML = '<span class="spin"></span> Joining selected network&hellip;';
+      } else if (s.online && !s.ap_active) {
+        setPill("ok", "Online");
+        els.statusText.textContent = "Connected to WiFi.";
+      } else if (s.ap_active) {
+        setPill("warn", "Offline");
+        els.statusText.textContent = "Not connected. Pick a network below.";
+      } else {
+        setPill("", "Checking…");
+        els.statusText.textContent = "Checking connectivity…";
+      }
+      if (s.last_connect_result && connecting) {
+        connecting = false;
+        if (s.last_connect_result.success) {
+          els.msg.className = "status-msg ok";
+          els.msg.textContent = s.last_connect_result.message || "Connected!";
+          els.connect.disabled = false;
+        } else {
+          els.msg.className = "status-msg err";
+          els.msg.textContent = s.last_connect_result.message || "Connection failed.";
+          els.connect.disabled = false;
+        }
+      }
+    } catch (e) { /* network blip while AP cycles is expected */ }
+  }
+
+  async function connect() {
+    if (!chosen) return;
+    const pw = els.password.value;
+    els.connect.disabled = true;
+    els.msg.className = "status-msg";
+    els.msg.innerHTML = '<span class="spin"></span> Connecting&hellip; this may take 30 seconds.';
+    connecting = true;
+    try {
+      await api("/api/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ ssid: chosen.ssid, password: pw }),
+      });
+    } catch (e) {
+      els.msg.className = "status-msg err";
+      els.msg.textContent = "Request failed. Make sure you're still on the plum-setup network.";
+      els.connect.disabled = false;
+      connecting = false;
+    }
+  }
+
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  els.rescan.addEventListener("click", rescan);
+  els.cancel.addEventListener("click", clearSelection);
+  els.connect.addEventListener("click", connect);
+  els.showPw.addEventListener("change", () => { els.password.type = els.showPw.checked ? "text" : "password"; });
+
+  rescan();
+  pollStatus();
+  setInterval(pollStatus, 3000);
+})();
+</script>
+</body>
+</html>

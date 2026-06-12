@@ -82,15 +82,25 @@ class AutoPairAgent(dbus.service.Object):
 
 def main():
     """Main function to register and run the agent"""
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-
-    bus = dbus.SystemBus()
-    agent = AutoPairAgent(bus, AGENT_PATH)
+    import sys
+    manager = None
 
     try:
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
+        bus = dbus.SystemBus()
+        agent = AutoPairAgent(bus, AGENT_PATH)
+
         # Get the BlueZ agent manager
         obj = bus.get_object(BUS_NAME, "/org/bluez")
         manager = dbus.Interface(obj, "org.bluez.AgentManager1")
+
+        # Clean up any leftover registration from a previous run before registering
+        try:
+            manager.UnregisterAgent(AGENT_PATH)
+            print("Cleaned up previous agent registration")
+        except Exception:
+            pass  # Not registered — expected on first run
 
         # Register agent with NoInputNoOutput capability (auto-accept)
         manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
@@ -103,7 +113,6 @@ def main():
         print("Bluetooth auto-pairing agent is running...")
         print("All pairing requests will be automatically accepted")
 
-        # Run the main loop
         mainloop = GLib.MainLoop()
         mainloop.run()
 
@@ -113,11 +122,13 @@ def main():
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
     finally:
         try:
-            manager.UnregisterAgent(AGENT_PATH)
-            print("Agent unregistered")
-        except:
+            if manager is not None:
+                manager.UnregisterAgent(AGENT_PATH)
+                print("Agent unregistered")
+        except Exception:
             pass
 
 

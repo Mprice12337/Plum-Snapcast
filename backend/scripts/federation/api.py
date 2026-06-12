@@ -29,6 +29,55 @@ from testtone_api import create_testtone_blueprint
 logger = logging.getLogger(__name__)
 
 
+def _get_raw_client_id(client: dict) -> str:
+    """Extract the raw (un-prefixed) Snapcast client ID from a federation client entry."""
+    server_id = client.get("serverId", "")
+    prefix = server_id + "-"
+    cid = client.get("id", "")
+    return cid[len(prefix):] if cid.startswith(prefix) else cid
+
+
+def _is_remote_snapclient(client: dict) -> bool:
+    """Return True for infrastructure remote snapclient entries.
+
+    RemoteSnapclientManager spawns snapclients with --hostID remote-<server-id>.
+    These appear on remote servers as clients named "remote-server-X-Y-Z-W" and
+    are infrastructure-only — they must not appear as user-visible devices.
+    """
+    return _get_raw_client_id(client).startswith("remote-")
+
+
+def _dedup_clients_by_raw_id(clients: list) -> list:
+    """De-duplicate federation client list by raw snapclient ID.
+
+    When a snapclient moves from its local server to a remote master (slave mode),
+    it appears twice: once disconnected on the local server, and once connected on
+    the master. Keep the connected version (correct serverId for volume routing),
+    but add localServerId from the local (home) server entry so the frontend can
+    still identify which physical device the client belongs to for display purposes.
+    """
+    seen: dict = {}  # raw_id → index in result
+    result = []
+    for client in clients:
+        raw_id = _get_raw_client_id(client)
+
+        if raw_id not in seen:
+            seen[raw_id] = len(result)
+            result.append(client)
+        else:
+            existing_idx = seen[raw_id]
+            # Prefer connected over disconnected
+            if client.get("connected") and not result[existing_idx].get("connected"):
+                # Keep the connected version for correct volume routing (its serverId
+                # points to where the snapclient is actually connected). Add localServerId
+                # from the disconnected local entry so the frontend knows which server
+                # this client physically lives on (for stream display and myClient detection).
+                merged = dict(client)
+                merged["localServerId"] = result[existing_idx].get("serverId")
+                result[existing_idx] = merged
+    return result
+
+
 class MPRISVolumeController:
     """
     Direct D-Bus/MPRIS volume control for integration sources.
@@ -1069,6 +1118,14 @@ class DataAggregator:
 
         clients = []
 
+        # Build IP → server name map so remote clients show their origin server's name
+        generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+        server_ip_to_name = {
+            c.host: c.name
+            for c in self.ws_manager.get_all_connections()
+            if c.host
+        }
+
         # First pass: Build initial client list
         for conn in self.ws_manager.get_all_connections():
             if not conn.connected or not conn.last_status:
@@ -1091,10 +1148,15 @@ class DataAggregator:
                     # Get client name, with fallback to hostname
                     client_name = config.get("name") or host_info.get("name", client_id)
 
-                    # If client name is generic (snapserver, snapclient, localhost, etc), use server name instead
-                    generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+                    # If client name is generic (snapserver, snapclient, localhost, etc),
+                    # use the origin server's name by matching the client's IP to known servers.
                     if client_name.lower() in generic_names or client_name == client_id:
-                        display_name = conn.name
+                        # Normalize IPv4-mapped IPv6 ("::ffff:192.168.7.203" → "192.168.7.203")
+                        client_ip = host_info.get("ip", "").replace("::ffff:", "")
+                        if client_ip in ("127.0.0.1", "::1", ""):
+                            display_name = conn.name  # local client — use this server's name
+                        else:
+                            display_name = server_ip_to_name.get(client_ip, conn.name)
                     else:
                         display_name = client_name
 
@@ -1191,6 +1253,15 @@ class DataAggregator:
 
         if updates_made > 0:
             logger.debug(f"Updated {updates_made} client stream assignments based on remote snapclient activity")
+
+        # De-duplicate: when the same physical client (same raw MAC/ID) appears on multiple
+        # servers (e.g. slave mode moved it from local to master), keep the connected version.
+        clients = _dedup_clients_by_raw_id(clients)
+
+        # Remove remote snapclient infrastructure entries — these are spawned by
+        # RemoteSnapclientManager (--hostID remote-<server-id>) and must never appear
+        # as user-visible devices regardless of their displayed name.
+        clients = [c for c in clients if not _is_remote_snapclient(c)]
 
         return clients
 
@@ -1382,6 +1453,10 @@ class DataAggregator:
 
         clients = []
 
+        # Build IP → server name map so remote clients show their origin server's name
+        generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+        server_ip_to_name = {c.host: c.name for c in connections if c.host}
+
         # Build client list from connections snapshot
         for conn in connections:
             if not conn.connected or not conn.last_status:
@@ -1403,10 +1478,13 @@ class DataAggregator:
 
                     client_name = config.get("name") or host_info.get("name", client_id)
 
-                    # If client name is generic, use server name instead
-                    generic_names = ["snapserver", "snapclient", "localhost", "127.0.0.1", "::1"]
+                    # If client name is generic, use origin server name derived from client IP
                     if client_name.lower() in generic_names or client_name == client_id:
-                        display_name = conn.name
+                        client_ip = host_info.get("ip", "").replace("::ffff:", "")
+                        if client_ip in ("127.0.0.1", "::1", ""):
+                            display_name = conn.name
+                        else:
+                            display_name = server_ip_to_name.get(client_ip, conn.name)
                     else:
                         display_name = client_name
 
@@ -1476,6 +1554,11 @@ class DataAggregator:
 
         if updates_made > 0:
             logger.debug(f"Updated {updates_made} client stream assignments")
+
+        clients = _dedup_clients_by_raw_id(clients)
+
+        # Remove remote snapclient infrastructure entries (same as in get_clients).
+        clients = [c for c in clients if not _is_remote_snapclient(c)]
 
         return clients
 
