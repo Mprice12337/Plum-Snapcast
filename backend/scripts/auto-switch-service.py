@@ -109,9 +109,7 @@ class AutoSwitchService:
         self._slave_running = False
         self._slave_following = False       # True while snapclient is targeting master
 
-        # Idle revert hysteresis: don't revert immediately when master goes idle.
-        # Track changes cause a brief idle period (stream removed then re-added).
-        # Wait 5s before reverting — if master comes back, cancel the revert.
+        # Reserved for future use; remote-ready mode stays pre-connected on idle.
         self._master_idle_timer = None
 
         # Settings watcher tracks previous slave config to detect changes
@@ -258,7 +256,7 @@ class AutoSwitchService:
                     on_error=self._local_on_error,
                     on_close=self._local_on_close,
                 )
-                self._local_ws.run_forever()
+                self._local_ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as e:
                 log(f"Local WS failed: {e}")
             if self._local_running:
@@ -276,13 +274,26 @@ class AutoSwitchService:
     def _slave_on_open(self, ws):
         slave = self._get_auto_switch().get("slave", {})
         log(f"Connected to master at {slave.get('masterHost')}")
-        # Check master's current state immediately — follow if it's already playing
-        self._evaluate_master_state()
+        # Pre-connect: if local is idle, immediately point snapclient at master even
+        # before master starts playing. When master does go active, master's own
+        # auto-switch flips the remote group to the live stream — no restart needed.
+        if not self._slave_following and self._is_local_idle():
+            log("Local is idle — pre-connecting snapclient to master (remote-ready state)")
+            self._switch_to_master()
+        else:
+            # Already following, or local is active — just evaluate current state
+            self._evaluate_master_state()
 
     def _slave_on_message(self, ws, message):
         try:
             message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", message)
-            data = json.loads(message)
+            # AirPlay cover art in stream metadata can break JSON parse; strip and retry
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                message = re.sub(r'"metadata"\s*:\s*\{[^}]*\}', '"metadata":{}', message)
+                message = re.sub(r'"metadata"\s*:\s*"[^"]*"', '"metadata":""', message)
+                data = json.loads(message)
             method = data.get("method", "")
             if method == "Server.OnUpdate":
                 self._handle_master_server_update(
@@ -335,31 +346,23 @@ class AutoSwitchService:
 
     def _react_to_master_activity(self, master_active: bool):
         if master_active:
-            # Master came back — cancel any pending idle revert
+            # Cancel any pending revert timer (shouldn't exist with remote-ready, but be safe)
             if self._master_idle_timer:
                 self._master_idle_timer.cancel()
                 self._master_idle_timer = None
-                log("Master active again — cancelled idle revert timer (was a track change)")
-            if not self._slave_following and self._is_local_idle():
+            if self._slave_following:
+                log("Master is active — already pre-connected, audio flowing")
+            elif self._is_local_idle():
                 log("Master is active — switching snapclient to master")
                 self._switch_to_master()
-            elif not self._slave_following:
+            else:
                 log("Master is active but local is not idle — not following")
-        elif not master_active and self._slave_following:
-            # Master appears idle — could be a track change (stream briefly removed).
-            # Wait 5s before reverting so seamless track changes don't trigger a restart.
-            if self._master_idle_timer is None:
-                log("Master appears idle — waiting 5s before reverting (track change guard)")
-                self._master_idle_timer = threading.Timer(5.0, self._idle_revert_confirmed)
-                self._master_idle_timer.daemon = True
-                self._master_idle_timer.start()
-
-    def _idle_revert_confirmed(self):
-        """Called 5s after master went idle — reverts if still following."""
-        self._master_idle_timer = None
-        if self._slave_following:
-            log("Master idle confirmed after 5s — reverting snapclient to local")
-            self._revert_to_local()
+        else:
+            # Master is idle (playing none-stream or no streams).
+            # Remote-ready: stay pre-connected. Hearing silence on master's none-stream
+            # is identical to local idle. We only revert when a local source actually starts.
+            if self._slave_following:
+                log("Master is idle — staying pre-connected (remote-ready state)")
 
     def _slave_on_error(self, ws, error):
         log(f"Slave WS error: {error}")
@@ -422,13 +425,22 @@ class AutoSwitchService:
                     on_error=self._slave_on_error,
                     on_close=self._slave_on_close,
                 )
-                self._slave_ws.run_forever()
+                # ping_interval detects silently stale connections within ~40s
+                self._slave_ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as e:
                 log(f"Slave WS failed: {e}")
             if self._slave_running:
                 if self._slave_following:
                     self._revert_to_local()
                 time.sleep(10)
+
+    def _run_slave_poll(self):
+        """Fallback: poll master state every 10s in case WS events are missed (e.g. binary
+        metadata causes silent parse failures). HTTP path uses regex, immune to that issue."""
+        while self._slave_running:
+            time.sleep(10)
+            if self._slave_running:
+                self._evaluate_master_state()
 
     def _start_slave_monitor(self, master_host: str, master_ws_port: int):
         self._slave_running = True
@@ -437,6 +449,7 @@ class AutoSwitchService:
             args=(master_host, master_ws_port),
             daemon=True,
         ).start()
+        threading.Thread(target=self._run_slave_poll, daemon=True).start()
         log(f"Slave monitor started → {master_host}:{master_ws_port}")
 
     def _stop_slave_monitor(self):
