@@ -1564,6 +1564,10 @@ class SnapcastControlScript:
         # Track-change guard: when playing→paused, hold the Snapcast notification for 2s.
         # If playing arrives within that window (pbeg/play_start), cancel — it was a track change.
         self._pause_notify_timer = None
+        # Metadata debounce: shairport-sync sends title/artist/album/art as separate pipe
+        # items, causing 6-10 notifications per track change. Debounce collapses the burst
+        # into one notification fired 400ms after the last metadata item arrives.
+        self._metadata_debounce_timer = None
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
@@ -1651,11 +1655,22 @@ class SnapcastControlScript:
 
     def send_metadata_update(self):
         """
-        Send Plugin.Stream.Player.Properties notification to Snapcast.
+        Debounced send of Plugin.Stream.Player.Properties to Snapcast.
 
-        Only call on metadata/state changes (NOT position updates to avoid stuttering).
-        Position is excluded from notifications and only provided via GetProperties.
+        shairport-sync emits title, artist, album, and cover art as separate metadata
+        pipe items, so a single track change produces 4-10 rapid-fire calls here.
+        Debouncing 400ms collapses the burst into one notification and prevents the
+        corresponding onResync() call on all snapclients for each individual item.
         """
+        if self._metadata_debounce_timer:
+            self._metadata_debounce_timer.cancel()
+        self._metadata_debounce_timer = threading.Timer(0.4, self._fire_metadata_update)
+        self._metadata_debounce_timer.daemon = True
+        self._metadata_debounce_timer.start()
+
+    def _fire_metadata_update(self):
+        """Deferred execution of send_metadata_update after debounce settles."""
+        self._metadata_debounce_timer = None
         meta_obj = self.store.get_metadata_for_snapcast() or {}
         state_data = self.store.get_all()
         playback_status = state_data.get("playback_status", "stopped")
