@@ -18,6 +18,14 @@ export interface PlaybackData {
   timestamp: number;  // Unix timestamp when position was last updated
   age_seconds: number;  // How long since the position was updated
   is_stale: boolean;  // Whether the data is too old to be reliable
+  // Out-of-band metadata + source volume, delivered through the playback API instead of
+  // Snapcast Properties (avoids onResync stutter and the partial-payload flap). See
+  // fd95db0 / docs/ARCHITECTURE.md. Present only for sources that post them (e.g. AirPlay).
+  title?: string;
+  artist?: string;
+  album?: string;
+  artUrl?: string;  // self-contained data: URL
+  volume?: number;  // source volume 0-100
 }
 
 export interface PlaybackResponse {

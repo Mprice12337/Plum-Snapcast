@@ -426,6 +426,13 @@ class MetadataParser:
                     if track_changed:
                         log(f"[Bundle] Resetting position for new track")
                         self.store.update(position=0, duration=0, position_timestamp=None)
+                        # Immediately POST the reset to the playback API. Without this the
+                        # previous track's interpolated position keeps climbing until a fresh
+                        # prgr arrives — the frontend would briefly show the old (advancing)
+                        # position fighting the new-track progress=0, i.e. the progress flap.
+                        if self.on_position_update:
+                            status = self.store.get_all().get("playback_status", "playing")
+                            self.on_position_update(0, 0, status)
                         # Flag to reject stale prgr events until we get fresh data from new track
                         self.waiting_for_fresh_prgr = True
                         self.expected_new_duration = None
@@ -1556,8 +1563,25 @@ class SnapcastControlScript:
             mqtt_control=self.mqtt_control,
             on_state_change=self.send_playback_state_update
         )
-        self.last_playback_state = None  # Track last state to detect actual changes
+        # NOTE — KNOWN UPSTREAM SNAPCAST BUG (no fix available):
+        # Every Plugin.Stream.Player.Properties push to snapserver triggers onResync() on all
+        # snapclients (~50-120ms audio gap). This is not specific to our setup — see
+        #   https://github.com/snapcast/snapcast/issues/1351  (push isolated as the cause; any frequency)
+        #   https://github.com/snapcast/snapcast/issues/1318  (shairport-through-snapserver onResync)
+        #   https://github.com/badaix/snapcast/issues/433     (generic onResync dropout)
+        # We can't make an individual push cheap, only reduce HOW MANY we send. Hence the guards
+        # below (volume debounce, track-change pause guard, resume suppression, metadata debounce,
+        # metadata content-dedup). The only way to remove the residual different-song-skip blip is
+        # to deliver metadata out-of-band via our own API (like playback_api.py does for position)
+        # instead of through Snapcast Properties. The AirPlay buffer-flush gap on skip is a separate,
+        # physical audio discontinuity and is NOT addressable here. See docs/ARCHITECTURE.md.
+        self.last_playback_state = None  # Track last decided state (used for guard + dedup logic)
         self.last_volume = None  # Track last volume to detect volume changes
+        # What was ACTUALLY last sent to Snapcast in a Properties notification. Distinct from
+        # last_playback_state because the track-change guard mutates last_playback_state to
+        # "paused" before the pause is ever sent. This lets us tell whether Snapcast really
+        # has us as "playing" and suppress a redundant resume notification (which would resync).
+        self._last_sent_playback_state = None
         # Track-change guard: when playing→paused, hold the Snapcast notification for 2s.
         # If playing arrives within that window (pbeg/play_start), cancel — it was a track change.
         self._pause_notify_timer = None
@@ -1571,12 +1595,56 @@ class SnapcastControlScript:
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
-        """Callback for position updates - posts to our playback API"""
+        """Callback for position updates - posts to our playback API.
+
+        Source volume rides along out-of-band here (not through Snapcast Properties),
+        so the frontend gets live volume without an onResync-triggering Properties push.
+        Metadata is NOT sent on every position post (it's large and changes rarely) — it's
+        posted separately via _post_metadata_to_playback_api() and preserved by the store's
+        merge semantics across these frequent position heartbeats.
+        """
+        extra = {}
+        source_volume = self.store.get_all().get("volume")
+        if source_volume is not None:
+            extra["volume"] = source_volume
         post_playback_position(
             stream_id=self.stream_id,
             position_ms=position_ms,
             duration_ms=duration_ms,
-            playback_status=playback_status
+            playback_status=playback_status,
+            **extra
+        )
+
+    def _post_metadata_to_playback_api(self):
+        """Post current metadata out-of-band to the playback API (merged into the record).
+
+        This is the consistent, single-source metadata channel the frontend/federation
+        aggregator reads from — avoids the flapping caused by partial Snapcast Properties
+        pushes (state notifications carry no metadata and would clobber it). See fd95db0.
+        """
+        state = self.store.get_all()
+        meta = self.store.get_metadata_for_snapcast() or {}
+
+        extra = {}
+        # Always send the text fields (empty string clears stale values on track change)
+        extra["title"] = meta.get("title", "")
+        artist = meta.get("artist")
+        extra["artist"] = artist[0] if isinstance(artist, list) and artist else (artist or "")
+        extra["album"] = meta.get("album", "")
+        # artUrl only when present, so a momentary art gap on a new track doesn't blank
+        # cached art prematurely; the next bundle overwrites it.
+        if meta.get("artUrl"):
+            extra["artUrl"] = meta["artUrl"]
+        source_volume = state.get("volume")
+        if source_volume is not None:
+            extra["volume"] = source_volume
+
+        post_playback_position(
+            stream_id=self.stream_id,
+            position_ms=state.get("position", 0),
+            duration_ms=state.get("duration", 0),
+            playback_status=state.get("playback_status", "playing"),
+            **extra
         )
 
     def send_notification(self, method: str, params: Dict):
@@ -1613,7 +1681,16 @@ class SnapcastControlScript:
         # change picks up the current volume correctly.
         if volume_changed and not state_changed:
             self.last_volume = source_volume
-            log(f"[Snapcast] Volume changed to {source_volume}% — skipping notification (no resync)")
+            # Deliver the new volume out-of-band via the playback API (merged into the
+            # record, no resync) instead of a Snapcast Properties push. The frontend reads
+            # source volume from the playback poll. Post the current interpolated position
+            # so interpolation stays accurate.
+            self._on_position_update(
+                self.store.get_current_position(),
+                duration_ms,
+                playback_status
+            )
+            log(f"[Snapcast] Volume changed to {source_volume}% — posted to playback API (no resync)")
             return
 
         # Track-change guard: playing→paused happens both on real pauses AND during track changes.
@@ -1634,6 +1711,16 @@ class SnapcastControlScript:
         if playback_status == "playing" and self._pause_notify_timer is not None:
             self._pause_notify_timer.cancel()
             self._pause_notify_timer = None
+            # The held pause was never sent, so Snapcast still believes we're playing.
+            # Re-sending "playing" is a net no-op (playing→playing) but still triggers
+            # onResync() on every snapclient — the mid-track stutter on skip. Suppress it.
+            # If the new track has different metadata, _fire_metadata_update carries
+            # playbackStatus="playing" anyway, so the frontend loses nothing.
+            if self._last_sent_playback_state == "playing":
+                self.last_playback_state = "playing"
+                self.last_volume = source_volume
+                log("[State] Track change: net playing→playing, suppressing resume notification (no resync)")
+                return
             log("[State] playing arrived: cancelled pause guard (was a track change)")
 
         params = {
@@ -1652,6 +1739,7 @@ class SnapcastControlScript:
 
         # Update tracking
         self.last_playback_state = playback_status
+        self._last_sent_playback_state = playback_status
         self.last_volume = source_volume
 
     def send_metadata_update(self):
@@ -1685,6 +1773,12 @@ class SnapcastControlScript:
             log(f"[Snapcast] Metadata unchanged since last send, suppressing duplicate notification")
             return
         self._last_notified_meta_key = meta_key
+
+        # Mirror metadata out-of-band to the playback API. This is the consistent source
+        # the frontend/federation aggregator prefers (the Snapcast Properties push below
+        # is kept for snapweb/compat, but its partial-payload clobbering no longer drives
+        # the React UI). See fd95db0 / docs/ARCHITECTURE.md.
+        self._post_metadata_to_playback_api()
 
         can_control = self.dbus_control.is_available()
 
@@ -1991,8 +2085,11 @@ class SnapcastControlScript:
                 state_data = self.store.get_all()
                 playback_status = state_data.get("playback_status", "unknown")
 
-                # Only send heartbeat if playing (avoid spam when idle)
-                if playback_status == "playing":
+                # Heartbeat while playing OR paused (not stopped) so the playback API record
+                # — including out-of-band metadata/volume — stays fresh and never crosses the
+                # is_stale threshold during an active session. The lifecycle manager DELETEs
+                # the record on real disconnect, so paused heartbeats don't leak stale streams.
+                if playback_status in ("playing", "paused"):
                     position_ms = state_data.get("position", 0)
                     duration_ms = state_data.get("duration", 0)
 

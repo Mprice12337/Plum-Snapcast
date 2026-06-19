@@ -664,16 +664,37 @@ The group assignment is a lightweight JSON-RPC call to snapserver — no process
 
 **File**: `backend/scripts/airplay-control-script.py`
 
-Each `Plugin.Stream.Player.Properties` notification sent to snapserver triggers `onResync()` on all connected snapclients, producing a ~50–120 ms audio gap. The control script applies four guards to minimise unnecessary notifications:
+**Upstream root cause (known, unfixed Snapcast bug).** Each `Plugin.Stream.Player.Properties` notification sent to snapserver triggers `onResync()` on all connected snapclients, producing a ~50–120 ms audio gap. This is not specific to our setup — it is a confirmed, reproducible Snapcast issue with no upstream fix:
+
+- [snapcast/snapcast#1351](https://github.com/snapcast/snapcast/issues/1351) — "Stuttering when pushing properties data to SnapServer through a plugin." The reporter isolated the stutter to the Properties push *itself* (querying the backend without forwarding to snapserver produces no stutter), and it occurs at *any* frequency (tested 1 s → 10 min). A high `onResync` followed by two audible stutters.
+- [snapcast/snapcast#1318](https://github.com/snapcast/snapcast/issues/1318) — shairport-sync-through-snapserver stuttering with `onResync` ~once/sec; worsens on quiet passages.
+- [badaix/snapcast#433](https://github.com/badaix/snapcast/issues/433) — generic `onResync` audio dropout.
+
+**Consequence:** we cannot make an individual Properties push cheap — we can only reduce *how many* we send. The control script therefore applies five guards to minimise unnecessary notifications:
 
 | Guard | Where | What it fixes |
 |-------|-------|---------------|
 | **Volume debounce** (500 ms) | `DBusControl._fire_volume_change` | iOS sends many D-Bus Volume signals while dragging the slider; collapsed to one notification |
-| **Track-change pause guard** (2 s) | `SnapcastControlScript.send_playback_state_update` | `playing→paused→playing` from a track change generates two spurious resyncs; the guard cancels if `playing` arrives within 2 s |
+| **Track-change pause guard** (2 s) | `SnapcastControlScript.send_playback_state_update` | `playing→paused→playing` from a track change generates spurious resyncs; the guard holds the pause and cancels if `playing` arrives within 2 s |
+| **Resume suppression** | `SnapcastControlScript.send_playback_state_update` | when the pause guard cancels (track change), the held pause was never sent — so re-sending `playing` is a net `playing→playing` no-op. Tracked via `_last_sent_playback_state`; suppressed to avoid a mid-track resync on skip |
 | **Metadata debounce** (400 ms) | `SnapcastControlScript.send_metadata_update` | shairport-sync emits title/artist/album/art as separate pipe items; debounce collapses the burst into one notification |
 | **Metadata content-dedup** | `SnapcastControlScript._fire_metadata_update` | shairport-sync resends the same metadata bundle every ~200–350 ms; dedup suppresses sends where `(status, title, artist, album)` is unchanged since last notification |
 
 Additionally, `send_playback_state_update` only fires when playback status or volume **actually changes** — no periodic heartbeat resends that would cause repeated resyncs during paused/scrubbing states.
+
+#### Out-of-band metadata & volume (fixes GUI flap + live volume)
+
+The Snapcast Properties channel delivers metadata and state as **separate partial payloads**: `send_playback_state_update` carries `playbackStatus`/`position`/`volume` but **no metadata**, while `_fire_metadata_update` carries `metadata` but **no position**. Because each push to snapserver replaces/rebroadcasts the stream's properties, these partial payloads clobber each other. Combined with the debounce/dedup guards above (which made metadata pushes sparse), this produced three GUI symptoms during track changes:
+
+1. **Metadata flapped** between previous and new track (state pushes re-broadcast stale/empty metadata while the new metadata sat in the 400 ms debounce).
+2. **Progress flapped** between previous and new (the playback API kept interpolating the old track's position upward until a fresh `prgr` arrived).
+3. **Source volume lagged** — live volume only refreshed when a metadata/state push happened to fire (the volume-only push was correctly skipped to avoid resync, but nothing else carried it).
+
+**Fix:** metadata and source volume are now delivered **out-of-band through `playback_api.py`** — the same channel already used for position, which never touches Snapcast Properties and so never triggers `onResync()`. The control script posts `title/artist/album/artUrl` (on metadata change) and `volume` (on volume change / every position heartbeat); `PlaybackStore.update()` **merges** these into the per-stream record so frequent position heartbeats don't wipe metadata and vice-versa. The federation aggregator (`_build_streams_from_connections` / `get_streams`) and the frontend (`syncStreamState`, federation transform) **prefer the playback-API copy when its record is fresh**, falling back to Snapcast `properties` only when stale/absent. On a track change the control script immediately POSTs `position=0` so the old position stops climbing. The Snapcast Properties metadata push is **retained** for snapweb/compatibility, but its partial-payload clobbering no longer drives the React UI.
+
+**Residual limits (not fixable):**
+- **Different-song skip** still incurs exactly one Properties *metadata* push (kept for snapweb compat) — one `onResync` blip remains per #1351. It could be eliminated entirely by dropping the Properties metadata push now that the UI reads metadata out-of-band, but that would break snapweb; left in place.
+- **AirPlay buffer-flush gap.** On a mid-track skip, shairport-sync issues a `Play stream FLUSH` (discards the buffered audio), goes briefly silent, then refills the FIFO with the new track. This silence→refill is a physical discontinuity at the `shairport-sync → FIFO → snapserver → snapclient` audio layer — inherent to the AirPlay protocol, present even with zero notifications, and not addressable by the control script or by snapserver buffering.
 
 ## 6. Deployment & Infrastructure
 

@@ -885,7 +885,15 @@ const App: React.FC = () => {
                             currentTrack: updatedTrack,
                             // DO NOT change isPlaying - keep current state
                             // Reset progress to 0 when new track starts
-                            progress: isNewTrack ? 0 : stream.progress
+                            progress: isNewTrack ? 0 : stream.progress,
+                            // Also reset the attached playback data on a new track. Otherwise
+                            // useAudioSync keeps reading the PREVIOUS track's interpolated_position
+                            // (still climbing) until the playback API posts the new track's reset —
+                            // that race is the progress "flap between previous and new". Zeroing it
+                            // here keeps the UI at 0 until fresh data arrives.
+                            ...(isNewTrack && stream.playback
+                                ? { playback: { ...stream.playback, position: 0, interpolated_position: 0 } }
+                                : {})
                         };
                     }
                     return stream;
@@ -1209,6 +1217,21 @@ const App: React.FC = () => {
                         };
                     }
 
+                    // Prefer out-of-band metadata from the playback API when its record is fresh.
+                    // The Snapcast properties.metadata above is delivered via partial Properties
+                    // pushes that clobber each other (state pushes carry no metadata), which is the
+                    // root of the metadata flap. The playback API is a single consistent source.
+                    if (playbackData && !playbackData.is_stale &&
+                        (playbackData.title || playbackData.artist || playbackData.album)) {
+                        updatedMetadata = {
+                            title: playbackData.title || updatedMetadata?.title,
+                            artist: playbackData.artist || updatedMetadata?.artist,
+                            album: playbackData.album || updatedMetadata?.album,
+                            albumArtUrl: playbackData.artUrl || updatedMetadata?.albumArtUrl,
+                            duration: durationSeconds > 0 ? durationSeconds : updatedMetadata?.duration
+                        };
+                    }
+
                     // Update stream with latest state AND metadata
                     setStreams(prevStreams =>
                         prevStreams.map(s => {
@@ -1261,6 +1284,13 @@ const App: React.FC = () => {
                                         playback_status: playbackData.playback_status || 'unknown',
                                         is_stale: playbackData.is_stale ?? true
                                     };
+
+                                    // Source volume now arrives out-of-band via the playback API
+                                    // (no Snapcast Properties push = no onResync). Apply it as the
+                                    // live source-volume value so the AirPlay line volume tracks.
+                                    if (typeof playbackData.volume === 'number') {
+                                        updatedStream.volume = playbackData.volume;
+                                    }
 
                                     // CRITICAL: Update isPlaying from playback API for streams with choppy audio
                                     // For Bluetooth and other sources, stream.status toggles rapidly (idle/playing)
