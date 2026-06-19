@@ -618,10 +618,9 @@ class MetadataParser:
                             "paused"
                         )
 
-                    # Send immediate Snapcast notification
                     if self.on_state_change:
                         self.on_state_change()
-                    log(f"[State] Playback state → paused (stream flushed) - Snapcast notified")
+                    log(f"[State] Playback state → paused (stream flushed)")
                     return False  # Don't trigger duplicate notification
 
                 elif code == "prsm":
@@ -1557,8 +1556,6 @@ class SnapcastControlScript:
             mqtt_control=self.mqtt_control,
             on_state_change=self.send_playback_state_update
         )
-        self.last_metadata_update_time = 0  # For debouncing metadata updates
-        self.last_playback_state_update_time = 0  # For debouncing playback state updates
         self.last_playback_state = None  # Track last state to detect actual changes
         self.last_volume = None  # Track last volume to detect volume changes
         # Track-change guard: when playing→paused, hold the Snapcast notification for 2s.
@@ -1568,6 +1565,9 @@ class SnapcastControlScript:
         # items, causing 6-10 notifications per track change. Debounce collapses the burst
         # into one notification fired 400ms after the last metadata item arrives.
         self._metadata_debounce_timer = None
+        # Content-dedup key for metadata notifications: (status, title, artist, album).
+        # Prevents repeated sends when shairport-sync resends the same bundle.
+        self._last_notified_meta_key = None
         log(f"[Init] Initialized for stream: {stream_id} (MQTT metadata + DBus control)")
 
     def _on_position_update(self, position_ms: int, duration_ms: int, playback_status: str):
@@ -1596,20 +1596,17 @@ class SnapcastControlScript:
         position_ms = state_data.get("position", 0)
         duration_ms = state_data.get("duration", 0)
         can_control = self.dbus_control.is_available()
-        current_time = time.time()
 
         # Get source volume from store
         source_volume = state_data.get("volume", 100)
 
-        # Debounce: Only send update if state/volume actually changed OR at least 1 second has passed
-        # This prevents rapid play/idle thrashing from overwhelming the lifecycle manager
-        # BUT we must allow volume changes through immediately for responsive volume control
+        # Only send when something actually changed. A time-based "heartbeat" resend was
+        # removed: it caused repeated "paused" notifications during scrubbing that each
+        # triggered an onResync() on all snapclients.
         state_changed = playback_status != self.last_playback_state
         volume_changed = source_volume != self.last_volume
-        time_elapsed = current_time - self.last_playback_state_update_time
 
-        if not state_changed and not volume_changed and time_elapsed < 1.0:
-            # Nothing changed and it's been less than 1 second - skip this update
+        if not state_changed and not volume_changed:
             return
 
         # Track-change guard: playing→paused happens both on real pauses AND during track changes.
@@ -1632,12 +1629,10 @@ class SnapcastControlScript:
             self._pause_notify_timer = None
             log("[State] playing arrived: cancelled pause guard (was a track change)")
 
-        # Include position in properties so frontend can show correct position when paused
-        # Position is in SECONDS for Snapcast properties (matches frontend expectations)
         params = {
             "playbackStatus": playback_status,
-            "position": position_ms / 1000 if position_ms else 0,  # Convert ms to seconds
-            "duration": duration_ms / 1000 if duration_ms else 0,  # Convert ms to seconds
+            "position": position_ms / 1000 if position_ms else 0,
+            "duration": duration_ms / 1000 if duration_ms else 0,
             "volume": source_volume,
             "canGoNext": can_control,
             "canGoPrevious": can_control,
@@ -1651,7 +1646,6 @@ class SnapcastControlScript:
         # Update tracking
         self.last_playback_state = playback_status
         self.last_volume = source_volume
-        self.last_playback_state_update_time = current_time
 
     def send_metadata_update(self):
         """
@@ -1674,6 +1668,17 @@ class SnapcastControlScript:
         meta_obj = self.store.get_metadata_for_snapcast() or {}
         state_data = self.store.get_all()
         playback_status = state_data.get("playback_status", "stopped")
+
+        # Skip if metadata + status hasn't changed since last notification.
+        # shairport-sync resends the same metadata bundle repeatedly during track changes
+        # (every ~200-350ms). Without this check each resend fires a new onResync() on
+        # all snapclients even after the debounce collapses the burst.
+        meta_key = (playback_status, meta_obj.get('title'), str(meta_obj.get('artist')), meta_obj.get('album'))
+        if meta_key == self._last_notified_meta_key:
+            log(f"[Snapcast] Metadata unchanged since last send, suppressing duplicate notification")
+            return
+        self._last_notified_meta_key = meta_key
+
         can_control = self.dbus_control.is_available()
 
         # Get source volume from store or D-Bus

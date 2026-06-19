@@ -216,7 +216,11 @@ docker exec plum-snapcast-server aplay -l
 
 4. **Playback Position API**: Independent from Snapcast to avoid audio stuttering. Uses dual-timestamp architecture for accurate interpolation. See `playback_api.py`.
 
-5. **Browser Audio**: Snapweb clients hidden from UI. useBrowserAudio hook manages auto-assignment and reconnection.
+5. **Auto-Switch / Slave Mode**: `auto-switch-service.py` keeps the local snapclient permanently pre-connected to the master in a `none` (silent) stream. Switching is a lightweight group-assignment JSON-RPC call — no snapclient restart, no ALSA reinit. Configured via Settings → Playback. See `docs/ARCHITECTURE.md` for the full state machine.
+
+6. **AirPlay Notification Guards**: Each `Plugin.Stream.Player.Properties` notification triggers `onResync()` on all snapclients (~50–120 ms gap). `airplay-control-script.py` applies four guards: volume debounce (500 ms), track-change pause guard (2 s), metadata debounce (400 ms), and metadata content-dedup. Do not remove these without understanding the resync impact. See `docs/ARCHITECTURE.md` for details.
+
+7. **Browser Audio**: Snapweb clients hidden from UI. useBrowserAudio hook manages auto-assignment and reconnection.
 
 6. **Audio I/O Config**: Output via GUI (Settings → Audio). Input devices (BETA) create ALSA streams - not yet tested with physical hardware.
 

@@ -1007,6 +1007,13 @@ class DataAggregator:
                 # Debug logging to see what we're getting
                 logger.debug(f"Processing stream - id: '{stream_id}', keys: {list(stream.keys())}")
 
+                # Skip idle streams from remote servers — only expose them when actively playing.
+                # This prevents stale or always-present remote AirPlay/Spotify/etc. streams from
+                # cluttering the stream selector when nothing is actually streaming on that unit.
+                stream_status = stream.get("status", "idle")
+                if not is_local and stream_status.lower() != "playing":
+                    continue
+
                 federated_id = f"{conn.server_id}-{stream_id}"
 
                 # Extract metadata and properties
@@ -1015,7 +1022,6 @@ class DataAggregator:
 
                 # Extract playback status from stream status field
                 # Snapcast stream status is "playing", "idle", or "unknown"
-                stream_status = stream.get("status", "idle")
                 playback_status = "playing" if stream_status.lower() == "playing" else "idle"
 
                 # Build enhanced properties with playbackStatus and position
@@ -1357,12 +1363,17 @@ class DataAggregator:
 
             for stream in server_streams:
                 stream_id = stream.get("id", "")
+
+                # Skip idle streams from remote servers (same rule as get_streams).
+                stream_status = stream.get("status", "idle")
+                if not is_local and stream_status.lower() != "playing":
+                    continue
+
                 federated_id = f"{conn.server_id}-{stream_id}"
 
                 properties = stream.get("properties", {})
                 metadata = properties.get("metadata", {})
 
-                stream_status = stream.get("status", "idle")
                 playback_status = "playing" if stream_status.lower() == "playing" else "idle"
 
                 enhanced_properties = {

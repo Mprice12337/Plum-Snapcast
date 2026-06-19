@@ -614,6 +614,67 @@ Audio plays from remote server through local hardware
 - Local IDs are the original Snapcast IDs (e.g., `spotify1`)
 - The router parses and translates between formats automatically
 
+**Client Deduplication**:
+Remote snapclients (connected to a master) appear on both the local and remote server. The federation API deduplicates them using the raw `hostID` field (`_get_raw_client_id`) so they show as a single logical client in the unified view.
+
+#### Auto-Switch Service
+
+**File**: `backend/scripts/auto-switch-service.py`
+**Supervisord**: `backend/config/supervisord/auto-switch.ini`
+**Purpose**: Automatically routes the local snapclient to a master unit when the master is active, and back to local when the master goes idle.
+
+**Modes**:
+
+| Mode | Behaviour |
+|------|-----------|
+| **Local-activity** | When a source connects to this unit and the output is idle, switch to that stream (default on) |
+| **Slave (follow master)** | When a configured master starts playing and this unit is idle, join the master's stream |
+
+**Fast-switch architecture (slave mode)**:
+
+The key problem with a naive "restart snapclient on master-active" approach is that `snapclient` takes several seconds to connect and buffer audio, creating an audible gap. The service avoids this by keeping the local snapclient **permanently connected** to the master in a *pre-connected* state:
+
+```
+Slave snapclient → master snapserver → none stream (silent)
+                                            ↓
+                               Master goes active (AirPlay, etc.)
+                                            ↓
+                   Snapcast group assignment updated: none → master stream
+                                            ↓
+                          Audio plays instantly (no reconnect needed)
+```
+
+The group assignment is a lightweight JSON-RPC call to snapserver — no process restart, no ALSA reinitialisation. Switching latency drops from ~5–20 s to under 1 s.
+
+**State machine**:
+- `IDLE`: Not following. Monitors master WebSocket for activity.
+- `PRE_CONNECTED`: Snapclient is connected to master's `none` stream, ready to switch instantly.
+- `FOLLOWING`: Snapclient routed to master's active audio stream.
+
+**Hysteresis**: A 5 s idle timer prevents reversion to local during momentary gaps (e.g. track changes). Local connections always take priority and cause an immediate revert to local mode.
+
+**Configuration** (Settings → Playback):
+- `autoSwitch.localActivity` — toggle local-activity mode
+- `autoSwitch.slave.enabled` — toggle slave mode
+- `autoSwitch.slave.masterHost` — master hostname or IP
+- `autoSwitch.slave.masterWsPort` — master WebSocket port (default: 1780)
+- `autoSwitch.slave.masterStreamPort` — master stream port (default: 1704)
+
+#### AirPlay Notification Stutter Fixes
+
+**File**: `backend/scripts/airplay-control-script.py`
+
+Each `Plugin.Stream.Player.Properties` notification sent to snapserver triggers `onResync()` on all connected snapclients, producing a ~50–120 ms audio gap. The control script applies four guards to minimise unnecessary notifications:
+
+| Guard | Where | What it fixes |
+|-------|-------|---------------|
+| **Volume debounce** (500 ms) | `DBusControl._fire_volume_change` | iOS sends many D-Bus Volume signals while dragging the slider; collapsed to one notification |
+| **Track-change pause guard** (2 s) | `SnapcastControlScript.send_playback_state_update` | `playing→paused→playing` from a track change generates two spurious resyncs; the guard cancels if `playing` arrives within 2 s |
+| **Metadata debounce** (400 ms) | `SnapcastControlScript.send_metadata_update` | shairport-sync emits title/artist/album/art as separate pipe items; debounce collapses the burst into one notification |
+| **Metadata content-dedup** | `SnapcastControlScript._fire_metadata_update` | shairport-sync resends the same metadata bundle every ~200–350 ms; dedup suppresses sends where `(status, title, artist, album)` is unchanged since last notification |
+
+Additionally, `send_playback_state_update` only fires when playback status or volume **actually changes** — no periodic heartbeat resends that would cause repeated resyncs during paused/scrubbing states.
+
 ## 6. Deployment & Infrastructure
 
 **Cloud Provider**: Self-hosted (Raspberry Pi or x86_64 servers)
