@@ -664,16 +664,27 @@ The group assignment is a lightweight JSON-RPC call to snapserver — no process
 
 **File**: `backend/scripts/airplay-control-script.py`
 
-Each `Plugin.Stream.Player.Properties` notification sent to snapserver triggers `onResync()` on all connected snapclients, producing a ~50–120 ms audio gap. The control script applies four guards to minimise unnecessary notifications:
+**Upstream root cause (known, unfixed Snapcast bug).** Each `Plugin.Stream.Player.Properties` notification sent to snapserver triggers `onResync()` on all connected snapclients, producing a ~50–120 ms audio gap. This is not specific to our setup — it is a confirmed, reproducible Snapcast issue with no upstream fix:
+
+- [snapcast/snapcast#1351](https://github.com/snapcast/snapcast/issues/1351) — "Stuttering when pushing properties data to SnapServer through a plugin." The reporter isolated the stutter to the Properties push *itself* (querying the backend without forwarding to snapserver produces no stutter), and it occurs at *any* frequency (tested 1 s → 10 min). A high `onResync` followed by two audible stutters.
+- [snapcast/snapcast#1318](https://github.com/snapcast/snapcast/issues/1318) — shairport-sync-through-snapserver stuttering with `onResync` ~once/sec; worsens on quiet passages.
+- [badaix/snapcast#433](https://github.com/badaix/snapcast/issues/433) — generic `onResync` audio dropout.
+
+**Consequence:** we cannot make an individual Properties push cheap — we can only reduce *how many* we send. The control script therefore applies five guards to minimise unnecessary notifications:
 
 | Guard | Where | What it fixes |
 |-------|-------|---------------|
 | **Volume debounce** (500 ms) | `DBusControl._fire_volume_change` | iOS sends many D-Bus Volume signals while dragging the slider; collapsed to one notification |
-| **Track-change pause guard** (2 s) | `SnapcastControlScript.send_playback_state_update` | `playing→paused→playing` from a track change generates two spurious resyncs; the guard cancels if `playing` arrives within 2 s |
+| **Track-change pause guard** (2 s) | `SnapcastControlScript.send_playback_state_update` | `playing→paused→playing` from a track change generates spurious resyncs; the guard holds the pause and cancels if `playing` arrives within 2 s |
+| **Resume suppression** | `SnapcastControlScript.send_playback_state_update` | when the pause guard cancels (track change), the held pause was never sent — so re-sending `playing` is a net `playing→playing` no-op. Tracked via `_last_sent_playback_state`; suppressed to avoid a mid-track resync on skip |
 | **Metadata debounce** (400 ms) | `SnapcastControlScript.send_metadata_update` | shairport-sync emits title/artist/album/art as separate pipe items; debounce collapses the burst into one notification |
 | **Metadata content-dedup** | `SnapcastControlScript._fire_metadata_update` | shairport-sync resends the same metadata bundle every ~200–350 ms; dedup suppresses sends where `(status, title, artist, album)` is unchanged since last notification |
 
 Additionally, `send_playback_state_update` only fires when playback status or volume **actually changes** — no periodic heartbeat resends that would cause repeated resyncs during paused/scrubbing states.
+
+**Residual limits (not fixable from the control script):**
+- **Different-song skip** still incurs exactly one Properties push — the new title/art legitimately has to reach the UI — so one `onResync` blip remains per #1351. The only way to eliminate it is to deliver metadata out-of-band through our own API (as already done for position in `playback_api.py`) and stop pushing it through Snapcast Properties entirely. Deferred (larger frontend+backend change).
+- **AirPlay buffer-flush gap.** On a mid-track skip, shairport-sync issues a `Play stream FLUSH` (discards the buffered audio), goes briefly silent, then refills the FIFO with the new track. This silence→refill is a physical discontinuity at the `shairport-sync → FIFO → snapserver → snapclient` audio layer — inherent to the AirPlay protocol, present even with zero notifications, and not addressable by the control script or by snapserver buffering.
 
 ## 6. Deployment & Infrastructure
 

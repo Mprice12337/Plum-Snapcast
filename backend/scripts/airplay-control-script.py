@@ -1556,8 +1556,25 @@ class SnapcastControlScript:
             mqtt_control=self.mqtt_control,
             on_state_change=self.send_playback_state_update
         )
-        self.last_playback_state = None  # Track last state to detect actual changes
+        # NOTE — KNOWN UPSTREAM SNAPCAST BUG (no fix available):
+        # Every Plugin.Stream.Player.Properties push to snapserver triggers onResync() on all
+        # snapclients (~50-120ms audio gap). This is not specific to our setup — see
+        #   https://github.com/snapcast/snapcast/issues/1351  (push isolated as the cause; any frequency)
+        #   https://github.com/snapcast/snapcast/issues/1318  (shairport-through-snapserver onResync)
+        #   https://github.com/badaix/snapcast/issues/433     (generic onResync dropout)
+        # We can't make an individual push cheap, only reduce HOW MANY we send. Hence the guards
+        # below (volume debounce, track-change pause guard, resume suppression, metadata debounce,
+        # metadata content-dedup). The only way to remove the residual different-song-skip blip is
+        # to deliver metadata out-of-band via our own API (like playback_api.py does for position)
+        # instead of through Snapcast Properties. The AirPlay buffer-flush gap on skip is a separate,
+        # physical audio discontinuity and is NOT addressable here. See docs/ARCHITECTURE.md.
+        self.last_playback_state = None  # Track last decided state (used for guard + dedup logic)
         self.last_volume = None  # Track last volume to detect volume changes
+        # What was ACTUALLY last sent to Snapcast in a Properties notification. Distinct from
+        # last_playback_state because the track-change guard mutates last_playback_state to
+        # "paused" before the pause is ever sent. This lets us tell whether Snapcast really
+        # has us as "playing" and suppress a redundant resume notification (which would resync).
+        self._last_sent_playback_state = None
         # Track-change guard: when playing→paused, hold the Snapcast notification for 2s.
         # If playing arrives within that window (pbeg/play_start), cancel — it was a track change.
         self._pause_notify_timer = None
@@ -1634,6 +1651,16 @@ class SnapcastControlScript:
         if playback_status == "playing" and self._pause_notify_timer is not None:
             self._pause_notify_timer.cancel()
             self._pause_notify_timer = None
+            # The held pause was never sent, so Snapcast still believes we're playing.
+            # Re-sending "playing" is a net no-op (playing→playing) but still triggers
+            # onResync() on every snapclient — the mid-track stutter on skip. Suppress it.
+            # If the new track has different metadata, _fire_metadata_update carries
+            # playbackStatus="playing" anyway, so the frontend loses nothing.
+            if self._last_sent_playback_state == "playing":
+                self.last_playback_state = "playing"
+                self.last_volume = source_volume
+                log("[State] Track change: net playing→playing, suppressing resume notification (no resync)")
+                return
             log("[State] playing arrived: cancelled pause guard (was a track change)")
 
         params = {
@@ -1652,6 +1679,7 @@ class SnapcastControlScript:
 
         # Update tracking
         self.last_playback_state = playback_status
+        self._last_sent_playback_state = playback_status
         self.last_volume = source_volume
 
     def send_metadata_update(self):
