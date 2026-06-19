@@ -465,6 +465,16 @@ export interface Settings {
         enabled: boolean;
         autoDiscover: boolean;
     };
+    autoSwitch?: {
+        localActivity: boolean;
+        slave: {
+            enabled: boolean;
+            masterHost: string;
+            masterWsPort: number;
+            masterStreamPort: number;
+        };
+    };
+    snapclientTarget?: string; // Runtime: where snapclient is currently connected (host:port)
     audio?: {
         output?: {
             device: string;

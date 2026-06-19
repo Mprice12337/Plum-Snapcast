@@ -1,0 +1,23 @@
+[Unit]
+Description=Plum WiFi Setup (captive portal for first-time network config)
+Documentation=https://github.com/Mprice12337/Plum-Snapcast/blob/main/docs/WIFI-SETUP.md
+After=NetworkManager.service
+Wants=NetworkManager.service
+ConditionPathExists=/opt/plum-wifi-setup/plum-wifi-setup.py
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/plum-wifi-setup
+ExecStart=/usr/bin/python3 /opt/plum-wifi-setup/plum-wifi-setup.py
+Restart=on-failure
+RestartSec=5
+
+# Reasonable hardening that still allows nmcli + iptables.
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
