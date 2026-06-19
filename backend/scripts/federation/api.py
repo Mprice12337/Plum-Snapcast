@@ -1039,10 +1039,13 @@ class DataAggregator:
                 else:
                     playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
 
-                # Extract source volume from properties (set by control script)
-                source_volume = properties.get("volume")
+                # Prefer out-of-band metadata + volume from the playback API when fresh; the
+                # Snapcast `properties` copy arrives via partial Properties pushes that clobber
+                # each other (caused the GUI flap / volume lag). Single consistent source — see
+                # fd95db0 / docs/ARCHITECTURE.md. Mirrors _build_streams_from_connections.
+                playback_fresh = bool(playback_data) and not playback_data.get("is_stale", True)
 
-                # Transform artUrl for remote servers to absolute URL
+                # Transform artUrl for remote servers to absolute URL (properties-fallback path)
                 # This ensures the frontend fetches from the correct server
                 art_url = metadata.get("artUrl", "")
                 if not is_local and art_url:
@@ -1053,6 +1056,20 @@ class DataAggregator:
                     elif art_url.startswith("/"):
                         # Other relative URLs - point to remote server's Snapcast HTTP
                         art_url = f"http://{conn.host}:1780{art_url}"
+
+                if playback_fresh:
+                    md_title = playback_data.get("title") or metadata.get("title", "")
+                    md_artist = playback_data.get("artist") or metadata.get("artist", "")
+                    md_album = playback_data.get("album") or metadata.get("album", "")
+                    md_art = playback_data.get("artUrl") or art_url
+                    pb_volume = playback_data.get("volume")
+                    source_volume = pb_volume if pb_volume is not None else properties.get("volume")
+                else:
+                    md_title = metadata.get("title", "")
+                    md_artist = metadata.get("artist", "")
+                    md_album = metadata.get("album", "")
+                    md_art = art_url
+                    source_volume = properties.get("volume")
 
                 # Extract stream display name from properties or URI
                 stream_name = properties.get("name", "")
@@ -1072,10 +1089,10 @@ class DataAggregator:
                     "name": stream_name,  # Fixed: use actual stream name, not status
                     "status": stream_status,
                     "metadata": {
-                        "title": metadata.get("title", ""),
-                        "artist": metadata.get("artist", ""),
-                        "album": metadata.get("album", ""),
-                        "artUrl": art_url,
+                        "title": md_title,
+                        "artist": md_artist,
+                        "album": md_album,
+                        "artUrl": md_art,
                         "duration": metadata.get("duration", 0)
                     },
                     "properties": enhanced_properties,
@@ -1387,9 +1404,16 @@ class DataAggregator:
                 else:
                     playback_data = remote_playback_cache.get(conn.server_id, {}).get(stream_id, {})
 
-                source_volume = properties.get("volume")
+                # Prefer out-of-band metadata + volume from the playback API when its record
+                # is fresh. The Snapcast `properties` copy is delivered via partial
+                # Plugin.Stream.Player.Properties pushes that clobber each other (state pushes
+                # carry no metadata; metadata pushes carry no volume), which is what made the
+                # GUI flap between previous/new and lag on volume. The playback API is a single
+                # consistent source (see fd95db0 / docs/ARCHITECTURE.md). Fall back to
+                # properties when the playback record is stale/absent (e.g. cold start).
+                playback_fresh = bool(playback_data) and not playback_data.get("is_stale", True)
 
-                # Transform artUrl for remote servers to absolute URL
+                # Transform artUrl for remote servers to absolute URL (properties-fallback path)
                 art_url = metadata.get("artUrl", "")
                 if not is_local and art_url:
                     if art_url.startswith("/coverart/"):
@@ -1397,6 +1421,21 @@ class DataAggregator:
                         art_url = f"http://{conn.host}:5001/api/settings/proxy/coverart/{filename}"
                     elif art_url.startswith("/"):
                         art_url = f"http://{conn.host}:1780{art_url}"
+
+                if playback_fresh:
+                    md_title = playback_data.get("title") or metadata.get("title", "")
+                    md_artist = playback_data.get("artist") or metadata.get("artist", "")
+                    md_album = playback_data.get("album") or metadata.get("album", "")
+                    # Playback API artUrl is a self-contained data: URL — no proxy transform needed
+                    md_art = playback_data.get("artUrl") or art_url
+                    pb_volume = playback_data.get("volume")
+                    source_volume = pb_volume if pb_volume is not None else properties.get("volume")
+                else:
+                    md_title = metadata.get("title", "")
+                    md_artist = metadata.get("artist", "")
+                    md_album = metadata.get("album", "")
+                    md_art = art_url
+                    source_volume = properties.get("volume")
 
                 # Extract stream display name
                 stream_name = properties.get("name", "")
@@ -1415,10 +1454,10 @@ class DataAggregator:
                     "name": stream_name,
                     "status": stream_status,
                     "metadata": {
-                        "title": metadata.get("title", ""),
-                        "artist": metadata.get("artist", ""),
-                        "album": metadata.get("album", ""),
-                        "artUrl": art_url,
+                        "title": md_title,
+                        "artist": md_artist,
+                        "album": md_album,
+                        "artUrl": md_art,
                         "duration": metadata.get("duration", 0)
                     },
                     "properties": enhanced_properties,

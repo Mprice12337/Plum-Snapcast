@@ -682,8 +682,18 @@ The group assignment is a lightweight JSON-RPC call to snapserver — no process
 
 Additionally, `send_playback_state_update` only fires when playback status or volume **actually changes** — no periodic heartbeat resends that would cause repeated resyncs during paused/scrubbing states.
 
-**Residual limits (not fixable from the control script):**
-- **Different-song skip** still incurs exactly one Properties push — the new title/art legitimately has to reach the UI — so one `onResync` blip remains per #1351. The only way to eliminate it is to deliver metadata out-of-band through our own API (as already done for position in `playback_api.py`) and stop pushing it through Snapcast Properties entirely. Deferred (larger frontend+backend change).
+#### Out-of-band metadata & volume (fixes GUI flap + live volume)
+
+The Snapcast Properties channel delivers metadata and state as **separate partial payloads**: `send_playback_state_update` carries `playbackStatus`/`position`/`volume` but **no metadata**, while `_fire_metadata_update` carries `metadata` but **no position**. Because each push to snapserver replaces/rebroadcasts the stream's properties, these partial payloads clobber each other. Combined with the debounce/dedup guards above (which made metadata pushes sparse), this produced three GUI symptoms during track changes:
+
+1. **Metadata flapped** between previous and new track (state pushes re-broadcast stale/empty metadata while the new metadata sat in the 400 ms debounce).
+2. **Progress flapped** between previous and new (the playback API kept interpolating the old track's position upward until a fresh `prgr` arrived).
+3. **Source volume lagged** — live volume only refreshed when a metadata/state push happened to fire (the volume-only push was correctly skipped to avoid resync, but nothing else carried it).
+
+**Fix:** metadata and source volume are now delivered **out-of-band through `playback_api.py`** — the same channel already used for position, which never touches Snapcast Properties and so never triggers `onResync()`. The control script posts `title/artist/album/artUrl` (on metadata change) and `volume` (on volume change / every position heartbeat); `PlaybackStore.update()` **merges** these into the per-stream record so frequent position heartbeats don't wipe metadata and vice-versa. The federation aggregator (`_build_streams_from_connections` / `get_streams`) and the frontend (`syncStreamState`, federation transform) **prefer the playback-API copy when its record is fresh**, falling back to Snapcast `properties` only when stale/absent. On a track change the control script immediately POSTs `position=0` so the old position stops climbing. The Snapcast Properties metadata push is **retained** for snapweb/compatibility, but its partial-payload clobbering no longer drives the React UI.
+
+**Residual limits (not fixable):**
+- **Different-song skip** still incurs exactly one Properties *metadata* push (kept for snapweb compat) — one `onResync` blip remains per #1351. It could be eliminated entirely by dropping the Properties metadata push now that the UI reads metadata out-of-band, but that would break snapweb; left in place.
 - **AirPlay buffer-flush gap.** On a mid-track skip, shairport-sync issues a `Play stream FLUSH` (discards the buffered audio), goes briefly silent, then refills the FIFO with the new track. This silence→refill is a physical discontinuity at the `shairport-sync → FIFO → snapserver → snapclient` audio layer — inherent to the AirPlay protocol, present even with zero notifications, and not addressable by the control script or by snapserver buffering.
 
 ## 6. Deployment & Infrastructure

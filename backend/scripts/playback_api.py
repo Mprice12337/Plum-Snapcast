@@ -59,7 +59,14 @@ class PlaybackStore:
             position: Current position in milliseconds
             duration: Total duration in milliseconds
             playback_status: "playing", "paused", "stopped", or "unknown"
-            **extra: Additional metadata (artist, title, album, etc.)
+            **extra: Additional out-of-band fields (title, artist, album, artUrl, volume, ...)
+
+        MERGE semantics: extra fields are merged into the existing record, NOT replaced.
+        This lets the control script post small, frequent position/volume heartbeats
+        WITHOUT clearing previously-posted metadata, and post a metadata snapshot
+        WITHOUT clearing position. Out-of-band metadata/volume delivery (see fd95db0 /
+        docs/ARCHITECTURE.md) relies on this so the frontend gets one consistent source
+        instead of the partial Snapcast Properties pushes that clobber each other.
         """
         with self._lock:
             existing = self._data.get(stream_id)
@@ -73,15 +80,19 @@ class PlaybackStore:
                 playback_status != existing.get("playback_status")
             )
 
-            self._data[stream_id] = {
+            # Start from existing record (preserve prior extra fields like metadata),
+            # then overlay the always-present position fields and any new extras.
+            merged = dict(existing) if existing else {}
+            merged.update({
                 "stream_id": stream_id,
                 "position": position,
                 "duration": duration,
                 "playback_status": playback_status,
                 "last_update": now,  # Always update (staleness check)
                 "position_timestamp": now if position_changed else existing.get("position_timestamp", now),  # Only update if position changed (interpolation)
-                **extra
-            }
+            })
+            merged.update(extra)  # Overlay supplied extras (metadata/volume); unspecified ones persist
+            self._data[stream_id] = merged
 
     def get(self, stream_id: str) -> Optional[Dict[str, Any]]:
         """Get playback data for a specific stream"""
