@@ -1600,13 +1600,20 @@ class SnapcastControlScript:
         # Get source volume from store
         source_volume = state_data.get("volume", 100)
 
-        # Only send when something actually changed. A time-based "heartbeat" resend was
-        # removed: it caused repeated "paused" notifications during scrubbing that each
-        # triggered an onResync() on all snapclients.
         state_changed = playback_status != self.last_playback_state
         volume_changed = source_volume != self.last_volume
 
         if not state_changed and not volume_changed:
+            return
+
+        # Volume-only changes don't need a Properties notification. The frontend's
+        # SnapcastStreamProperties type doesn't include source volume, so the field
+        # is never read — but the notification still triggers onResync() on every
+        # snapclient (~50-120ms gap). Skip it; update tracking so a later state
+        # change picks up the current volume correctly.
+        if volume_changed and not state_changed:
+            self.last_volume = source_volume
+            log(f"[Snapcast] Volume changed to {source_volume}% — skipping notification (no resync)")
             return
 
         # Track-change guard: playing→paused happens both on real pauses AND during track changes.
